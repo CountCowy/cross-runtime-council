@@ -1,0 +1,4 @@
+interface:
+  display_name: "Council"
+  short_description: "Coordinate bounded two- or three-session deliberation"
+  default_prompt: "Use $council to run a bounded adversarial planning exchange among the exact bound Codex, Claude, or OpenCode sessions."
