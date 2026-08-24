@@ -66,8 +66,9 @@ unsupported. Then, per runtime, follow the binding steps in
 - `SKILL.md` — the Claude Code skill instructions (also the best conceptual
   overview of how a dialogue runs).
 - `evals/` — graded eval definitions for participant behavior.
-- `install/` — install/uninstall/upgrade/rollback scripts and per-runtime
-  configuration templates.
+- `install/` — install/uninstall/upgrade/rollback scripts.
+- `ROADMAP.md` — planned directions, including known verification and
+  privacy-lifecycle gaps.
 
 ## Tests
 

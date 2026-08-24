@@ -36,15 +36,60 @@ with `0700` permissions — do not create or chmod it yourself.
 
 ## Per-runtime setup
 
-**Claude Code.** The skill is discoverable once the payload is at
-`~/.claude/skills/council`. The session you intend to bind must accept
-cross-session inbound messages. Binding happens inside that exact session via
-the `council_*` tools — see [../SKILL.md](../SKILL.md).
+**Claude Code.** Two steps (steps verified against a working installation,
+not yet clean-room rehearsed):
 
-**Codex (macOS app).** Register the MCP adapter
-(`scripts/council_mcp.py`) per [../agents/openai.yaml](../agents/openai.yaml).
-The planning task binds itself; an optional context-isolated router task
-handles idle wakes (see `references/protocol.md`, "Route an idle Codex wake").
+1. Register the Council MCP adapter at user scope:
+
+   ```
+   claude mcp add --scope user council -- /usr/bin/python3 ~/.claude/skills/council/scripts/council_mcp.py
+   ```
+
+   New sessions then expose the `council_*` tools. The skill instructions are
+   discoverable automatically once the payload is at
+   `~/.claude/skills/council`.
+2. The session you intend to bind must accept cross-session inbound messages.
+   Binding happens inside that exact session via the `council_*` tools — see
+   [../SKILL.md](../SKILL.md).
+
+**Codex (macOS app).** Register the same MCP adapter in
+`~/.codex/config.toml` (steps verified against a working installation, not
+yet clean-room rehearsed):
+
+```toml
+[mcp_servers.council]
+command = "/usr/bin/python3"
+args = ["/Users/YOUR-USERNAME/.claude/skills/council/scripts/council_mcp.py"]
+```
+
+Use an absolute path — expand the home directory yourself. Restart the app;
+the planning task you bind calls the `council_*` tools itself.
+([../agents/openai.yaml](../agents/openai.yaml) is interface display metadata
+only — it is not registration configuration.) An idle Codex seat also needs
+the wake router below; without it, an idle task learns of new council work
+only when it next runs `council_wait`.
+
+### Codex wake router (optional, recommended for triads)
+
+An idle Codex planning task is woken by a dedicated, context-isolated router
+task — the planning task itself never polls (see
+[protocol.md](../references/protocol.md), "Delivery and recovery").
+
+1. Create a dedicated Codex task whose only job, on a schedule (five minutes
+   is the default cadence), is one wake poll: lease pending notifications via
+   `council_pending_wakes`, send the fixed wake marker to each notification's
+   exact target task, and record the outcome with `council_wake_ack`. Keep it
+   context-isolated — it must never participate in planning, and it never
+   sees dialogue content (the broker leases it opaque metadata only).
+2. With no broker running, record that exact task offline:
+
+   ```
+   python3 ~/.claude/skills/council/scripts/council.py configure-router --target-thread-id <codex-task-id>
+   ```
+
+   (The command refuses to run while a broker is active.)
+3. The router authenticates and binds itself on its next scheduled run.
+   Disable the schedule whenever standing inbound wake is not wanted.
 
 **OpenCode CLI.** Three steps, in order:
 
@@ -112,6 +157,18 @@ discovery never mistakes a stale copy for a second `council` skill.
 
 All three refuse to run while a live broker socket exists — finish or cancel
 active dialogues and quit the owning runtime first.
+
+## Diagnostics
+
+```
+python3 ~/.claude/skills/council/scripts/council.py doctor
+```
+
+prints a redacted, aggregate-only health report: broker reachability and
+version currency, installed-copy currency, OpenCode plugin/registry/pin
+state, and router configuration. `... council.py ping` is the one-line
+aggregate variant. Neither command can start a broker, perform participant
+operations, or read dialogue content.
 
 ## Troubleshooting
 

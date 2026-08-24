@@ -1,3 +1,5 @@
+# Interface display metadata only. MCP registration for the Codex macOS app
+# lives in docs/install.md ("Codex (macOS app)").
 interface:
   display_name: "Council"
   short_description: "Coordinate bounded two- or three-session deliberation"
