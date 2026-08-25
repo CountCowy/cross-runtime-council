@@ -218,7 +218,8 @@ export const CouncilPlugin: Plugin = async ({ client }) => {
           if (request.type !== "deliver" || typeof request.content !== "string") {
             throw new Error("unsupported relay request")
           }
-          const lines = request.content.split("\n")
+          const content = request.content
+          const lines = content.split("\n")
           if (lines[0] !== "COUNCIL_ENVELOPE_V1" || lines.length < 3) {
             throw new Error("OpenCode relay accepts only Council envelopes")
           }
@@ -247,7 +248,7 @@ export const CouncilPlugin: Plugin = async ({ client }) => {
             async () => {
               const posted = await client.session.promptAsync({
                 path: { id: binding.sessionID },
-                body: { parts: [{ type: "text", text: request.content }] },
+                body: { parts: [{ type: "text", text: content }] },
               })
               if (posted.error) throw new Error("OpenCode rejected Council session delivery")
             },

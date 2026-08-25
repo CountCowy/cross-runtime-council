@@ -11,7 +11,6 @@ import socket
 import socketserver
 import sys
 import threading
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from council import (

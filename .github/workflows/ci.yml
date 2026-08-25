@@ -22,9 +22,20 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
+      - name: Python static analysis
+        run: |
+          python3 -m pip install --quiet ruff==0.6.9
+          python3 -m ruff check .
       - name: Python suite
         run: python3 test_council.py
         working-directory: scripts
+      - name: Representation parity suite
+        run: python3 test_parity.py
+        working-directory: scripts
+      - name: TypeScript type-check
+        run: |
+          npm install --no-save --silent typescript@5.6.3 "@opencode-ai/plugin@1.18.21" "@types/node@22.7.5"
+          npx tsc --noEmit
       - name: Node suite
         run: node --experimental-strip-types --test test_opencode_delivery_registry.ts
         working-directory: scripts

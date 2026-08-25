@@ -17,9 +17,12 @@ path, with the same audit discipline as the rest of the broker.
 - Clean-room rehearsal of the Codex and Claude registration steps (the
   OpenCode path is rehearsed; the Codex/Claude steps in `docs/install.md`
   are verified against a working installation only).
-- CI additions: Python static analysis, type-checking for the OpenCode
-  plugin/tools TypeScript, and property-based state-machine and
-  crash-sequence tests for the broker's recovery paths.
+- CI additions: Python static analysis (ruff), strict TypeScript
+  type-checking of the plugin/tools, and cross-representation parity tests
+  landed in v0.19 development. Still planned: property-based state-machine
+  and crash-sequence tests for the broker's recovery paths (a targeted
+  deletion-and-recovery crash suite ships with the deletion feature; broader
+  coverage later).
 
 ## Implementation consolidation
 

@@ -1,0 +1,6 @@
+# Static-analysis gate (v0.19 verification floor). Deterministic: ruff is
+# version-pinned in CI; the default E/F rule set keeps the gate high-signal.
+target-version = "py39"
+
+[lint]
+# Defaults (E4, E7, E9, F) — correctness-focused, zero-noise baseline.

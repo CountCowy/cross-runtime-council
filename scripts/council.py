@@ -15,7 +15,6 @@ import json
 import os
 import re
 import secrets
-import shutil
 import signal
 import socket
 import socketserver
@@ -4423,7 +4422,6 @@ class CouncilBroker:
             or record.get("wake_status") != "consumed"
         ):
             return record
-        envelope = record["envelope"]
         if self._recover_safe_acknowledgement(
             path, record, "expired_codex_claim"
         ):
