@@ -875,7 +875,7 @@
     {
       "id": 78,
       "eval_name": "new-finals-stay-bounded-and-legacy-finals-use-reference",
-      "prompt": "A maximum valid v0.18.7 dialogue completes, and a legacy canonical final is larger than 256 KiB.",
+      "prompt": "A maximum valid v0.19.0 dialogue completes, and a legacy canonical final is larger than 256 KiB.",
       "expected_output": "The new submission budget keeps the valid final below the ceiling; the oversized legacy final still produces a bounded digest-reference terminal envelope.",
       "expectations": ["Tests assert the actual 256 KiB boundary", "Full legacy history remains local"]
     },

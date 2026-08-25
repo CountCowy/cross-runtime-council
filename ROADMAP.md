@@ -40,5 +40,5 @@ be staged carefully rather than rushed.
 
 ## Release mechanics
 
-Semantic versioning with signed tags from the next release onward; the
-initial public release is tagged `v0.18.7`.
+Semantic versioning with cryptographically signed tags from `v0.19.0`
+onward; the initial public release tag `v0.18.7` is annotated but unsigned.

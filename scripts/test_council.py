@@ -3232,7 +3232,7 @@ class CouncilBrokerTests(unittest.TestCase):
 
     def test_spurious_wake_poll_is_a_clean_no_op(self):
         self.bind_pair()
-        self.assertEqual(self.broker.ping()["broker_version"], "0.18.7")
+        self.assertEqual(self.broker.ping()["broker_version"], "0.19.0")
         self.assertEqual(self.broker.pending_wakes(), {"notifications": []})
         self.assertEqual(self.broker.wait("alpha", 0), {"message": None})
 
@@ -4120,7 +4120,7 @@ class CouncilBrokerTests(unittest.TestCase):
         with mock.patch(
             "council.CouncilClient.request",
             return_value={
-                "broker_version": "0.18.7",
+                "broker_version": "0.19.0",
                 "registration_restore_error_count": 0,
             },
         ):
