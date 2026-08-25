@@ -67,6 +67,7 @@ from council_mcp import (
     RelayUnixServer,
     call_tool,
     codex_thread_id,
+    get_claude_relay,
     handle as handle_mcp_message,
     participant_capability,
 )
@@ -5637,6 +5638,85 @@ class TerminalDialogueDeletionTests(TerminalDialogueFixture):
         )
         self.assertEqual(args.command, "delete")
         self.assertEqual(args.reason, "user_requested")
+
+
+class BindFailureRelayCleanupTests(TerminalDialogueFixture):
+    def test_definitively_rejected_claude_bind_closes_the_created_relay(self):
+        inbox_dir = Path(self.temporary.name) / "claude-inbox"
+        inbox_dir.mkdir()
+        inbox = FakeClaudeInbox(inbox_dir)
+        state = Path(
+            tempfile.mkdtemp(prefix="council-bindfail.", dir="/private/tmp")
+        )
+
+        class RejectingClient:
+            def request(self, action, **arguments):
+                raise CouncilRequestRejected("bind was definitively rejected")
+
+        arguments = {
+            "runtime": "claude",
+            "participant": "quickfail",
+            "label": "Quickfail",
+            "project": "test",
+        }
+        environment = {
+            "CLAUDE_CODE_MESSAGING_SOCKET": inbox.path,
+            "COUNCIL_STATE_ROOT": str(state),
+        }
+        try:
+            with mock.patch.dict(os.environ, environment, clear=False):
+                with mock.patch(
+                    "council_mcp.CouncilClient", return_value=RejectingClient()
+                ):
+                    with self.assertRaises(CouncilRequestRejected):
+                        call_tool("council_bind", arguments)
+                self.assertNotIn("quickfail", RELAYS)
+                relays_dir = state / "relays"
+                if relays_dir.exists():
+                    self.assertEqual(list(relays_dir.iterdir()), [])
+                # A relay that predates the bind is never touched by the
+                # rejection cleanup: only the relay this call created is.
+                existing = get_claude_relay("quickfail")
+                with mock.patch(
+                    "council_mcp.CouncilClient", return_value=RejectingClient()
+                ):
+                    with self.assertRaises(CouncilRequestRejected):
+                        call_tool("council_bind", arguments)
+                self.assertIs(RELAYS.get("quickfail"), existing)
+                existing.close()
+                RELAYS.clear()
+        finally:
+            inbox.close()
+            shutil.rmtree(state, ignore_errors=True)
+
+
+class AliasAnonymityTests(TerminalDialogueFixture):
+    def test_public_positions_omit_submission_timestamps(self):
+        self.bind_pair()
+        dialogue = self.broker.start(
+            "alpha",
+            "beta",
+            "Transport plan",
+            "Compare two safe automated wake paths.",
+            [{"source": "user", "claim": "no manual relay"}],
+        )["dialogue_id"]
+        beta_request = self.broker.wait("beta", 0)["message"]
+        self.assertEqual(beta_request["kind"], "proposal_request")
+        self.broker.submit(dialogue, "alpha", "proposal", 0, proposal("alpha"))
+        self.broker.submit(dialogue, "beta", "proposal", 0, proposal("beta"))
+        self.broker.ack("beta", beta_request["message_id"])
+        exchange = self.broker.wait("beta", 0)["message"]
+        self.assertEqual(exchange["kind"], "exchange_request")
+        peer_positions = exchange["payload"]["peer_positions"]
+        self.assertTrue(peer_positions)
+        for item in peer_positions:
+            self.assertNotIn("submitted_at", item)
+            self.assertTrue(item["participant"].startswith("R0-"))
+        # The canonical stored submission keeps the timestamp for audit purposes.
+        manifest = read_json(self.root / "dialogues" / dialogue / "manifest.json")
+        reference = manifest["submissions"]["proposal"]["alpha"]
+        stored = read_json(self.root / "dialogues" / dialogue / reference)
+        self.assertIn("submitted_at", stored)
 
 
 class RetentionSweepTests(TerminalDialogueFixture):

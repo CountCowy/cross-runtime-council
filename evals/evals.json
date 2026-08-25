@@ -791,11 +791,11 @@
       "id": 67,
       "eval_name": "opencode-inflight-unbind-retains-tombstone",
       "prompt": "promptAsync is still running when the participant unbinds and immediately rebinds the same OpenCode session, then the broker retries the same message.",
-      "expected_output": "Unbind marks the delivery state clear-when-idle instead of deleting its in-flight promise. Rebind retains the tombstone, the retry joins the original post, and only one model turn occurs.",
+      "expected_output": "Unbind marks the delivery state clear-when-idle instead of deleting it: settled and in-flight delivery tombstones are retained through the unbind/rebind gap. Rebind cancels the pending expiry and keeps the same state, the retry joins the original in-flight post, and only one model turn occurs. Without a rebind, the detached state expires after its bounded TTL once idle.",
       "expectations": [
-        "Completed IDs clear on unbind",
+        "Settled delivery IDs are retained through the unbind/rebind gap",
         "In-flight ownership survives until settlement",
-        "No-rebind cleanup removes the idle tombstone"
+        "Without rebind, the detached tombstone expires only after its bounded TTL once idle"
       ]
     },
     {

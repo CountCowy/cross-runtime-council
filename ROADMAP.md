@@ -25,7 +25,9 @@ broker.
   landed in v0.19 development, as did the targeted deletion-and-recovery
   crash harness (release-blocking, runs in CI). Still planned: property-based
   state-machine and crash-sequence tests for the broker's broader recovery
-  paths.
+  paths, and a dedicated review of extension semantics after a convergence
+  candidate (a parked v0.18 finding whose exact defect needs re-derivation
+  before any fix).
 
 ## Implementation consolidation
 

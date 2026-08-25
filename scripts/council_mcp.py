@@ -534,7 +534,12 @@ def call_tool(
     if name == "council_ping":
         result = client.request("ping")
     elif name == "council_bind":
-        relay = get_claude_relay(arguments["participant"]) if arguments["runtime"] == "claude" else None
+        relay = None
+        relay_preexisting = None
+        if arguments["runtime"] == "claude":
+            with RELAYS_LOCK:
+                relay_preexisting = RELAYS.get(arguments["participant"])
+            relay = get_claude_relay(arguments["participant"])
         target_thread_id = (
             codex_thread_id(request_meta) if arguments["runtime"] == "codex" else None
         )
@@ -571,6 +576,16 @@ def call_tool(
             with CAPABILITIES_LOCK:
                 if PENDING_BINDING_ROTATIONS.get(identity) is pending:
                     PENDING_BINDING_ROTATIONS.pop(identity, None)
+            if relay is not None and relay is not relay_preexisting:
+                # This bind created the relay; a definitive rejection must not
+                # leave a live delivery socket listening for a participant
+                # that never bound. Ambiguous failures keep it for idempotent
+                # retry, and a relay from an earlier successful bind of this
+                # participant is never touched.
+                with RELAYS_LOCK:
+                    if RELAYS.get(arguments["participant"]) is relay:
+                        RELAYS.pop(arguments["participant"], None)
+                relay.close()
             raise
         with CAPABILITIES_LOCK:
             BINDING_CAPABILITIES[identity] = binding_capability
