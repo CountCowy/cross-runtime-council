@@ -19,6 +19,18 @@ error reduction is.
 > [docs/compatibility.md](docs/compatibility.md) for exactly which
 > configurations have been exercised — nothing outside that list is claimed.
 
+## See a real decision first (60 seconds)
+
+Before installing anything, read
+[a real decision packet](examples/v020-verification-depth/decision-packet.md):
+three sessions (Claude Code, Codex, OpenCode CLI) genuinely deliberating this
+project's own v0.20 testing strategy — blind proposals, an adversarial
+challenge that forced two material revisions, and three surviving
+disagreements with empirical resolution paths. The unmodified
+[`final.json`](examples/v020-verification-depth/final.json) is committed
+beside it and digest-verified in CI. That artifact is what this tool
+produces; if it isn't useful to you, stop reading here.
+
 ## What the security model does — and does not — prove
 
 Read this before trusting Council with anything. Full details in

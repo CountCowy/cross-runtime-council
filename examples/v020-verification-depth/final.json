@@ -1,0 +1,358 @@
+{
+  "claim_ledger_ids": [
+    "claim-ce956afd43ffb54e158a",
+    "claim-a4c11f91b66ccfa40801",
+    "claim-d29e91cbdcc513916703",
+    "claim-f3ca04022d10ab10c655",
+    "claim-f88ffc146acd09f6a92a",
+    "claim-d8b84da1703166e15fbd",
+    "claim-b36e576ea3ea416c8976",
+    "claim-51e3d2278ee9cc18445d",
+    "claim-7060696e2c7d19e31825",
+    "claim-8efde892f66a30942d8e",
+    "claim-aa0436f5c8c4cfde14fc",
+    "claim-0868544d5a5a26801d02",
+    "claim-18647ed5e9c8c57689be",
+    "claim-e98df0bd834b2d105fd2",
+    "claim-843a218653e683d4513b",
+    "claim-80b84799c67772db4d73",
+    "claim-44ee470e6c2a18491576",
+    "claim-7d2fbb404b2aeacf6e4c"
+  ],
+  "convergence_challenge": [
+    {
+      "dialogue_id": "dlg-3db54d4ebf8b4bb8b4afad03e6c02a56",
+      "kind": "convergence_challenge",
+      "participant": "claude-example",
+      "payload": {
+        "counterexample": "Seed a sixth compound mutant: a broker that, after restart reconciliation of a claimed-but-unacknowledged envelope, treats a second identical submission as NEW work instead of an idempotent duplicate - directly violating protocol.md's 'identical submissions for the same participant, kind, and round are idempotent even after the dialogue advances'. A validity-maximizing sequencer emits mostly fresh well-formed operations; the probability that a 500-operation run replays an identical submission immediately after a crash-restart at that exact seam is small, so the gate passes at >=80% validity, the mutant survives, and the layer is dropped for zero yield. A gate that instead REQUIRES a fixed fraction of protocol-meaningful adversarial operations (identical resubmission, stale-round submission, duplicate ack, conflicting submission, re-poll after lease expiry) drawn from the documented recovery vocabulary hits that seam reliably in the same budget.",
+        "evidence": [
+          "protocol.md 'Delivery and recovery': identical submissions idempotent even after dialogue advances; stale rounds return no-state-change; conflicting second submissions fail closed; duplicate acknowledgement is safe; re-armed delivery is deduplicated by the exact relay - the documented recovery surface is adversarial-operation handling, which an all-valid operation stream never exercises.",
+          "claim-7060's own evidence lists the operation alphabet as 'submit/wait/restart/crash-at-boundary/unbind-rebind' - omitting the duplicate/stale/conflict operations that protocol.md treats as first-class recovery inputs, so the sequencer-value assessments were made over an incomplete alphabet.",
+          "Both the matrix mutant gate and the sequencer yield gate depend on the mutant corpus, yet no exchange claim prices its implementation; the named-failpoint mechanism (claim-aa04) is the natural low-cost carrier for it."
+        ],
+        "falsifiable_tests": [
+          "Gate redefinition test: stage-3 admission requires the generated distribution to contain at least 25% protocol-meaningful adversarial operations (identical resubmission, stale-round submission, duplicate acknowledgement, conflicting submission, re-poll after expiry), with 'invalid' reserved for schema-garbage only; if the redefined gate is unimplementable inside the 2-day box, the original validity-only gate stands and this challenge's first arm dies.",
+          "Idempotency-violation mutant: add the resubmit-after-restart-of-claimed-envelope mutant to the shared corpus; if the deterministic matrix already kills it with a scripted pair, the compound-coverage argument for the sequencer weakens and claim-b36e's softened form weakens further; if only an adversarial-mix sequencer kills it, the gate redefinition is vindicated.",
+          "Mutant pricing test: implement all six mutants as inverted failpoint behaviors in at most one focused day inside the core cap; exceeding that validates the unpriced-work premortem and forces the cap or the gate to move.",
+          "Clock-seam test: the one-day inventory must name an injectable time source for every lease/wake window within the invasiveness cap, or explicitly record transaction class 6 as live-matrix-only coverage rather than dropping it silently."
+        ],
+        "material_issue_found": true,
+        "premortem": "Six months out, three ways this plan failed: (1) The sequencer shipped gated on validity percentage, ran quiet, and was dropped; v0.21 recorded 'randomized coverage adds nothing' as evidence; a real duplicate-retry-after-crash defect later shipped in the class the sequencer never sampled. (2) The mutant corpus turned out to be unpriced work inside the hard 8-day cap - five deliberate broker defects each needing a patch mechanism and a suite run; the maintainer, out of budget, skipped the gate, and the matrix shipped self-confirming - the exact failure the gate existed to prevent. Mitigation exists and should be recorded: implement mutants as inverted failpoint behaviors (skip/duplicate/reorder at the already-named seams), bounding corpus cost at about one day. (3) Transaction class 6 (claim/wake lease recovery) silently dropped out of the matrix because lease expiry and the five-minute wake retry depend on wall-clock reads inside the broker; deterministic rows need an injectable time source, and if adding one exceeds the ~150-line invasiveness cap the inventory has no recorded fallback - the class disappears without any test failing.",
+        "reopen_claim_ids": [
+          "claim-7060696e2c7d19e31825",
+          "claim-b36e576ea3ea416c8976"
+        ],
+        "strongest_failure_mode": "The stage-3 admission gate is miscalibrated in a way that can silently invert its own verdict. The merged plan admits the sequencer only at '>=80% valid generated operations', but protocol.md's recovery semantics exist overwhelmingly to handle ADVERSARIAL operations: identical resubmission after crash (idempotent), stale-round submissions (no-state-change), conflicting second submissions (fail closed), duplicate acknowledgements (safe), re-armed delivery after rebind (deduplicated). A generator tuned to maximize broker-accepted valid operations systematically under-samples exactly this class, so the sequencer can pass its validity gate, run quiet, get recorded as 'zero yield beyond the matrix', and be dropped as theater - while the compound defect class it was built to explore (adversarial-op x crash x restart interleavings) was never actually sampled. The v0.21 full-Option-A go/no-go then reads 'randomization found nothing' from evidence that measured the wrong operation distribution."
+      },
+      "round": 3,
+      "schema_version": 1,
+      "submitted_at": "2026-08-24T23:21:45+00:00"
+    },
+    {
+      "dialogue_id": "dlg-3db54d4ebf8b4bb8b4afad03e6c02a56",
+      "kind": "convergence_challenge",
+      "participant": "codex-example",
+      "payload": {
+        "counterexample": "Stage 1 takes four days to extract durable checkers, named failpoints, and the artifact-versus-relay coverage map. The inventory then confirms six classes but finds registration/rebind and wake-lease cases requiring six more days. At day eight, two classes and the held-out mutation gate remain incomplete. Shipping violates the stated coverage gate; continuing violates the hard cap; silently dropping rows makes the 24-36-row and every-window claims false.",
+        "evidence": [
+          {
+            "claim": "Stage 1 is estimated at 2-4 focused days and Stage 2 at 4-6 or 5-8 focused days, so their upper bounds exceed an eight-day core cap.",
+            "source": "The merged ranges grounded in scripts/council.py, scripts/test_council.py, and references/protocol.md"
+          },
+          {
+            "claim": "Registration tombstones, relay re-arming, wake leasing, audit reconciliation, supersession, acknowledgements, and terminal delivery are distinct recovery surfaces; the one-day inventory can legitimately expand the matrix.",
+            "source": "references/protocol.md"
+          },
+          {
+            "claim": "The single-maintainer best-effort constraint makes an explicit scope-versus-release choice necessary when the estimate fails.",
+            "source": "README.md"
+          }
+        ],
+        "falsifiable_tests": [
+          "After the one-day inventory, sum the estimated remaining work for invariant extraction, failpoints, every in-scope structural class, mutation validation, and documentation. If the 80th-percentile total exceeds eight focused days, the maintainer must choose either a larger core budget or a narrower assurance claim before implementation continues.",
+          "Define the release blocker as completed invariant coverage plus mutation kills, not elapsed days; alternatively define the eight-day cap as absolute and explicitly list which rows and assurance claims move out of v0.20. Do not claim both simultaneously.",
+          "Hold out at least one mutation until after the checkers and five named mutants are fixed, so the mutation gate cannot be satisfied solely by assertions designed around a known mutant list.",
+          "Require the final v0.20 evidence map to distinguish completed, deferred, and relay/live-only recovery windows; any unmapped or deferred window prevents wording that the matrix covers every documented recovery window."
+        ],
+        "material_issue_found": true,
+        "premortem": "Assume v0.20 shipped on the eight-day cap. The matrix killed the five obvious mutants but omitted a registration-rebind boundary discovered late in the inventory. The release documentation still implies the recovery-window matrix is complete. A broker restart followed by an exact-session rebind later exposes a duplicate or lost delivery path. The postmortem finds that the plan treated a budget estimate as both a release deadline and a completeness guarantee without assigning the overrun decision to the maintainer.",
+        "reopen_claim_ids": [
+          "claim-ce956afd43ffb54e158a",
+          "claim-a4c11f91b66ccfa40801",
+          "claim-f88ffc146acd09f6a92a"
+        ],
+        "strongest_failure_mode": "The merged plan simultaneously treats the deterministic core as an eight-day hard cap and commits to deliverables whose own ranges total six to ten focused days before the two-day sequencer stretch. If the one-day inventory finds more structural classes or concurrency-only windows, the plan has no authorized rule for choosing between the release blocker and the cap."
+      },
+      "round": 3,
+      "schema_version": 1,
+      "submitted_at": "2026-08-24T23:20:53+00:00"
+    },
+    {
+      "dialogue_id": "dlg-3db54d4ebf8b4bb8b4afad03e6c02a56",
+      "kind": "convergence_challenge",
+      "participant": "opencode-example",
+      "payload": {
+        "counterexample": "Scenario defeating the shipped assurance story: v0.21 changes relay-adjacent dedupe behavior; all CI tiers pass including the mutant-killed matrix; the live matrix is skipped under release pressure because nothing in the release checklist gates on it; a duplicate-post regression reaches real sessions - undetected precisely because the coverage map assigned delivery-once to a tier nobody scheduled. Before concluding nonmaterial I actively attempted to refute the council's central factual premise: I inspected scripts/opencode_delivery_registry.ts in the local public checkout - dedupe tombstones live in an in-memory Map/Set with zero filesystem writes, confirming relay-side dedupe is memory-only and the claim-086854 rejection stands.",
+        "evidence": [
+          "protocol.md assigns external-tier verification to the maintainer-run live recovery matrix, which is optional per release and outside CI",
+          "Local checkout code inspection: opencode_delivery_registry.ts holds delivered/inFlight state purely in memory with no fs calls, corroborating the relay-boundary counterexample",
+          "All three residual disagreements are gated by already-scheduled work items (one-day inventory, mutant corpus, yield experiment), so reopening exchange cannot resolve them faster than synthesis plus execution"
+        ],
+        "falsifiable_tests": [
+          "Release-process test: the v0.20 release checklist contains the live-matrix run as a blocking row; absence of that row in RELEASE docs falsifies the mitigation.",
+          "Cap-arithmetic test: the synthesis states explicitly whether the one-day inventory sits inside or on top of the 8-day core cap; ambiguity there blocks sign-off.",
+          "Delivery-registry audit: during stage 1, confirm by code inspection that every relay-side dedupe path is memory-only; any persisted tombstone atomically coupled to broker state would resurrect claim-086854 and reopen the coverage-map design."
+        ],
+        "material_issue_found": false,
+        "premortem": "Six months out: the inventory day got absorbed into stage 1, stretching the core to nine days; the cap binds; stage 3 is dropped; the shared mutant-corpus comparison never runs so the v0.21 go/no-go defaults to intuition; two refactors rename failpoint-seam methods causing loud test breaks that consume the maintenance buffer; meanwhile the live matrix is skipped once - leaving compound-tier and relay-tier dark simultaneously when a restart-x-rebind duplicate-delivery bug ships. Prevention: make the live-matrix run an explicit blocking row in the release checklist, book the inventory as its own line item with a pre-agreed descope rule, and record corpus/yield results in the dialogue report so the v0.21 decision stays evidence-based.",
+        "reopen_claim_ids": [],
+        "strongest_failure_mode": "Assurance regression by substitution: v0.20 ships impressive CI recovery suites while exactly-once external delivery is reassigned to the maintainer-run live matrix, which remains unbudgeted and unscheduled; once CI looks comprehensive, a busy release skips the live run and the only tier verifying the relay boundary goes silently dark - the precise false-assurance mode this plan was designed to prevent. Secondary: cap arithmetic ambiguity - one participant books the one-day inventory inside stage 2 under the 8-day core while stage 1 is budgeted 2-4 days, so an unlucky inventory result can consume the stretch budget without anyone having decided that tradeoff."
+      },
+      "round": 3,
+      "schema_version": 1,
+      "submitted_at": "2026-08-24T23:30:33+00:00"
+    }
+  ],
+  "dialogue_id": "dlg-3db54d4ebf8b4bb8b4afad03e6c02a56",
+  "dialogue_schema_version": 2,
+  "parked_claims": [],
+  "representation_checks": [
+    {
+      "dialogue_id": "dlg-3db54d4ebf8b4bb8b4afad03e6c02a56",
+      "kind": "representation_check",
+      "participant": "codex-example",
+      "payload": {
+        "accurate": false,
+        "corrections": [
+          {
+            "correction": "Use the already-scoped stretch fallback: if the adversarial-mix gate cannot be implemented within two days, defer Stage 3 without delaying v0.20. If the maintainer is genuinely being offered validity-only as an alternative, label it as an unresolved user option that knowingly accepts the challenge's miscalibration risk, not as the recorded default.",
+            "issue": "The synthesis says the >=80% validity-only gate was rejected because it can optimize away protocol-adversarial operations, but then says that rejected gate should stand if the >=25% adversarial-mix gate cannot be implemented in the two-day box.",
+            "location": "user_decisions[0]"
+          }
+        ],
+        "decision_quality": {
+          "confidence": 0.96,
+          "hidden_assumptions": [
+            "The user_decisions[0] fallback assumes a gate explicitly rejected elsewhere in the same synthesis can remain the default without reintroducing the failure mode the challenge identified."
+          ],
+          "material_disputes_resolved": false,
+          "unresolved_claim_ids": [
+            "claim-7060696e2c7d19e31825",
+            "claim-d29e91cbdcc513916703",
+            "claim-b36e576ea3ea416c8976"
+          ]
+        }
+      },
+      "round": 3,
+      "schema_version": 1,
+      "submitted_at": "2026-08-24T23:32:57+00:00"
+    },
+    {
+      "dialogue_id": "dlg-3db54d4ebf8b4bb8b4afad03e6c02a56",
+      "kind": "representation_check",
+      "participant": "opencode-example",
+      "payload": {
+        "accurate": true,
+        "corrections": [],
+        "decision_quality": {
+          "confidence": 0.85,
+          "hidden_assumptions": [
+            "All effort figures (2-4/5-8/2-day boxes, <=1-day mutants) are untested priors; no prototype has been timed.",
+            "Stage-1 code audit will confirm memory-only dedupe across every relay path; only the OpenCode delivery registry was code-verified in this dialogue.",
+            "The five named mutants are semantically observable through documented invariants and none is equivalent to correct behavior.",
+            "The revised >=25 percent adversarial-mix admission gate is implementable inside the 2-day stage-3 box; the synthesis itself provides the fallback if not.",
+            "Maintainer ratification of the cap-overrun rule, inventory budgeting, and live-matrix checklist row is pending; until then those controls are recommendations, not commitments.",
+            "random.Random determinism holds under the CI platform/version pin."
+          ],
+          "material_disputes_resolved": false,
+          "unresolved_claim_ids": [
+            "claim-7060696e2c7d19e31825",
+            "claim-d29e91cbdcc513916703",
+            "claim-b36e576ea3ea416c8976"
+          ]
+        }
+      },
+      "round": 3,
+      "schema_version": 1,
+      "submitted_at": "2026-08-24T23:33:49+00:00"
+    }
+  ],
+  "retired_claims": [],
+  "revision_checks": [
+    {
+      "dialogue_id": "dlg-3db54d4ebf8b4bb8b4afad03e6c02a56",
+      "kind": "revision_check",
+      "participant": "codex-example",
+      "payload": {
+        "accurate": true,
+        "corrections": [],
+        "decision_quality": {
+          "confidence": 0.99,
+          "hidden_assumptions": [],
+          "material_disputes_resolved": false,
+          "unresolved_claim_ids": [
+            "claim-7060696e2c7d19e31825",
+            "claim-d29e91cbdcc513916703",
+            "claim-b36e576ea3ea416c8976"
+          ]
+        }
+      },
+      "round": 3,
+      "schema_version": 1,
+      "submitted_at": "2026-08-24T23:35:46+00:00"
+    },
+    {
+      "dialogue_id": "dlg-3db54d4ebf8b4bb8b4afad03e6c02a56",
+      "kind": "revision_check",
+      "participant": "opencode-example",
+      "payload": {
+        "accurate": true,
+        "corrections": [],
+        "decision_quality": {
+          "confidence": 0.9,
+          "hidden_assumptions": [
+            "The corrected stage-3 default is defer-if-gate-unimplementable; the validity-only gate survives only as an explicitly ratified opt-in accepting the challenge-identified miscalibration risk.",
+            "All effort figures remain untested priors; no prototype has been timed.",
+            "Stage-1 code audit must still confirm memory-only dedupe across every relay path; only the OpenCode delivery registry was code-verified in this dialogue.",
+            "The five named mutants are semantically observable through documented invariants and none is behaviorally equivalent to correct code.",
+            "Maintainer ratification of the cap-overrun rule, inventory budgeting position, and live-matrix blocking checklist row remains pending.",
+            "random.Random determinism holds under the CI platform/version pin."
+          ],
+          "material_disputes_resolved": false,
+          "unresolved_claim_ids": [
+            "claim-7060696e2c7d19e31825",
+            "claim-d29e91cbdcc513916703",
+            "claim-b36e576ea3ea416c8976"
+          ]
+        }
+      },
+      "round": 3,
+      "schema_version": 1,
+      "submitted_at": "2026-08-24T23:36:34+00:00"
+    }
+  ],
+  "schema_version": 1,
+  "synthesis": {
+    "dialogue_id": "dlg-3db54d4ebf8b4bb8b4afad03e6c02a56",
+    "kind": "synthesis",
+    "participant": "claude-example",
+    "payload": {
+      "disagreements": [
+        {
+          "claim_id": "claim-7060696e2c7d19e31825",
+          "decision_consequence": "Sets the v0.21 default for whether a property-testing dependency and full model are ever justified.",
+          "resolution_path": "Shared mutant-corpus comparison recorded during stage 3 and the v0.21 spike; kill-rate parity sustains the claim, a structurally unreachable defect class kills it.",
+          "summary": "Whether a seeded stdlib sequencer captures most of full Option A's marginal defect-finding value (shrinking/structured generation not decision-material). Final positions: one participant rejects (confidence 0.9: seeds reproduce but do not minimize; unguided random under-samples a state-dependent operation alphabet), two hold uncertain (mechanism objections real but untested against this broker's small alphabet)."
+        },
+        {
+          "claim_id": "claim-d29e91cbdcc513916703",
+          "decision_consequence": "Determines how much stretch capacity exists for stage 3 under the cap.",
+          "resolution_path": "The one-day inventory maps every documented window to a named seam and prices uncovered rows; sub-five-day estimate vindicates the original figure.",
+          "summary": "Whether matrix expansion fits 3-5 focused days: all three participants ended uncertain after the fuller window enumeration (registration tombstones, rebind re-arming, wake leases, terminal recovery); planning proceeds on the 5-8 day envelope."
+        },
+        {
+          "claim_id": "claim-b36e576ea3ea416c8976",
+          "decision_consequence": "If the sequencer is deferred by the cap, compound paths stay unexercised for another release cycle - accepted risk the maintainer owns explicitly.",
+          "resolution_path": "The revised stage-3 admission gate resolves it operationally; the idempotency-violation mutant tests whether only an adversarial-mix sequencer reaches the class.",
+          "summary": "Whether compound-sequence coverage is a v0.20 necessity or a measured experiment: two accept (in the softened, yield-gated form), one uncertain (compound risk credible but historical-yield attribution is unaudited inference; the public repository contains no defect audit)."
+        },
+        {
+          "claim_id": "claim-0868544d5a5a26801d02",
+          "decision_consequence": "v0.20 release wording must never present exactly-once delivery as artifact-proven.",
+          "resolution_path": "Stage-1 code audit confirms every relay-side dedup path is memory-only; any persisted tombstone atomically coupled to broker state would resurrect the original claim and reopen the coverage-map design.",
+          "summary": "RESOLVED BY CHALLENGE, recorded for the artifact: the original artifact-only invariant claim was unanimously rejected after a relay-boundary counterexample; one participant verified by code inspection that relay dedup tombstones are memory-only. The surviving replacement: artifact checkers cover broker-durable invariants only; delivery-once is reassigned (not scoped out) to relay-level/live-matrix observation."
+        }
+      ],
+      "evidence_gaps": [
+        "No historical defect audit exists in the public repository establishing which recovery-defect class reviews actually missed; the compound-path attribution is inference. A lightweight audit of past fixes would sharpen the v0.21 decision.",
+        "The seeded sequencer's marginal defect-finding value is unmeasured in both directions; the shared mutant corpus with per-stage kill records is the designated resolver and must actually be recorded, or the v0.21 go/no-go reverts to intuition.",
+        "The 3-5 vs 5-8 focused-day estimate spread is unresolved until the one-day inventory runs; no participant has priced the full window list against existing tests.",
+        "Memory-only relay dedup was code-verified for opencode_delivery_registry.ts only; the stage-1 audit must confirm the remaining relay paths before the coverage map is finalized.",
+        "The live recovery matrix's schedule, budget, and blocking status are not documented in the public repository's release process; until the checklist row exists, the delivery-once tier is verification by good intentions."
+      ],
+      "executive_summary": "DECISION: v0.20 verification depth for the cross-runtime-council broker. All three participants converged on a staged hybrid anchored on Option B, then the mandatory convergence challenge produced two material revisions and one verified confirmation that are folded in below.\n\nPLAN (challenge-revised): Stage 1 (2-4 focused days): extract the documented recovery invariants as reusable checkers scoped strictly to durable broker artifacts; add test-only named failpoints at the persistence seams (~150-line invasiveness cap, test-local wrapper fallback); emit an invariant coverage map assigning every documented invariant to either the artifact oracle or a named relay-level/live-matrix observation - exactly-once EXTERNAL relay delivery is asserted only via the live matrix, never from broker artifacts (unanimously rejected claim, confirmed by code inspection: relay dedup state is memory-only in opencode_delivery_registry.ts). Stage 2: a one-day recovery-window inventory booked as its own line item (including an injectable-time-source check for lease/wake windows), then a ~24-36-row deterministic crash matrix over six structural transaction classes, release-gated on killing the mutant corpus - mutants implemented as inverted failpoint behaviors (priced <=1 day), with at least one held-out mutant not known to the checker author. Stage 3 (max 2 days, after the core): a state-aware seeded stdlib sequencer whose admission gate was REVISED by challenge: the generated distribution must include >=25% protocol-meaningful adversarial operations (identical resubmission, stale-round submission, duplicate ack, conflicting submission, re-poll after expiry) - not merely >=80% valid operations, which would steer generation away from the broker's core recovery surface - plus a replayable trace and >=1 kill of a compound mutant the matrix cannot express; zero yield drops it without prejudice. Full Option A (property-based model, possible dependency) is deferred to a v0.21 go/no-go gated on pure-core extraction or a 2-day spike meeting three entry criteria, decided on recorded mutant-corpus evidence.\n\nMATERIAL CHALLENGE FINDINGS SURFACED AT THE ROUND LIMIT: (1) Gate miscalibration - a validity-only sequencer gate under-samples the adversarial operations protocol.md's recovery semantics exist to handle, so a quiet sequencer could be dropped on evidence measuring the wrong distribution; revision above. (2) Cap-arithmetic contradiction - stage upper bounds (2-4 + 5-8 days) exceed the 8-day core cap, and the plan cannot simultaneously treat the cap as a deadline and the coverage claim as complete; the maintainer must pre-commit a rule: if the post-inventory 80th-percentile estimate exceeds 8 days, either extend the budget or explicitly narrow the assurance claim (deferred rows listed, never silently dropped). (3) Assurance substitution risk - reassigning delivery-once to the live matrix is only safe if the live-matrix run becomes a blocking release-checklist row; otherwise the one tier verifying the relay boundary goes silently dark.\n\nSURVIVING DISAGREEMENTS: whether the seeded sequencer captures most of full Option A's marginal value (one reject at 0.9, two uncertain; resolved empirically by the shared mutant-corpus comparison); whether the matrix expansion fits 3-5 vs 5-8 focused days (all uncertain; resolved by the one-day inventory); whether compound-sequence coverage is a v0.20 necessity or a measured experiment (split accept/uncertain; practically resolved by the admission gate). None warrants a fourth round - each resolves only through scheduled work, not deliberation.\n\nDECISION AUTHORITY: the maintainer ratifies the revised gate, the cap rule, the inventory's budget position, and the live-matrix checklist change.",
+      "recommendation": "Adopt the challenge-revised staged hybrid: durable-artifact invariant checkers + named failpoints + invariant coverage map (stage 1); one-day window inventory with clock-seam check, then the six-class deterministic crash matrix gated on killing the failpoint-implemented mutant corpus including one held-out mutant (stage 2, 8-focused-day core cap with a pre-committed overrun rule: extend budget or explicitly narrow the assurance claim); a 2-day state-aware seeded stdlib sequencer admitted only with >=25% protocol-adversarial operation mix, replayable traces, and >=1 unique compound-mutant kill (stage 3, stretch); exactly-once external delivery verified only by the live recovery matrix, which becomes a blocking release-checklist row; full Option A deferred to a v0.21 evidence-gated go/no-go (pure-core extraction or three-entry-criteria spike, judged on recorded corpus results). No fourth round: every open question has a scheduled empirical resolver.",
+      "rejected_alternatives": [
+        "Pure Option A in v0.20: independent estimates of 15-30 focused days to 4-8 part-time weeks exceed a solo best-effort release budget; building a model before invariant checkers exist risks the vacuous-harness failure the brief names.",
+        "Pure Option B as the permanent end state: unanimously rejected - a finite human-enumerated matrix cannot exhaust compound recovery interleavings (restart-x-retry-x-rebind-x-supersession).",
+        "Adopting a property-testing dependency in v0.20: pinned-seed stdlib randomness satisfies determinism, reproduction, and dependency constraints; whether library-grade generation/shrinking is ever needed is deferred to the v0.21 evidence gate.",
+        "Phase-by-boundary combinatorial matrix: superseded by six structural transaction classes (~24-36 rows) covering each distinct persistence choreography without duplicating shared staged-outbox/audit-intent mechanics.",
+        "Validity-only stage-3 admission gate (>=80% valid operations alone): rejected by convergence challenge - it optimizes generation away from the duplicate/stale/conflicting operations that constitute the broker's documented recovery surface.",
+        "Artifact-only invariant formulation with scope-out of resistant invariants: rejected via counterexample and code inspection; replaced by explicit reassignment to the relay/live-matrix tier."
+      ],
+      "user_decisions": [
+        "Ratify or amend the challenge-revised stage-3 admission gate: >=25% protocol-adversarial operation mix (with 'invalid' reserved for schema-garbage) replacing the validity-only criterion; if unimplementable inside the 2-day box, the validity-only gate stands per the recorded falsifiable test.",
+        "Pre-commit the cap rule before stage 2: if the post-inventory 80th-percentile estimate exceeds the 8-focused-day core cap, choose EITHER extending the budget OR narrowing the v0.20 assurance claim with an explicit deferred-row list - the plan may not claim both the cap and complete coverage.",
+        "Decide whether the one-day inventory is booked inside or on top of the 8-day core cap (the ambiguity was flagged by challenge; either answer is workable, silence is not).",
+        "Approve making the maintainer-run live recovery matrix a blocking row in the release checklist, since exactly-once external delivery assurance now lives entirely in that tier.",
+        "Confirm the v0.21 full-Option-A go/no-go procedure: pure-core extraction or the two-day spike meeting the three entry criteria (independent model transitions, bounded valid-operation generation, automatic minimal replay), judged against recorded mutant-corpus results.",
+        "No fourth exchange round is requested by any participant: every surviving disagreement carries a scheduled empirical resolver; authorize implementation sequencing at your discretion - this council output is planning input, not implementation authorization."
+      ]
+    },
+    "round": 3,
+    "schema_version": 1,
+    "submitted_at": "2026-08-24T23:32:05+00:00"
+  },
+  "synthesis_revision": {
+    "dialogue_id": "dlg-3db54d4ebf8b4bb8b4afad03e6c02a56",
+    "kind": "synthesis_revision",
+    "participant": "claude-example",
+    "payload": {
+      "disagreements": [
+        {
+          "claim_id": "claim-7060696e2c7d19e31825",
+          "decision_consequence": "Sets the v0.21 default for whether a property-testing dependency and full model are ever justified.",
+          "resolution_path": "Shared mutant-corpus comparison recorded during stage 3 and the v0.21 spike; kill-rate parity sustains the claim, a structurally unreachable defect class kills it.",
+          "summary": "Whether a seeded stdlib sequencer captures most of full Option A's marginal defect-finding value (shrinking/structured generation not decision-material). Final positions: one participant rejects (confidence 0.9: seeds reproduce but do not minimize; unguided random under-samples a state-dependent operation alphabet), two hold uncertain (mechanism objections real but untested against this broker's small alphabet)."
+        },
+        {
+          "claim_id": "claim-d29e91cbdcc513916703",
+          "decision_consequence": "Determines how much stretch capacity exists for stage 3 under the cap.",
+          "resolution_path": "The one-day inventory maps every documented window to a named seam and prices uncovered rows; sub-five-day estimate vindicates the original figure.",
+          "summary": "Whether matrix expansion fits 3-5 focused days: all three participants ended uncertain after the fuller window enumeration (registration tombstones, rebind re-arming, wake leases, terminal recovery); planning proceeds on the 5-8 day envelope."
+        },
+        {
+          "claim_id": "claim-b36e576ea3ea416c8976",
+          "decision_consequence": "If the sequencer is deferred by the cap, compound paths stay unexercised for another release cycle - accepted risk the maintainer owns explicitly.",
+          "resolution_path": "The revised stage-3 admission gate resolves it operationally; the idempotency-violation mutant tests whether only an adversarial-mix sequencer reaches the class.",
+          "summary": "Whether compound-sequence coverage is a v0.20 necessity or a measured experiment: two accept (in the softened, yield-gated form), one uncertain (compound risk credible but historical-yield attribution is unaudited inference; the public repository contains no defect audit)."
+        },
+        {
+          "claim_id": "claim-0868544d5a5a26801d02",
+          "decision_consequence": "v0.20 release wording must never present exactly-once delivery as artifact-proven.",
+          "resolution_path": "Stage-1 code audit confirms every relay-side dedup path is memory-only; any persisted tombstone atomically coupled to broker state would resurrect the original claim and reopen the coverage-map design.",
+          "summary": "RESOLVED BY CHALLENGE, recorded for the artifact: the original artifact-only invariant claim was unanimously rejected after a relay-boundary counterexample; one participant verified by code inspection that relay dedup tombstones are memory-only. The surviving replacement: artifact checkers cover broker-durable invariants only; delivery-once is reassigned (not scoped out) to relay-level/live-matrix observation."
+        }
+      ],
+      "evidence_gaps": [
+        "No historical defect audit exists in the public repository establishing which recovery-defect class reviews actually missed; the compound-path attribution is inference. A lightweight audit of past fixes would sharpen the v0.21 decision.",
+        "The seeded sequencer's marginal defect-finding value is unmeasured in both directions; the shared mutant corpus with per-stage kill records is the designated resolver and must actually be recorded, or the v0.21 go/no-go reverts to intuition.",
+        "The 3-5 vs 5-8 focused-day estimate spread is unresolved until the one-day inventory runs; no participant has priced the full window list against existing tests.",
+        "Memory-only relay dedup was code-verified for opencode_delivery_registry.ts only; the stage-1 audit must confirm the remaining relay paths before the coverage map is finalized.",
+        "The live recovery matrix's schedule, budget, and blocking status are not documented in the public repository's release process; until the checklist row exists, the delivery-once tier is verification by good intentions."
+      ],
+      "executive_summary": "DECISION: v0.20 verification depth for the cross-runtime-council broker. All three participants converged on a staged hybrid anchored on Option B, then the mandatory convergence challenge produced two material revisions and one verified confirmation that are folded in below.\n\nPLAN (challenge-revised): Stage 1 (2-4 focused days): extract the documented recovery invariants as reusable checkers scoped strictly to durable broker artifacts; add test-only named failpoints at the persistence seams (~150-line invasiveness cap, test-local wrapper fallback); emit an invariant coverage map assigning every documented invariant to either the artifact oracle or a named relay-level/live-matrix observation - exactly-once EXTERNAL relay delivery is asserted only via the live matrix, never from broker artifacts (unanimously rejected claim, confirmed by code inspection: relay dedup state is memory-only in opencode_delivery_registry.ts). Stage 2: a one-day recovery-window inventory booked as its own line item (including an injectable-time-source check for lease/wake windows), then a ~24-36-row deterministic crash matrix over six structural transaction classes, release-gated on killing the mutant corpus - mutants implemented as inverted failpoint behaviors (priced <=1 day), with at least one held-out mutant not known to the checker author. Stage 3 (max 2 days, after the core): a state-aware seeded stdlib sequencer whose admission gate was REVISED by challenge: the generated distribution must include >=25% protocol-meaningful adversarial operations (identical resubmission, stale-round submission, duplicate ack, conflicting submission, re-poll after expiry) - not merely >=80% valid operations, which would steer generation away from the broker's core recovery surface - plus a replayable trace and >=1 kill of a compound mutant the matrix cannot express; if the adversarial-mix gate cannot be implemented within the 2-day box, stage 3 is deferred without delaying v0.20; zero yield likewise drops it without prejudice. Full Option A (property-based model, possible dependency) is deferred to a v0.21 go/no-go gated on pure-core extraction or a 2-day spike meeting three entry criteria, decided on recorded mutant-corpus evidence.\n\nMATERIAL CHALLENGE FINDINGS SURFACED AT THE ROUND LIMIT: (1) Gate miscalibration - a validity-only sequencer gate under-samples the adversarial operations protocol.md's recovery semantics exist to handle, so a quiet sequencer could be dropped on evidence measuring the wrong distribution; revision above. (2) Cap-arithmetic contradiction - stage upper bounds (2-4 + 5-8 days) exceed the 8-day core cap, and the plan cannot simultaneously treat the cap as a deadline and the coverage claim as complete; the maintainer must pre-commit a rule: if the post-inventory 80th-percentile estimate exceeds 8 days, either extend the budget or explicitly narrow the assurance claim (deferred rows listed, never silently dropped). (3) Assurance substitution risk - reassigning delivery-once to the live matrix is only safe if the live-matrix run becomes a blocking release-checklist row; otherwise the one tier verifying the relay boundary goes silently dark.\n\nSURVIVING DISAGREEMENTS: whether the seeded sequencer captures most of full Option A's marginal value (one reject at 0.9, two uncertain; resolved empirically by the shared mutant-corpus comparison); whether the matrix expansion fits 3-5 vs 5-8 focused days (all uncertain; resolved by the one-day inventory); whether compound-sequence coverage is a v0.20 necessity or a measured experiment (split accept/uncertain; practically resolved by the admission gate). None warrants a fourth round - each resolves only through scheduled work, not deliberation.\n\nDECISION AUTHORITY: the maintainer ratifies the revised gate, the cap rule, the inventory's budget position, and the live-matrix checklist change.",
+      "recommendation": "Adopt the challenge-revised staged hybrid: durable-artifact invariant checkers + named failpoints + invariant coverage map (stage 1); one-day window inventory with clock-seam check, then the six-class deterministic crash matrix gated on killing the failpoint-implemented mutant corpus including one held-out mutant (stage 2, 8-focused-day core cap with a pre-committed overrun rule: extend budget or explicitly narrow the assurance claim); a 2-day state-aware seeded stdlib sequencer admitted only with >=25% protocol-adversarial operation mix, replayable traces, and >=1 unique compound-mutant kill - deferred without delaying v0.20 if that gate is unimplementable in the box (stage 3, stretch); exactly-once external delivery verified only by the live recovery matrix, which becomes a blocking release-checklist row; full Option A deferred to a v0.21 evidence-gated go/no-go (pure-core extraction or three-entry-criteria spike, judged on recorded corpus results). No fourth round: every open question has a scheduled empirical resolver.",
+      "rejected_alternatives": [
+        "Pure Option A in v0.20: independent estimates of 15-30 focused days to 4-8 part-time weeks exceed a solo best-effort release budget; building a model before invariant checkers exist risks the vacuous-harness failure the brief names.",
+        "Pure Option B as the permanent end state: unanimously rejected - a finite human-enumerated matrix cannot exhaust compound recovery interleavings (restart-x-retry-x-rebind-x-supersession).",
+        "Adopting a property-testing dependency in v0.20: pinned-seed stdlib randomness satisfies determinism, reproduction, and dependency constraints; whether library-grade generation/shrinking is ever needed is deferred to the v0.21 evidence gate.",
+        "Phase-by-boundary combinatorial matrix: superseded by six structural transaction classes (~24-36 rows) covering each distinct persistence choreography without duplicating shared staged-outbox/audit-intent mechanics.",
+        "Validity-only stage-3 admission gate (>=80% valid operations alone): rejected by convergence challenge - it optimizes generation away from the duplicate/stale/conflicting operations that constitute the broker's documented recovery surface.",
+        "Artifact-only invariant formulation with scope-out of resistant invariants: rejected via counterexample and code inspection; replaced by explicit reassignment to the relay/live-matrix tier."
+      ],
+      "user_decisions": [
+        "Ratify or amend the challenge-revised stage-3 admission gate: >=25% protocol-adversarial operation mix (with 'invalid' reserved for schema-garbage) replacing the validity-only criterion. CORRECTED PER REPRESENTATION CHECK: if the adversarial-mix gate cannot be implemented within the 2-day box, the recorded default is to DEFER stage 3 without delaying v0.20 (the already-scoped stretch fallback). Running the validity-only gate instead is available to you only as an explicit opt-in that knowingly accepts the challenge-identified miscalibration risk - it is not the default, since that gate was rejected by this dialogue's own challenge.",
+        "Pre-commit the cap rule before stage 2: if the post-inventory 80th-percentile estimate exceeds the 8-focused-day core cap, choose EITHER extending the budget OR narrowing the v0.20 assurance claim with an explicit deferred-row list - the plan may not claim both the cap and complete coverage.",
+        "Decide whether the one-day inventory is booked inside or on top of the 8-day core cap (the ambiguity was flagged by challenge; either answer is workable, silence is not).",
+        "Approve making the maintainer-run live recovery matrix a blocking row in the release checklist, since exactly-once external delivery assurance now lives entirely in that tier.",
+        "Confirm the v0.21 full-Option-A go/no-go procedure: pure-core extraction or the two-day spike meeting the three entry criteria (independent model transitions, bounded valid-operation generation, automatic minimal replay), judged against recorded mutant-corpus results.",
+        "No fourth exchange round is requested by any participant: every surviving disagreement carries a scheduled empirical resolver; authorize implementation sequencing at your discretion - this council output is planning input, not implementation authorization."
+      ]
+    },
+    "round": 3,
+    "schema_version": 1,
+    "submitted_at": "2026-08-24T23:35:27+00:00"
+  }
+}

@@ -41,6 +41,9 @@ jobs:
         working-directory: scripts
       - name: Lifecycle script syntax
         run: for f in install/*.sh; do sh -n "$f"; done
+      - name: Example decision-packet digest binding
+        run: shasum -a 256 -c final.json.sha256
+        working-directory: examples/v020-verification-depth
 
   secret-scan:
     runs-on: ubuntu-latest
