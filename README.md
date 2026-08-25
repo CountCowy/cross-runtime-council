@@ -31,6 +31,26 @@ disagreements with empirical resolution paths. The unmodified
 beside it and digest-verified in CI. That artifact is what this tool
 produces; if it isn't useful to you, stop reading here.
 
+## Quick start
+
+Fastest first dialogue: [docs/quickstart.md](docs/quickstart.md) — two Claude
+Code sessions, one runtime. Clean-room validated: a non-author on a fresh
+macOS account completed it from that page alone in under 14 minutes
+(validation details are stamped on the page). Full multi-runtime setup and
+requirements live in [docs/install.md](docs/install.md). The short version:
+
+```
+git clone https://github.com/CountCowy/cross-runtime-council ~/.claude/skills/council
+```
+
+Council currently uses a **fixed layout**: the payload lives at
+`~/.claude/skills/council` and shared state at `~/.claude/peer-consults`
+(with an optional `~/.codex/peer-consults` symlink). Other locations are
+unsupported. Then, per runtime, follow the binding steps in
+[SKILL.md](SKILL.md) (Claude Code), [agents/openai.yaml](agents/openai.yaml)
+(Codex), and the OpenCode plugin/tool setup in
+[docs/install.md](docs/install.md).
+
 ## What the security model does — and does not — prove
 
 Read this before trusting Council with anything. Full details in
@@ -50,26 +70,6 @@ Read this before trusting Council with anything. Full details in
   model/provider identity. Runtime-origin proof authenticates where a process
   came from — nothing more. Council is a coordination protocol with guardrails,
   **not** a sandbox and not a complete cross-agent trust boundary.
-
-## Quick start
-
-Fastest first dialogue: [docs/quickstart.md](docs/quickstart.md) — two Claude
-Code sessions, one runtime, target ~15 minutes (clean-room validation of that
-path is scheduled and its status is stamped on the page). Full multi-runtime
-setup and requirements live in [docs/install.md](docs/install.md).
-The short version:
-
-```
-git clone <repo-url> ~/.claude/skills/council
-```
-
-Council currently uses a **fixed layout**: the payload lives at
-`~/.claude/skills/council` and shared state at `~/.claude/peer-consults`
-(with an optional `~/.codex/peer-consults` symlink). Other locations are
-unsupported. Then, per runtime, follow the binding steps in
-[SKILL.md](SKILL.md) (Claude Code), [agents/openai.yaml](agents/openai.yaml)
-(Codex), and the OpenCode plugin/tool setup in
-[docs/install.md](docs/install.md).
 
 ## Repository layout
 

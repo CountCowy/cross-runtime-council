@@ -4,11 +4,13 @@ Two Claude Code sessions on one Mac form a complete, fully authenticated
 council — no Codex, no OpenCode, no executable pinning. This is the shortest
 honest path from clone to a real decision packet.
 
-> **Validation status:** these steps were verified against the author's
-> working installation on 2026-08-24 (Claude Code 2.1.241, macOS 26.5.2,
-> broker v0.18.7). A clean-room walkthrough by a non-author on a fresh
-> account is scheduled; until it passes and this block is re-stamped, treat
-> the 15-minute figure as a target, not a measurement.
+> **Validation status: clean-room validated.** A non-author on a fresh macOS
+> standard account completed these steps from this page alone on 2026-08-24
+> in under 14 minutes — including recovery, via the troubleshooting section
+> below, from the multi-user socket-directory collision — with zero
+> undocumented interventions (Claude Code 2.1.243, macOS 26.5.2, broker
+> v0.18.7). Step 7 (the report command) was not exercised in that run. A
+> Claude Code update can still move the transport; see "If something fails".
 
 ## 0. Prerequisites (~2 min)
 
