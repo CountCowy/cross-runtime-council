@@ -53,7 +53,10 @@ Read this before trusting Council with anything. Full details in
 
 ## Quick start
 
-Requirements and the full walkthrough live in [docs/install.md](docs/install.md).
+Fastest first dialogue: [docs/quickstart.md](docs/quickstart.md) — two Claude
+Code sessions, one runtime, target ~15 minutes (clean-room validation of that
+path is scheduled and its status is stamped on the page). Full multi-runtime
+setup and requirements live in [docs/install.md](docs/install.md).
 The short version:
 
 ```

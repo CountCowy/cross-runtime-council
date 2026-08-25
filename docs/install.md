@@ -1,5 +1,8 @@
 # Installation
 
+For the fastest first dialogue (two Claude Code sessions, one runtime), see
+[quickstart.md](quickstart.md); this page covers full multi-runtime setup.
+
 Council uses a **fixed layout** (see [compatibility.md](compatibility.md)):
 the payload lives at `~/.claude/skills/council`, shared state at
 `~/.claude/peer-consults`. Other locations are unsupported.
