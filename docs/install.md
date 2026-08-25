@@ -178,6 +178,14 @@ operations, or read dialogue content.
 - **"untrusted daemon" / bind refusals**: the broker authenticates the
   launcher process chain; shells and unsigned launchers are refused by
   design. Bind from inside the runtime, not from a terminal.
+- **Claude bind fails with "did not export its messaging socket"**: Claude
+  Code silently disables cross-session messaging when it cannot own its socket
+  directory (default `/tmp/cc-socks` — shared by every user of the Mac; on a
+  multi-user machine only the first user to run Claude Code owns it). Check
+  `ls -ld /tmp/cc-socks`; if another user owns it, start the Claude Code
+  sessions you intend to bind with `CLAUDE_CODE_TMPDIR` pointed at a private
+  `0700` directory you own (see the same entry in
+  [quickstart.md](quickstart.md) for the exact commands).
 - **OpenCode bind fails after an update**: the pin is stale. Re-pin, restart
   OpenCode, retry.
 - **Broker version mismatch**: an adapter and broker from different versions

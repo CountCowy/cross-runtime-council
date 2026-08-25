@@ -174,7 +174,13 @@ class ClaudeSessionRelay:
 def get_claude_relay(participant: str) -> ClaudeSessionRelay:
     claude_socket = os.environ.get("CLAUDE_CODE_MESSAGING_SOCKET")
     if not claude_socket:
-        raise CouncilError("Claude session did not export its messaging socket to the council MCP process")
+        raise CouncilError(
+            "Claude session did not export its messaging socket to the council MCP process. "
+            "Claude Code disables cross-session messaging silently when it cannot own its "
+            "socket directory (default /tmp/cc-socks -- shared by every user of this Mac). "
+            "Check `ls -ld /tmp/cc-socks`; if another user owns it, restart this Claude Code "
+            "session with CLAUDE_CODE_TMPDIR pointed at a private 0700 directory you own."
+        )
     with RELAYS_LOCK:
         relay = RELAYS.get(participant)
         if relay and relay.claude_socket == claude_socket:

@@ -100,6 +100,19 @@ removes everything).
 
 - **The sessions have no `council_*` tools** — they were started before step
   2. Open new sessions.
+- **Bind fails with "Claude session did not export its messaging socket"** —
+  Claude Code silently disables cross-session messaging when it cannot own its
+  socket directory. The default location is `/tmp/cc-socks`, which is shared by
+  every user of the Mac: on a multi-user machine, whichever user ran Claude
+  Code first owns it, and every other user hits this. Check with
+  `ls -ld /tmp/cc-socks`. If it is owned by someone else, start **both**
+  sessions from a terminal with a private socket directory instead, then redo
+  steps 4–5:
+
+  ```
+  mkdir -p ~/.claude/tmp && chmod 700 ~/.claude/tmp
+  CLAUDE_CODE_TMPDIR="$HOME/.claude/tmp" claude
+  ```
 - **Bind or delivery fails on steps that worked before** — suspect a Claude
   Code version change: this transport has no version pin, so vendor updates
   can move it. Compare `claude --version` against the validated tuple at the
