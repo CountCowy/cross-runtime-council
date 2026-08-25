@@ -94,9 +94,10 @@ finished packet looks like, see the
 ## 8. Clean up
 
 Tell each session: *"Unbind this session from the council."* Dialogue records
-persist under `~/.claude/peer-consults` (see
-[install.md](install.md) for state lifecycle; `uninstall.sh --purge-state`
-removes everything).
+persist under `~/.claude/peer-consults`. To remove a finished dialogue's
+content, use the `delete` subcommand (see "Deleting dialogue records" in
+[install.md](install.md) — a minimal tombstone persists);
+`uninstall.sh --purge-state` removes everything.
 
 ## If something fails
 

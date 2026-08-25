@@ -5399,5 +5399,217 @@ class CouncilBrokerTests(unittest.TestCase):
         self.assertIn("council_wake_ack", names)
 
 
+class TerminalDialogueDeletionTests(unittest.TestCase):
+    def setUp(self):
+        BINDING_CAPABILITIES.clear()
+        PENDING_BINDING_ROTATIONS.clear()
+        PENDING_EXTENSION_OPERATIONS.clear()
+        PENDING_ROUTER_ROTATIONS.clear()
+        ROUTER_CAPABILITIES.clear()
+        RELAYS.clear()
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name) / "state"
+        self.claim_id_salt_patch = mock.patch(
+            "council.new_claim_id_salt", return_value=TEST_CLAIM_ID_SALT
+        )
+        self.claim_id_salt_patch.start()
+        self.broker = CouncilBroker(self.root)
+        self.cdhash_patch = mock.patch(
+            "council._codesign_cdhash", return_value="c" * 40
+        )
+        self.cdhash_patch.start()
+
+    def tearDown(self):
+        self.cdhash_patch.stop()
+        self.claim_id_salt_patch.stop()
+        self.temporary.cleanup()
+
+    def bind_pair(self):
+        self.broker.bind(
+            "codex",
+            "alpha",
+            "Alpha",
+            "test",
+            target_thread_id="thread-alpha",
+            binding_capability=CAP_ALPHA,
+        )
+        self.broker.bind(
+            "codex",
+            "beta",
+            "Beta",
+            "test",
+            target_thread_id="thread-beta",
+            binding_capability=CAP_BETA,
+        )
+
+    def start_cancelled(self):
+        dialogue = self.broker.start(
+            "alpha",
+            "beta",
+            "Transport plan",
+            "Compare two safe automated wake paths.",
+            [{"source": "user", "claim": "no manual relay"}],
+        )["dialogue_id"]
+        self.broker.cancel(dialogue, "alpha", "deletion fixture")
+        return dialogue
+
+    def cancelled_dialogue(self):
+        self.bind_pair()
+        return self.start_cancelled()
+
+    def dialogue_records(self, dialogue):
+        outbox = self.root / "outbox"
+        paths = []
+        for participant_dir in sorted(outbox.iterdir()) if outbox.exists() else []:
+            if not participant_dir.is_dir():
+                continue
+            for path in sorted(participant_dir.glob("*.json")):
+                envelope = read_json(path).get("envelope") or {}
+                if envelope.get("dialogue_id") == dialogue:
+                    paths.append(path)
+        return paths
+
+    def tombstone_path(self, dialogue):
+        return self.root / "tombstones" / ("%s.json" % dialogue)
+
+    def test_delete_refuses_active_dialogue(self):
+        self.bind_pair()
+        dialogue = self.broker.start(
+            "alpha",
+            "beta",
+            "Transport plan",
+            "Compare two safe automated wake paths.",
+            [{"source": "user", "claim": "no manual relay"}],
+        )["dialogue_id"]
+        with self.assertRaisesRegex(CouncilError, "complete or cancelled"):
+            self.broker.delete_terminal_dialogue(dialogue, "still live")
+        self.assertTrue(
+            (self.root / "dialogues" / dialogue / "manifest.json").exists()
+        )
+        self.assertFalse(self.tombstone_path(dialogue).exists())
+
+    def test_delete_cancelled_dialogue_removes_content_and_records_tombstone(self):
+        dialogue = self.cancelled_dialogue()
+        records = self.dialogue_records(dialogue)
+        self.assertTrue(records)
+        expected_ids = sorted(
+            "%s/%s" % (path.parent.name, path.stem) for path in records
+        )
+        result = self.broker.delete_terminal_dialogue(dialogue, "user cleanup")
+        self.assertEqual(
+            result,
+            {
+                "dialogue_id": dialogue,
+                "deleted": True,
+                "outbox_records_superseded": len(expected_ids),
+            },
+        )
+        self.assertFalse((self.root / "dialogues" / dialogue).exists())
+        self.assertEqual(self.dialogue_records(dialogue), [])
+        tombstone = read_json(self.tombstone_path(dialogue))
+        self.assertEqual(tombstone["dialogue_id"], dialogue)
+        self.assertEqual(tombstone["reason"], "user cleanup")
+        self.assertEqual(tombstone["phase_at_deletion"], "cancelled")
+        self.assertEqual(tombstone["outbox_records_superseded"], expected_ids)
+        self.assertIn("deleted_at", tombstone)
+
+    def test_delete_accepts_completed_phase(self):
+        dialogue = self.cancelled_dialogue()
+        manifest_path = self.root / "dialogues" / dialogue / "manifest.json"
+        manifest = read_json(manifest_path)
+        manifest["phase"] = "complete"
+        atomic_json(manifest_path, manifest)
+        result = self.broker.delete_terminal_dialogue(dialogue, "user cleanup")
+        self.assertTrue(result["deleted"])
+        self.assertEqual(
+            read_json(self.tombstone_path(dialogue))["phase_at_deletion"], "complete"
+        )
+
+    def test_delete_is_idempotent(self):
+        dialogue = self.cancelled_dialogue()
+        self.broker.delete_terminal_dialogue(dialogue, "user cleanup")
+        repeat = self.broker.delete_terminal_dialogue(dialogue, "user cleanup")
+        self.assertEqual(
+            repeat, {"dialogue_id": dialogue, "deleted": True, "duplicate": True}
+        )
+
+    def test_delete_unknown_dialogue_is_refused(self):
+        with self.assertRaisesRegex(CouncilError, "unknown dialogue"):
+            self.broker.delete_terminal_dialogue("dlg-" + "0" * 32, "no such record")
+
+    def test_ack_after_deletion_reports_unknown_message(self):
+        dialogue = self.cancelled_dialogue()
+        record = self.dialogue_records(dialogue)[0]
+        participant = record.parent.name
+        message_id = record.stem
+        self.broker.delete_terminal_dialogue(dialogue, "user cleanup")
+        with self.assertRaisesRegex(CouncilError, "unknown message"):
+            self.broker.ack(participant, message_id)
+
+    def test_startup_completes_interrupted_deletion_without_orphaning(self):
+        dialogue = self.cancelled_dialogue()
+        self.assertTrue(self.dialogue_records(dialogue))
+        atomic_json(
+            self.tombstone_path(dialogue),
+            {
+                "dialogue_id": dialogue,
+                "deleted_at": "2026-08-24T00:00:00Z",
+                "reason": "crash simulation",
+                "phase_at_deletion": "cancelled",
+                "outbox_records_superseded": [],
+            },
+        )
+        CouncilBroker(self.root)
+        self.assertFalse((self.root / "dialogues" / dialogue).exists())
+        self.assertEqual(self.dialogue_records(dialogue), [])
+        for participant_dir in sorted((self.root / "outbox").iterdir()):
+            if not participant_dir.is_dir():
+                continue
+            for path in participant_dir.glob("*.json"):
+                self.assertNotEqual(read_json(path).get("status"), "orphaned")
+
+    def test_delete_preserves_other_dialogues(self):
+        self.bind_pair()
+        first = self.start_cancelled()
+        second = self.start_cancelled()
+        second_records = len(self.dialogue_records(second))
+        self.assertTrue(second_records)
+        self.broker.delete_terminal_dialogue(first, "user cleanup")
+        manifest = read_json(self.root / "dialogues" / second / "manifest.json")
+        self.assertEqual(manifest["phase"], "cancelled")
+        self.assertEqual(len(self.dialogue_records(second)), second_records)
+        self.assertFalse(self.tombstone_path(second).exists())
+
+    def test_deletion_reason_is_guarded(self):
+        dialogue = self.cancelled_dialogue()
+        with self.assertRaisesRegex(CouncilError, "200 characters"):
+            self.broker.delete_terminal_dialogue(dialogue, "x" * 201)
+        with self.assertRaisesRegex(CouncilError, "credential"):
+            self.broker.delete_terminal_dialogue(
+                dialogue, "sk-" + "ant-api03-abcdefghijklmnop"
+            )
+        self.assertTrue(
+            (self.root / "dialogues" / dialogue / "manifest.json").exists()
+        )
+        self.assertFalse(self.tombstone_path(dialogue).exists())
+
+    def test_doctor_reports_tombstone_count(self):
+        dialogue = self.cancelled_dialogue()
+        self.broker.delete_terminal_dialogue(dialogue, "user cleanup")
+        report = installation_doctor(
+            self.root,
+            skill_root=Path(__file__).resolve().parents[1],
+            opencode_config_root=Path(self.temporary.name) / "opencode-config",
+        )
+        self.assertEqual(report["deletion"], {"tombstone_count": 1})
+
+    def test_cli_parser_accepts_delete(self):
+        args = build_parser().parse_args(
+            ["delete", "--dialogue-id", "dlg-" + "0" * 32]
+        )
+        self.assertEqual(args.command, "delete")
+        self.assertEqual(args.reason, "user_requested")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -550,6 +550,22 @@ def append_jsonl(path: Path, value: Any) -> None:
         os.fsync(handle.fileno())
 
 
+def remove_file(path: Path) -> None:
+    """Idempotent unlink: absence is success, never follow a symlink target."""
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+
+
+def remove_empty_dir(path: Path) -> None:
+    """Idempotent rmdir: absence is success; a non-empty directory fails loud."""
+    try:
+        path.rmdir()
+    except FileNotFoundError:
+        pass
+
+
 def repair_jsonl_tail(path: Path) -> None:
     """Repair only an incomplete final JSONL record; internal corruption fails later."""
     if not path.exists():
@@ -1107,6 +1123,7 @@ class CouncilBroker:
         self.lock = threading.RLock()
         self.changed = threading.Condition(self.lock)
         self._restore_registrations()
+        self._reconcile_deletions()
         self._reconcile_dialogue_audits()
         self._reconcile_outbox_messages()
 
@@ -2181,6 +2198,113 @@ class CouncilBroker:
                     record["aborted_at"] = utc_now()
                     record["abort_reason"] = "transition was not committed"
                     atomic_json(path, record)
+
+    def _tombstone_dir(self) -> Path:
+        return self.root / "tombstones"
+
+    def _tombstone_path(self, dialogue_id: str) -> Path:
+        return self._tombstone_dir() / (
+            "%s.json" % safe_name(dialogue_id, "dialogue_id")
+        )
+
+    def _dialogue_outbox_records(self, dialogue_id: str) -> List[Path]:
+        paths: List[Path] = []
+        for participant_dir in sorted(
+            self.outbox.iterdir() if self.outbox.exists() else []
+        ):
+            if not participant_dir.is_dir():
+                continue
+            for path in sorted(participant_dir.glob("*.json")):
+                envelope = read_json(path).get("envelope") or {}
+                if envelope.get("dialogue_id") == dialogue_id:
+                    paths.append(path)
+        return paths
+
+    def _complete_tombstoned_deletion(self, dialogue_id: str) -> None:
+        """Finish removing a tombstoned dialogue's content; every step is idempotent."""
+        for path in self._dialogue_outbox_records(dialogue_id):
+            remove_file(path)
+        dialogue_dir = self._dialogue_dir(dialogue_id)
+        if not dialogue_dir.exists():
+            return
+        # The manifest is the dialogue's existence marker: removing it first
+        # makes every serving path (status, wait, ack, report) refuse the
+        # dialogue before any other content disappears, so a crash mid-removal
+        # can never expose a partially deleted record as a live dialogue.
+        remove_file(dialogue_dir / "manifest.json")
+        for child in sorted(dialogue_dir.rglob("*"), reverse=True):
+            if child.is_symlink() or child.is_file():
+                remove_file(child)
+            elif child.is_dir():
+                remove_empty_dir(child)
+        remove_empty_dir(dialogue_dir)
+
+    def _reconcile_deletions(self) -> None:
+        """Complete any deletion a crash interrupted after its tombstone was written."""
+        tombstone_dir = self._tombstone_dir()
+        if not tombstone_dir.exists():
+            return
+        for path in sorted(tombstone_dir.glob("dlg-*.json")):
+            dialogue_id = path.stem
+            if self._dialogue_dir(dialogue_id).exists() or self._dialogue_outbox_records(
+                dialogue_id
+            ):
+                self._complete_tombstoned_deletion(dialogue_id)
+
+    def delete_terminal_dialogue(self, dialogue_id: str, reason: str) -> Dict[str, Any]:
+        """Remove a terminal dialogue's content, leaving a minimal external tombstone.
+
+        The tombstone (identity, time, reason, superseded outbox record ids —
+        never content) is written first as the committed intent; every later
+        step is idempotent, and an interrupted deletion is completed by
+        _reconcile_deletions at the next broker start or by re-running this
+        method. Only complete or cancelled dialogues qualify; outbox records
+        for the dialogue are removed with their ids recorded as explicitly
+        superseded, so a later terminal acknowledgement for one of them fails
+        as an unknown message rather than resurrecting deleted content.
+        """
+        dialogue_id = safe_name(dialogue_id, "dialogue_id")
+        reason = ensure_text(reason, "deletion reason")
+        if len(reason) > 200:
+            raise CouncilError("deletion reason must stay under 200 characters")
+        assert_no_secret({"reason": reason})
+        with self.lock:
+            tombstone_path = self._tombstone_path(dialogue_id)
+            if not self._manifest_path(dialogue_id).exists():
+                if tombstone_path.exists():
+                    self._complete_tombstoned_deletion(dialogue_id)
+                    return {
+                        "dialogue_id": dialogue_id,
+                        "deleted": True,
+                        "duplicate": True,
+                    }
+                raise CouncilError("unknown dialogue: %s" % dialogue_id)
+            manifest = self._load_manifest(dialogue_id)
+            if manifest.get("phase") not in ("complete", "cancelled"):
+                raise CouncilError(
+                    "only complete or cancelled dialogues can be deleted"
+                )
+            record_paths = self._dialogue_outbox_records(dialogue_id)
+            superseded = sorted(
+                "%s/%s" % (path.parent.name, path.stem) for path in record_paths
+            )
+            self._tombstone_dir().mkdir(exist_ok=True, mode=0o700)
+            atomic_json(
+                tombstone_path,
+                {
+                    "dialogue_id": dialogue_id,
+                    "deleted_at": utc_now(),
+                    "reason": reason,
+                    "phase_at_deletion": manifest["phase"],
+                    "outbox_records_superseded": superseded,
+                },
+            )
+            self._complete_tombstoned_deletion(dialogue_id)
+            return {
+                "dialogue_id": dialogue_id,
+                "deleted": True,
+                "outbox_records_superseded": len(superseded),
+            }
 
     def _attempt_delivery(self, path: Path, record: Dict[str, Any]) -> None:
         recipient = record["envelope"]["recipient"]
@@ -5218,12 +5342,17 @@ def installation_doctor(
         ),
         "plugin_registered": plugin_registered,
     }
+    tombstone_root = state_root.expanduser().resolve() / "tombstones"
+    tombstone_count = (
+        len(list(tombstone_root.glob("dlg-*.json"))) if tombstone_root.is_dir() else 0
+    )
     return {
         "broker_version": BROKER_VERSION,
         "broker": broker,
         "source": {"tracked": tracked},
         "router": router,
         "opencode": opencode,
+        "deletion": {"tombstone_count": tombstone_count},
         "release_snapshot_ready": tracked,
         "local_runtime_ready": bool(
             broker["reachable"]
@@ -5298,6 +5427,10 @@ def build_parser() -> argparse.ArgumentParser:
     report = subparsers.add_parser("report")
     report.add_argument("--dialogue-id", required=True)
 
+    delete = subparsers.add_parser("delete")
+    delete.add_argument("--dialogue-id", required=True)
+    delete.add_argument("--reason", default="user_requested")
+
     configure_router = subparsers.add_parser("configure-router")
     configure_router.add_argument("--target-thread-id", required=True)
 
@@ -5323,6 +5456,18 @@ def run_cli(argv: Optional[List[str]] = None) -> int:
             result = installation_doctor(args.state_root)
         elif args.command == "report":
             result = completed_dialogue_report(args.state_root, args.dialogue_id)
+        elif args.command == "delete":
+            state_root = args.state_root.expanduser().resolve()
+            probe = CouncilClient(state_root, autostart=False)
+            try:
+                probe.request("ping")
+            except CouncilError:
+                pass
+            else:
+                raise CouncilError("stop the broker before deleting dialogue records")
+            result = CouncilBroker(state_root).delete_terminal_dialogue(
+                args.dialogue_id, args.reason
+            )
         elif args.command in ("configure-router", "configure-opencode"):
             state_root = args.state_root.expanduser().resolve()
             probe = CouncilClient(state_root, autostart=False)

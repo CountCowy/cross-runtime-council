@@ -7,10 +7,12 @@ exist so known gaps are visible, not to imply commitments.
 ## Privacy lifecycle
 
 Dialogue material (manifests, submissions, finals, audit logs) persists under
-`~/.claude/peer-consults` and is currently removed only by
-`uninstall.sh --purge-state`, which deletes everything. Planned: first-class
-per-dialogue deletion, optional retention limits, and an export/redaction
-path, with the same audit discipline as the rest of the broker.
+`~/.claude/peer-consults`. Per-dialogue deletion of terminal dialogues landed
+in v0.19 development (the `delete` subcommand — tombstoned, idempotent,
+crash-tested; see `docs/install.md`); `uninstall.sh --purge-state` still
+deletes everything. Planned next: optional retention limits atop the deletion
+primitive, then an export/redaction path, with the same audit discipline as
+the rest of the broker.
 
 ## Verification depth
 
@@ -19,10 +21,10 @@ path, with the same audit discipline as the rest of the broker.
   are verified against a working installation only).
 - CI additions: Python static analysis (ruff), strict TypeScript
   type-checking of the plugin/tools, and cross-representation parity tests
-  landed in v0.19 development. Still planned: property-based state-machine
-  and crash-sequence tests for the broker's recovery paths (a targeted
-  deletion-and-recovery crash suite ships with the deletion feature; broader
-  coverage later).
+  landed in v0.19 development, as did the targeted deletion-and-recovery
+  crash harness (release-blocking, runs in CI). Still planned: property-based
+  state-machine and crash-sequence tests for the broker's broader recovery
+  paths.
 
 ## Implementation consolidation
 

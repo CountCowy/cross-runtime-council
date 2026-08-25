@@ -161,6 +161,30 @@ discovery never mistakes a stale copy for a second `council` skill.
 All three refuse to run while a live broker socket exists — finish or cancel
 active dialogues and quit the owning runtime first.
 
+## Deleting dialogue records
+
+```
+python3 ~/.claude/skills/council/scripts/council.py delete --dialogue-id <dialogue-id>
+```
+
+removes a **terminal** (completed or cancelled) dialogue's content: the
+dialogue directory (manifest, audit log, submissions, canonical `final.json`)
+and every outbox record that referenced it. Active dialogues are refused —
+cancel first. The command refuses to run while a broker is live; quit the
+Council runtimes first.
+
+What persists is a minimal tombstone at
+`~/.claude/peer-consults/tombstones/<dialogue-id>.json` recording identity,
+time, reason (`--reason`, default `user_requested`), and the ids of the
+outbox records it superseded — never content. The tombstone is written first,
+so a deletion interrupted by a crash is completed automatically at the next
+broker start, and re-running the command is an idempotent no-op. A session
+that never acknowledged its terminal notice for a deleted dialogue will see
+that late acknowledgement fail with "unknown message" — expected and
+harmless. `doctor` reports the tombstone count;
+`uninstall.sh --purge-state` removes tombstones along with the rest of the
+state root.
+
 ## Diagnostics
 
 ```
