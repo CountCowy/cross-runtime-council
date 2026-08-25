@@ -116,6 +116,12 @@ content, use the `delete` subcommand (see "Deleting dialogue records" in
   mkdir -p ~/.claude/tmp && chmod 700 ~/.claude/tmp
   CLAUDE_CODE_TMPDIR="$HOME/.claude/tmp" claude
   ```
+- **Bind refused with "participant is already bound; only its exact
+  authenticated session may renew it"** — the session's MCP server process
+  was recycled (Claude Code does this cleanly after long idle stretches) and
+  its in-memory capability is gone. Fail-closed by design: the seat unlocks
+  when its lease expires (default 120 minutes from the bind), and a fresh
+  bind under the same name then receives any pending work exactly once.
 - **Bind or delivery fails on steps that worked before** — suspect a Claude
   Code version change: this transport has no version pin, so vendor updates
   can move it. Compare `claude --version` against the validated tuple at the

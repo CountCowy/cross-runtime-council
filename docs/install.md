@@ -55,6 +55,17 @@ not yet clean-room rehearsed):
    Binding happens inside that exact session via the `council_*` tools — see
    [../SKILL.md](../SKILL.md).
 
+Known lifecycle interaction: Claude Code may recycle a session's MCP server
+process after a long idle stretch (a clean host-side shutdown, not a crash).
+A bound seat's council capability lives only in that process's memory — by
+design it is never persisted — so a recycled adapter can neither renew nor
+release its own binding: the broker refuses every operation for that seat
+("only its exact authenticated session may renew it") until the lease
+expires (default 120 minutes), after which a fresh bind under the same name
+receives any pending envelope exactly once. This is the authentication
+model working, not a fault; the practical advice is to keep a bound
+session's dialogue moving rather than leaving it idle for long stretches.
+
 **Codex (macOS app).** Register the same MCP adapter in
 `~/.codex/config.toml` (steps verified against a working installation, not
 yet clean-room rehearsed):
@@ -93,6 +104,12 @@ task — the planning task itself never polls (see
    (The command refuses to run while a broker is active.)
 3. The router authenticates and binds itself on its next scheduled run.
    Disable the schedule whenever standing inbound wake is not wanted.
+
+If the Codex app restarts, the router's in-memory capability is lost and
+every later wake poll fails closed ("wake polling failed" from the router
+task) even though the broker is healthy. Re-run the `configure-router`
+command above (with no broker active) to reset the pairing; the router then
+re-bootstraps on its next scheduled run.
 
 **OpenCode CLI.** Three steps, in order:
 
