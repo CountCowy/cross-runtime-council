@@ -196,8 +196,8 @@ class DeletionCrashMatrixTests(unittest.TestCase):
                 crashed = True
         return injector.operations, crashed
 
-    def run_crashing_recovery(self, root, crash_at):
-        with CrashInjector(crash_at, wrap_atomic_json=False) as injector:
+    def run_crashing_recovery(self, root, crash_at, wrap_atomic_json=False):
+        with CrashInjector(crash_at, wrap_atomic_json=wrap_atomic_json) as injector:
             try:
                 CouncilBroker(root)
                 crashed = False
@@ -303,6 +303,51 @@ class DeletionCrashMatrixTests(unittest.TestCase):
                 self.assertTrue(crashed)
                 self.assertEqual(operations, crash_at)
                 self.assert_bimodal_invariant(root)
+
+    def assert_retention_converged(self, root):
+        # A clean restart re-applies retention deterministically, so the only
+        # legal steady state after any crash is fully swept: tombstoned with
+        # zero content, zero references, and the control dialogue untouched.
+        CouncilBroker(root)
+        tombstone = root / "tombstones" / ("%s.json" % self.target_id)
+        self.assertTrue(tombstone.exists())
+        self.assertEqual(read_json(tombstone)["reason"], "retention_sweep")
+        self.assertFalse((root / "dialogues" / self.target_id).exists())
+        self.assertEqual(dialogue_records(root, self.target_id), [])
+        control_manifest = read_json(
+            root / "dialogues" / self.control_id / "manifest.json"
+        )
+        self.assertEqual(control_manifest["phase"], "cancelled")
+        self.assertTrue(dialogue_records(root, self.control_id))
+
+    def test_retention_sweep_crash_matrix(self):
+        # Age the target past a 30-day window (the control stays recent),
+        # then crash the startup sweep at every mutation boundary.
+        aged = self.fresh_copy(self.template)
+        manifest_path = aged / "dialogues" / self.target_id / "manifest.json"
+        manifest = read_json(manifest_path)
+        manifest["cancelled_at"] = "2020-01-01T00:00:00+00:00"
+        council.atomic_json(manifest_path, manifest)
+        council.atomic_json(
+            aged / "retention.json",
+            {"days": 30, "configured_at": "2020-01-01T00:00:00+00:00"},
+        )
+        probe = self.fresh_copy(aged)
+        total_operations, crashed = self.run_crashing_recovery(
+            probe, OPERATION_CEILING, wrap_atomic_json=True
+        )
+        self.assertFalse(crashed)
+        self.assertGreaterEqual(total_operations, 6)
+        self.assert_retention_converged(probe)
+        for crash_at in range(1, total_operations + 1):
+            with self.subTest(crash_at=crash_at):
+                root = self.fresh_copy(aged)
+                operations, crashed = self.run_crashing_recovery(
+                    root, crash_at, wrap_atomic_json=True
+                )
+                self.assertTrue(crashed)
+                self.assertEqual(operations, crash_at)
+                self.assert_retention_converged(root)
 
     def test_double_crash_matrix_delete_then_recovery(self):
         baseline_root = self.fresh_copy(self.template)

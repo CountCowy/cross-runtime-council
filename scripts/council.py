@@ -459,6 +459,42 @@ def default_state_root() -> Path:
     return Path.home().joinpath(".claude", "peer-consults").resolve()
 
 
+def utc_epoch(value: Any) -> Optional[float]:
+    """Epoch seconds for a timezone-aware ISO timestamp; None on anything else."""
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = dt.datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.timestamp()
+
+
+RETENTION_MAX_DAYS = 3650
+
+
+def load_retention_days(state_root: Path) -> Optional[int]:
+    """Validated retention window in days; None when retention is off."""
+    path = state_root / "retention.json"
+    if not path.exists():
+        return None
+    config = read_json(path)
+    if not isinstance(config, dict):
+        raise CouncilError("retention configuration must be an object")
+    days = config.get("days")
+    if (
+        not isinstance(days, int)
+        or isinstance(days, bool)
+        or not 1 <= days <= RETENTION_MAX_DAYS
+    ):
+        raise CouncilError(
+            "retention days must be an integer between 1 and %d" % RETENTION_MAX_DAYS
+        )
+    return days
+
+
 def safe_name(value: str, field: str = "identifier") -> str:
     if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,79}", value):
         raise CouncilError("%s must match [A-Za-z0-9][A-Za-z0-9_.-]{0,79}" % field)
@@ -1126,6 +1162,7 @@ class CouncilBroker:
         self._reconcile_deletions()
         self._reconcile_dialogue_audits()
         self._reconcile_outbox_messages()
+        self._apply_retention()
 
     def _dialogue_dir(self, dialogue_id: str) -> Path:
         return self.dialogues / safe_name(dialogue_id, "dialogue_id")
@@ -2250,6 +2287,33 @@ class CouncilBroker:
                 dialogue_id
             ):
                 self._complete_tombstoned_deletion(dialogue_id)
+
+    def _apply_retention(self) -> None:
+        """Delete terminal dialogues older than the configured retention window.
+
+        Runs only at broker startup (a long-lived broker never sweeps
+        mid-life — a documented consequence of the no-scheduler design). Pure
+        function of on-disk state plus retention.json: no timers, no new
+        recovery state — the delete primitive owns tombstones, supersession,
+        and crash recovery. A dialogue whose terminal timestamp is missing or
+        malformed is skipped: deletion never proceeds on an uncertain age.
+        """
+        days = load_retention_days(self.root)
+        if days is None:
+            return
+        cutoff = epoch_now() - days * 86400
+        for path in sorted(self.dialogues.glob("dlg-*/manifest.json")):
+            manifest = read_json(path)
+            phase = manifest.get("phase")
+            if phase not in ("complete", "cancelled"):
+                continue
+            stamp = manifest.get(
+                "completed_at" if phase == "complete" else "cancelled_at"
+            )
+            terminal_epoch = utc_epoch(stamp)
+            if terminal_epoch is None or terminal_epoch > cutoff:
+                continue
+            self.delete_terminal_dialogue(path.parent.name, "retention_sweep")
 
     def delete_terminal_dialogue(self, dialogue_id: str, reason: str) -> Dict[str, Any]:
         """Remove a terminal dialogue's content, leaving a minimal external tombstone.
@@ -5342,17 +5406,27 @@ def installation_doctor(
         ),
         "plugin_registered": plugin_registered,
     }
-    tombstone_root = state_root.expanduser().resolve() / "tombstones"
+    resolved_state_root = state_root.expanduser().resolve()
+    tombstone_root = resolved_state_root / "tombstones"
     tombstone_count = (
         len(list(tombstone_root.glob("dlg-*.json"))) if tombstone_root.is_dir() else 0
     )
+    deletion: Dict[str, Any] = {
+        "tombstone_count": tombstone_count,
+        "retention_applies_at": "broker_startup",
+    }
+    try:
+        deletion["retention_days"] = load_retention_days(resolved_state_root)
+    except (CouncilError, OSError, ValueError, TypeError, json.JSONDecodeError) as error:
+        deletion["retention_days"] = None
+        deletion["retention_error"] = str(error)
     return {
         "broker_version": BROKER_VERSION,
         "broker": broker,
         "source": {"tracked": tracked},
         "router": router,
         "opencode": opencode,
-        "deletion": {"tombstone_count": tombstone_count},
+        "deletion": deletion,
         "release_snapshot_ready": tracked,
         "local_runtime_ready": bool(
             broker["reachable"]
@@ -5437,6 +5511,11 @@ def build_parser() -> argparse.ArgumentParser:
     configure_opencode = subparsers.add_parser("configure-opencode")
     configure_opencode.add_argument("--executable", type=Path, required=True)
 
+    configure_retention = subparsers.add_parser("configure-retention")
+    retention_mode = configure_retention.add_mutually_exclusive_group(required=True)
+    retention_mode.add_argument("--days", type=int)
+    retention_mode.add_argument("--disable", action="store_true")
+
     daemon = subparsers.add_parser("daemon")
     daemon.add_argument("--state-root", type=Path, default=argparse.SUPPRESS)
     return parser
@@ -5468,7 +5547,11 @@ def run_cli(argv: Optional[List[str]] = None) -> int:
             result = CouncilBroker(state_root).delete_terminal_dialogue(
                 args.dialogue_id, args.reason
             )
-        elif args.command in ("configure-router", "configure-opencode"):
+        elif args.command in (
+            "configure-router",
+            "configure-opencode",
+            "configure-retention",
+        ):
             state_root = args.state_root.expanduser().resolve()
             probe = CouncilClient(state_root, autostart=False)
             try:
@@ -5476,9 +5559,29 @@ def run_cli(argv: Optional[List[str]] = None) -> int:
             except CouncilError:
                 pass
             else:
-                raise CouncilError("stop the broker before changing its exact router task")
+                raise CouncilError(
+                    "stop the broker before changing its offline configuration"
+                )
             state_root.mkdir(parents=True, exist_ok=True, mode=0o700)
-            if args.command == "configure-router":
+            if args.command == "configure-retention":
+                if args.disable:
+                    remove_file(state_root / "retention.json")
+                    result = {"configured": False}
+                else:
+                    if (
+                        not isinstance(args.days, int)
+                        or not 1 <= args.days <= RETENTION_MAX_DAYS
+                    ):
+                        raise CouncilError(
+                            "retention days must be an integer between 1 and %d"
+                            % RETENTION_MAX_DAYS
+                        )
+                    atomic_json(
+                        state_root / "retention.json",
+                        {"days": args.days, "configured_at": utc_now()},
+                    )
+                    result = {"configured": True, "days": args.days}
+            elif args.command == "configure-router":
                 target_thread_id = safe_name(args.target_thread_id, "router target_thread_id")
                 atomic_json(
                     state_root / "router.json",

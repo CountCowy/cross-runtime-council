@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import contextlib
 import json
 import hashlib
 import fcntl
@@ -46,6 +47,7 @@ from council import (
     post_to_relay,
     read_json,
     response_contract_for,
+    run_cli,
     run_daemon,
     trusted_broker_runtime,
     trusted_mcp_runtime,
@@ -5399,7 +5401,9 @@ class CouncilBrokerTests(unittest.TestCase):
         self.assertIn("council_wake_ack", names)
 
 
-class TerminalDialogueDeletionTests(unittest.TestCase):
+class TerminalDialogueFixture(unittest.TestCase):
+    """Shared broker fixture for the deletion and retention suites; no tests."""
+
     def setUp(self):
         BINDING_CAPABILITIES.clear()
         PENDING_BINDING_ROTATIONS.clear()
@@ -5472,6 +5476,8 @@ class TerminalDialogueDeletionTests(unittest.TestCase):
     def tombstone_path(self, dialogue):
         return self.root / "tombstones" / ("%s.json" % dialogue)
 
+
+class TerminalDialogueDeletionTests(TerminalDialogueFixture):
     def test_delete_refuses_active_dialogue(self):
         self.bind_pair()
         dialogue = self.broker.start(
@@ -5593,7 +5599,7 @@ class TerminalDialogueDeletionTests(unittest.TestCase):
         )
         self.assertFalse(self.tombstone_path(dialogue).exists())
 
-    def test_doctor_reports_tombstone_count(self):
+    def test_doctor_reports_tombstone_count_and_retention(self):
         dialogue = self.cancelled_dialogue()
         self.broker.delete_terminal_dialogue(dialogue, "user cleanup")
         report = installation_doctor(
@@ -5601,7 +5607,29 @@ class TerminalDialogueDeletionTests(unittest.TestCase):
             skill_root=Path(__file__).resolve().parents[1],
             opencode_config_root=Path(self.temporary.name) / "opencode-config",
         )
-        self.assertEqual(report["deletion"], {"tombstone_count": 1})
+        self.assertEqual(
+            report["deletion"],
+            {
+                "tombstone_count": 1,
+                "retention_applies_at": "broker_startup",
+                "retention_days": None,
+            },
+        )
+        atomic_json(self.root / "retention.json", {"days": 30, "configured_at": "x"})
+        report = installation_doctor(
+            self.root,
+            skill_root=Path(__file__).resolve().parents[1],
+            opencode_config_root=Path(self.temporary.name) / "opencode-config",
+        )
+        self.assertEqual(report["deletion"]["retention_days"], 30)
+        atomic_json(self.root / "retention.json", {"days": "thirty"})
+        report = installation_doctor(
+            self.root,
+            skill_root=Path(__file__).resolve().parents[1],
+            opencode_config_root=Path(self.temporary.name) / "opencode-config",
+        )
+        self.assertIsNone(report["deletion"]["retention_days"])
+        self.assertIn("retention_error", report["deletion"])
 
     def test_cli_parser_accepts_delete(self):
         args = build_parser().parse_args(
@@ -5609,6 +5637,99 @@ class TerminalDialogueDeletionTests(unittest.TestCase):
         )
         self.assertEqual(args.command, "delete")
         self.assertEqual(args.reason, "user_requested")
+
+
+class RetentionSweepTests(TerminalDialogueFixture):
+    def age_dialogue(self, dialogue, stamp="2020-01-01T00:00:00+00:00"):
+        manifest_path = self.root / "dialogues" / dialogue / "manifest.json"
+        manifest = read_json(manifest_path)
+        field = "completed_at" if manifest.get("phase") == "complete" else "cancelled_at"
+        manifest[field] = stamp
+        atomic_json(manifest_path, manifest)
+
+    def configure_days(self, days):
+        atomic_json(
+            self.root / "retention.json",
+            {"days": days, "configured_at": "2020-01-01T00:00:00+00:00"},
+        )
+
+    def test_retention_sweep_deletes_aged_terminal_dialogues(self):
+        dialogue = self.cancelled_dialogue()
+        self.age_dialogue(dialogue)
+        self.configure_days(30)
+        CouncilBroker(self.root)
+        self.assertFalse((self.root / "dialogues" / dialogue).exists())
+        self.assertEqual(self.dialogue_records(dialogue), [])
+        tombstone = read_json(self.tombstone_path(dialogue))
+        self.assertEqual(tombstone["reason"], "retention_sweep")
+
+    def test_retention_sweep_keeps_recent_terminal_dialogues(self):
+        dialogue = self.cancelled_dialogue()
+        self.configure_days(30)
+        CouncilBroker(self.root)
+        self.assertTrue(
+            (self.root / "dialogues" / dialogue / "manifest.json").exists()
+        )
+        self.assertFalse(self.tombstone_path(dialogue).exists())
+
+    def test_retention_sweep_never_touches_active_dialogues(self):
+        self.bind_pair()
+        dialogue = self.broker.start(
+            "alpha",
+            "beta",
+            "Transport plan",
+            "Compare two safe automated wake paths.",
+            [{"source": "user", "claim": "no manual relay"}],
+        )["dialogue_id"]
+        manifest_path = self.root / "dialogues" / dialogue / "manifest.json"
+        manifest = read_json(manifest_path)
+        manifest["updated_at"] = "2020-01-01T00:00:00+00:00"
+        atomic_json(manifest_path, manifest)
+        self.configure_days(30)
+        CouncilBroker(self.root)
+        self.assertTrue(manifest_path.exists())
+        self.assertFalse(self.tombstone_path(dialogue).exists())
+
+    def test_retention_off_without_configuration(self):
+        dialogue = self.cancelled_dialogue()
+        self.age_dialogue(dialogue)
+        CouncilBroker(self.root)
+        self.assertTrue(
+            (self.root / "dialogues" / dialogue / "manifest.json").exists()
+        )
+
+    def test_retention_skips_uncertain_terminal_timestamps(self):
+        dialogue = self.cancelled_dialogue()
+        self.configure_days(30)
+        for stamp in ("not-a-date", "2020-01-01T00:00:00", None):
+            self.age_dialogue(dialogue, stamp=stamp)
+            CouncilBroker(self.root)
+            self.assertTrue(
+                (self.root / "dialogues" / dialogue / "manifest.json").exists(),
+                "dialogue deleted despite uncertain timestamp %r" % (stamp,),
+            )
+        self.assertFalse(self.tombstone_path(dialogue).exists())
+
+    def test_corrupt_retention_configuration_fails_closed(self):
+        self.cancelled_dialogue()
+        for config in (["broken"], {"days": "thirty"}, {"days": 0}, {"days": True}):
+            atomic_json(self.root / "retention.json", config)
+            with self.assertRaises(CouncilError):
+                CouncilBroker(self.root)
+
+    def run_retention_cli(self, *arguments):
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            return run_cli(
+                ["--state-root", str(self.root), "configure-retention", *arguments]
+            )
+
+    def test_cli_configures_and_disables_retention(self):
+        self.assertEqual(self.run_retention_cli("--days", "30"), 0)
+        self.assertEqual(read_json(self.root / "retention.json")["days"], 30)
+        self.assertEqual(self.run_retention_cli("--disable"), 0)
+        self.assertFalse((self.root / "retention.json").exists())
+        self.assertEqual(self.run_retention_cli("--days", "0"), 2)
 
 
 if __name__ == "__main__":

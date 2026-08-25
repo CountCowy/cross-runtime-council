@@ -185,7 +185,22 @@ harmless. `doctor` reports the tombstone count;
 `uninstall.sh --purge-state` removes tombstones along with the rest of the
 state root.
 
-## Diagnostics
+### Automatic retention (optional, off by default)
+
+```
+python3 ~/.claude/skills/council/scripts/council.py configure-retention --days 30
+```
+
+records an offline retention window (`--disable` removes it; like the other
+`configure-*` commands it refuses to run while a broker is live). At every
+broker **startup** — and only then; a long-lived broker never sweeps
+mid-life — terminal dialogues whose completion or cancellation is older than
+the window are deleted through the same primitive above, with
+`retention_sweep` as the tombstone reason. Active dialogues are never
+touched, and a dialogue whose terminal timestamp is missing or malformed is
+skipped rather than deleted. A corrupt `retention.json` fails closed: the
+broker refuses to start until the file is fixed or reconfigured. `doctor`
+reports the configured window.
 
 ```
 python3 ~/.claude/skills/council/scripts/council.py doctor
