@@ -1389,6 +1389,12 @@ class CouncilBroker:
             # service loudly: that is an integrity invariant, not file
             # corruption, and containment must not soften it.
             self._reconcile_durable_audits(manifest)
+            if manifest.get("phase") not in ("complete", "cancelled"):
+                # A final.json under a non-terminal manifest is the
+                # uncommitted half of a crashed completion transition — the
+                # manifest write is the commit point. Discard it exactly like
+                # a staged outbox record; resubmission rebuilds it.
+                remove_file(path.parent / "final.json")
 
     def _reconcile_committed_transition(self, manifest: Dict[str, Any]) -> None:
         self._reconcile_durable_audits(manifest)
@@ -1450,18 +1456,18 @@ class CouncilBroker:
             if key in registration
         }
         if registration["runtime"] in ("claude", "opencode") and not registration.get("relay_path"):
-            path.unlink(missing_ok=True)
+            remove_file(path)
             return
         if registration["runtime"] == "opencode" and not registration.get("target_session_id"):
-            path.unlink(missing_ok=True)
+            remove_file(path)
             return
         if registration["runtime"] == "codex" and not registration.get("target_thread_id"):
-            path.unlink(missing_ok=True)
+            remove_file(path)
             return
         atomic_json(path, safe_route)
 
     def _remove_persisted_registration(self, participant: str) -> None:
-        self._registration_route_path(participant).unlink(missing_ok=True)
+        remove_file(self._registration_route_path(participant))
 
     def _clear_registration_restore_error(self, participant: str) -> None:
         prefix = safe_name(participant, "participant") + ".json:"
@@ -1567,7 +1573,7 @@ class CouncilBroker:
                 if path.stem != participant:
                     raise CouncilError("registration filename does not match participant")
                 if registration["lease_expires_epoch"] <= now:
-                    path.unlink(missing_ok=True)
+                    remove_file(path)
                     continue
                 exact_route = (
                     registration.get("target_thread_id")

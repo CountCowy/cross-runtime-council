@@ -38,6 +38,9 @@ jobs:
       - name: Recovery invariant oracles
         run: python3 test_recovery_invariants.py
         working-directory: scripts
+      - name: Deterministic crash matrix
+        run: python3 test_crash_matrix.py
+        working-directory: scripts
       - name: TypeScript type-check
         run: |
           npm install --no-save --silent typescript@5.6.3 "@opencode-ai/plugin@1.18.21" "@types/node@22.7.5"

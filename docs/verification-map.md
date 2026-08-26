@@ -46,6 +46,7 @@ finding; the invariant itself is claimed only for the current broker.
 | Tool/submit-kind/enum/bound parity across broker, MCP schemas, TypeScript, and prose | `test_parity.py` |
 | Corrupt (unparseable) manifest/outbox records cost that record — quarantined, surfaced in health, never the broker; audit-integrity conflicts stay fail-loud | `test_council.py` containment tests |
 | Crash-boundary convergence for deletion, recovery, and retention — with the full artifact oracle asserted after every injected crash | `test_deletion_crash.py` (release-blocking) |
+| Crash-at-every-durable-seam convergence across all six transaction classes (96 self-enumerating rows) | `test_crash_matrix.py` (release-blocking; mutant gate pending) |
 | Rendered decision packets: deterministic output, three-state verification labeling, refusal on digest mismatch or tombstone | `test_council.py` RenderTests |
 
 ## Live-matrix observations (blocking release-checklist rows)
@@ -112,12 +113,38 @@ on restart). Backdating the persisted epoch fields remains the equivalent
 per-record technique. Useful matrix fact: a +301 s jump crosses W2–W5 while
 every default binding lease stays live.
 
-## Planned next (Stage 2, step 2)
+## Deterministic crash matrix (Stage 2, step 2)
 
-A ~24–36-row deterministic crash matrix over six structural transaction
-classes driven by the named failpoints above — single-file atomic replace,
-audit append, multi-file forward transactions (intent → append → commit),
-deletion/tombstone, supersession/outbox fan-out, and window-expiry recovery
-transitions (the W-rows) — release-gated on killing a mutant corpus
-implemented as inverted failpoint behaviors, with at least one held-out
-mutant. The oracles above are the assertion layer those rows reuse.
+[`scripts/test_crash_matrix.py`](../scripts/test_crash_matrix.py) sweeps
+twelve scripted transactions across the six structural classes — single-file
+atomic replace (bind, claim), audit append (a seam inside every forward
+transaction), multi-file forward transactions (start, submission,
+completion), deletion/tombstone, supersession and acknowledgement fan-out
+(cancel, ack), and window-expiry recovery transitions (wake lease,
+expired-claim re-claim, retention sweep, expired-registration restart).
+Row *k* of a sweep re-runs the transaction on a fresh state root, crashes at
+its *k*-th durable seam, recovers, and asserts the full artifact oracle plus
+a scenario postcondition (bimodality, idempotent retry, or a converged
+terminal state).
+
+The sweep is exhaustive by construction — it adds rows until the transaction
+completes without crashing, so a new durable mutation grows the matrix
+automatically (currently **96 crash rows**, well past the plan's 24–36
+hand-enumerated estimate). Two guards prevent silent shrinkage: per-scenario
+minimum-row assertions, and a seam-coverage test that fails if the scenario
+set stops crossing any documented seam.
+
+First finding (fixed the day the matrix landed): a crash between the
+`final.json` write and the completing manifest commit left an orphaned
+terminal artifact under a non-terminal manifest, violating I5 across a
+restart. Recovery now discards an uncommitted `final.json` exactly like an
+uncommitted staged record (see protocol.md, "Delivery and recovery"); rows
+3–5 of the completion sweep re-verify the fix on every run.
+
+## Planned next (Stage 2 release gate)
+
+The mutant corpus: inverted failpoint behaviors (a write silently skipped, a
+removal that does not remove, a double append) that the matrix must kill
+before v0.20 ships, with at least one held-out mutant. Until that gate runs,
+the matrix is evidence of crash-recovery convergence, not of its own
+detection power.
