@@ -178,6 +178,45 @@ discovery never mistakes a stale copy for a second `council` skill.
 All three refuse to run while a live broker socket exists — finish or cancel
 active dialogues and quit the owning runtime first.
 
+## Rendering a decision packet
+
+```
+python3 ~/.claude/skills/council/scripts/council.py render --dialogue-id <dialogue-id> --output packet.html
+```
+
+renders a **completed** dialogue's canonical `final.json` into one
+self-contained, offline HTML page: the executive summary, recommendation,
+disagreements, reserved user decisions, evidence gaps, rejected alternatives,
+convergence challenges, and representation/revision checks, all in one static
+file with no scripts, no external assets, and no network access. Output is
+deterministic — identical input bytes always produce identical output bytes.
+
+The page carries an explicit verification state, never an unearned badge:
+
+- **`--dialogue-id`**: the recomputed digest of `final.json` is compared
+  against the completion record in the dialogue's append-only audit log — an
+  independent artifact written when the dialogue completed. A match renders
+  **VERIFIED**; a mismatch refuses to render.
+- **`--input path/to/final.json --expect-sha256 <hex>`**: renders a bare
+  packet file (no state root needed — this works on the
+  [committed example](../examples/v020-verification-depth/decision-packet.md),
+  whose trusted digest is the committed `final.json.sha256`). **VERIFIED**
+  only on an exact match with a digest you obtained independently; a mismatch
+  refuses to render.
+- **`--input` alone**: the page is labeled **UNVERIFIED FINGERPRINT —
+  self-consistent only**. A self-contained file cannot non-circularly verify
+  itself, and the renderer never pretends otherwise.
+
+The rendered file **contains dialogue content**. It is created with
+owner-only (`0600`) permissions, and it is an immutable, digest-labeled
+point-in-time snapshot: deleting the source dialogue later does not affect
+copies you exported (remove them yourself if you want them gone), while
+`render --dialogue-id` refuses to regenerate a deleted dialogue. A detached
+export cannot observe later deletion; to check whether one is stale, compare
+its displayed digest against the current canonical `final.json`. Once a
+source dialogue has been deleted, that comparison is unavailable — its
+tombstone does not retain the digest.
+
 ## Deleting dialogue records
 
 ```
@@ -198,7 +237,9 @@ so a deletion interrupted by a crash is completed automatically at the next
 broker start, and re-running the command is an idempotent no-op. A session
 that never acknowledged its terminal notice for a deleted dialogue will see
 that late acknowledgement fail with "unknown message" — expected and
-harmless. `doctor` reports the tombstone count;
+harmless. An HTML export made earlier with `render` survives deletion — see
+[Rendering a decision packet](#rendering-a-decision-packet) for exactly what
+that snapshot can and cannot promise. `doctor` reports the tombstone count;
 `uninstall.sh --purge-state` removes tombstones along with the rest of the
 state root.
 

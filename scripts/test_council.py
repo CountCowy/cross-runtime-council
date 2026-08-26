@@ -46,12 +46,15 @@ from council import (
     installation_doctor,
     post_to_relay,
     read_json,
+    render_dialogue_packet,
+    render_packet_file,
     response_contract_for,
     run_cli,
     run_daemon,
     trusted_broker_runtime,
     trusted_mcp_runtime,
     verify_broker_peer,
+    write_rendered_packet,
 )
 from council_mcp import (
     BINDING_CAPABILITIES,
@@ -5810,6 +5813,206 @@ class RetentionSweepTests(TerminalDialogueFixture):
         self.assertEqual(self.run_retention_cli("--disable"), 0)
         self.assertFalse((self.root / "retention.json").exists())
         self.assertEqual(self.run_retention_cli("--days", "0"), 2)
+
+
+class RenderTests(TerminalDialogueFixture):
+    def completed_dialogue(self):
+        self.bind_pair()
+        dialogue = self.broker.start(
+            "alpha",
+            "beta",
+            "Render plan",
+            "Exercise the decision-packet renderer.",
+            [{"source": "user", "claim": "render fixture"}],
+        )["dialogue_id"]
+        self.broker.submit(dialogue, "alpha", "proposal", 0, proposal("alpha"))
+        self.broker.submit(dialogue, "beta", "proposal", 0, proposal("beta"))
+        self.broker.submit(dialogue, "alpha", "exchange", 1, exchange("alpha", True))
+        self.broker.submit(dialogue, "beta", "exchange", 1, exchange("beta", True))
+        self.broker.submit(
+            dialogue, "alpha", "exchange", 2, exchange("alpha", False, 2)
+        )
+        self.broker.submit(dialogue, "beta", "exchange", 2, exchange("beta", False, 2))
+        self.broker.submit(
+            dialogue, "alpha", "convergence_challenge", 2, convergence_challenge()
+        )
+        self.broker.submit(
+            dialogue, "beta", "convergence_challenge", 2, convergence_challenge()
+        )
+        self.broker.submit(dialogue, "alpha", "synthesis", 2, synthesis())
+        self.broker.submit(
+            dialogue, "beta", "representation_check", 2, representation_check()
+        )
+        return dialogue
+
+    def final_path(self, dialogue):
+        return self.root / "dialogues" / dialogue / "final.json"
+
+    def test_dialogue_render_verified_and_deterministic(self):
+        dialogue = self.completed_dialogue()
+        document, info = render_dialogue_packet(self.root, dialogue)
+        again, _ = render_dialogue_packet(self.root, dialogue)
+        self.assertEqual(document, again)
+        self.assertEqual(info["verification"], "verified")
+        self.assertEqual(info["anchor"], "audit_log")
+        self.assertEqual(
+            info["sha256"],
+            hashlib.sha256(self.final_path(dialogue).read_bytes()).hexdigest(),
+        )
+        self.assertIn("VERIFIED", document)
+        self.assertIn(info["sha256"], document)
+        self.assertIn("Convergence challenges", document)
+        self.assertIn("Representation checks", document)
+        self.assertIn("Disagreements", document)
+        self.assertNotIn("<script", document)
+
+    def test_dialogue_render_fails_closed_on_digest_mismatch(self):
+        dialogue = self.completed_dialogue()
+        final = self.final_path(dialogue)
+        final.write_bytes(final.read_bytes() + b" ")
+        with self.assertRaises(CouncilError) as caught:
+            render_dialogue_packet(self.root, dialogue)
+        self.assertIn("canonical digest mismatch", str(caught.exception))
+
+    def test_dialogue_render_refuses_tombstoned_dialogue(self):
+        dialogue = self.completed_dialogue()
+        export = self.root / "export.html"
+        document, _ = render_dialogue_packet(self.root, dialogue)
+        write_rendered_packet(document, export)
+        self.broker.delete_terminal_dialogue(dialogue, "render test")
+        with self.assertRaises(CouncilError) as caught:
+            render_dialogue_packet(self.root, dialogue)
+        self.assertIn("tombstone", str(caught.exception))
+        self.assertTrue(export.is_file())
+
+    def test_dialogue_render_requires_completion(self):
+        dialogue = self.cancelled_dialogue()
+        with self.assertRaises(CouncilError):
+            render_dialogue_packet(self.root, dialogue)
+        active = self.broker.start(
+            "alpha",
+            "beta",
+            "Active plan",
+            "Still deliberating.",
+            [{"source": "user", "claim": "active fixture"}],
+        )["dialogue_id"]
+        with self.assertRaises(CouncilError):
+            render_dialogue_packet(self.root, active)
+
+    def test_file_render_three_states(self):
+        dialogue = self.completed_dialogue()
+        packet_path = self.root / "packet.json"
+        packet_path.write_bytes(self.final_path(dialogue).read_bytes())
+        digest = hashlib.sha256(packet_path.read_bytes()).hexdigest()
+
+        document, info = render_packet_file(packet_path, None)
+        self.assertEqual(info["verification"], "fingerprint")
+        self.assertIsNone(info["anchor"])
+        self.assertIn("UNVERIFIED FINGERPRINT", document)
+
+        document, info = render_packet_file(packet_path, digest)
+        self.assertEqual(info["verification"], "verified")
+        self.assertEqual(info["anchor"], "supplied_digest")
+        self.assertIn("VERIFIED", document)
+
+        with self.assertRaises(CouncilError) as caught:
+            render_packet_file(packet_path, "ab" * 32)
+        self.assertIn("does not match", str(caught.exception))
+        with self.assertRaises(CouncilError):
+            render_packet_file(packet_path, "not-a-digest")
+
+    def test_render_escapes_adversarial_content(self):
+        nasty = {
+            "dialogue_id": "dlg-evil</title><script>alert(1)</script>",
+            "synthesis": {
+                "participant": "alpha",
+                "round": 1,
+                "submitted_at": "2026-01-01T00:00:00+00:00",
+                "payload": {
+                    "executive_summary": (
+                        'closing </script> tag, comment <!-- sneak -->, '
+                        'quote" onmouseover="alert(2)", bidi ‮evil‬'
+                    ),
+                    "recommendation": "x" * 50000,
+                    "disagreements": [{"claim_id": "</dl><script>alert(3)</script>"}],
+                },
+            },
+            "convergence_challenge": [
+                {
+                    "participant": "<img src=x onerror=alert(4)>",
+                    "round": 1,
+                    "payload": {"strongest_failure_mode": "<style>body{display:none}</style>"},
+                }
+            ],
+            "claim_ledger_ids": [],
+        }
+        packet_path = self.root / "nasty.json"
+        packet_path.write_text(json.dumps(nasty), encoding="utf-8")
+        document, _ = render_packet_file(packet_path, None)
+        self.assertNotIn("<script", document)
+        self.assertNotIn("<img", document)
+        self.assertNotIn("<!-- sneak", document)
+        self.assertNotIn('<style>body', document)
+        self.assertIn("&lt;script&gt;alert(1)", document)
+        self.assertIn("&lt;img src=x onerror=alert(4)&gt;", document)
+        self.assertIn("&lt;!-- sneak --&gt;", document)
+        self.assertIn("quote&quot; onmouseover=&quot;alert(2)&quot;", document)
+        self.assertIn("x" * 50000, document)
+
+    def test_rendered_output_is_owner_only(self):
+        target = self.root / "render-out.html"
+        target.write_text("old", encoding="utf-8")
+        os.chmod(target, 0o644)
+        size = write_rendered_packet("<!DOCTYPE html>fresh", target)
+        self.assertEqual(size, target.stat().st_size)
+        self.assertEqual(target.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(target.read_text(encoding="utf-8"), "<!DOCTYPE html>fresh")
+        with self.assertRaises(CouncilError):
+            write_rendered_packet("x", self.root / "dialogues")
+
+    def run_render_cli(self, *arguments):
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            code = run_cli(["--state-root", str(self.root), "render", *arguments])
+        return code, stdout.getvalue(), stderr.getvalue()
+
+    def test_render_cli_smoke(self):
+        dialogue = self.completed_dialogue()
+        output = self.root / "cli-render.html"
+        code, stdout, _ = self.run_render_cli(
+            "--dialogue-id", dialogue, "--output", str(output)
+        )
+        self.assertEqual(code, 0)
+        result = json.loads(stdout)
+        self.assertEqual(result["verification"], "verified")
+        self.assertEqual(result["anchor"], "audit_log")
+        self.assertTrue(output.is_file())
+        self.assertEqual(output.stat().st_mode & 0o777, 0o600)
+
+        missing = self.root / "never-written.html"
+        code, _, stderr = self.run_render_cli(
+            "--input",
+            str(self.final_path(dialogue)),
+            "--expect-sha256",
+            "ab" * 32,
+            "--output",
+            str(missing),
+        )
+        self.assertEqual(code, 2)
+        self.assertIn("does not match", stderr)
+        self.assertFalse(missing.exists())
+
+        code, _, stderr = self.run_render_cli(
+            "--dialogue-id",
+            dialogue,
+            "--expect-sha256",
+            "ab" * 32,
+            "--output",
+            str(missing),
+        )
+        self.assertEqual(code, 2)
+        self.assertIn("audit log", stderr)
+        self.assertFalse(missing.exists())
 
 
 if __name__ == "__main__":

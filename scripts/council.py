@@ -11,6 +11,7 @@ import datetime as dt
 import fcntl
 import hashlib
 import hmac
+import html
 import json
 import os
 import re
@@ -27,7 +28,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 
 SCHEMA_VERSION = 1
@@ -5539,6 +5540,379 @@ def completed_dialogue_report(state_root: Path, dialogue_id: str) -> Dict[str, A
     }
 
 
+RENDER_PAGE_CSS = """
+:root { color-scheme: light dark; }
+body { margin: 0; font: 16px/1.55 -apple-system, "Helvetica Neue", Arial, sans-serif;
+       background: #f6f4ef; color: #1f2933; }
+@media (prefers-color-scheme: dark) { body { background: #14181d; color: #d9dee4; } }
+main { max-width: 52rem; margin: 0 auto; padding: 2rem 1.25rem 4rem; }
+header.page { border-bottom: 2px solid currentColor; padding-bottom: 1rem; margin-bottom: 2rem; }
+h1 { font-size: 1.5rem; margin: 0 0 .4rem; }
+h2 { font-size: 1.15rem; margin: 2.2rem 0 .6rem; border-bottom: 1px solid rgba(127,127,127,.4); padding-bottom: .25rem; }
+h3 { font-size: 1rem; margin: 1.4rem 0 .4rem; }
+p { margin: .5rem 0; }
+ul, ol { margin: .4rem 0 .8rem; padding-left: 1.4rem; }
+li { margin: .3rem 0; }
+dl { margin: .4rem 0 .8rem; }
+dt { font-weight: 600; margin-top: .6rem; }
+dd { margin: .15rem 0 .4rem 1.2rem; }
+.content { unicode-bidi: isolate; overflow-wrap: anywhere; }
+.badge { display: inline-block; padding: .15rem .55rem; border-radius: .3rem;
+         font-size: .8rem; font-weight: 700; letter-spacing: .02em; }
+.badge.verified { background: #1d6f42; color: #fff; }
+.badge.fingerprint { background: #8a6d1a; color: #fff; }
+.meta { font-size: .85rem; opacity: .85; }
+code { font-family: ui-monospace, Menlo, monospace; font-size: .85em; overflow-wrap: anywhere; }
+section.submission { border-left: 3px solid rgba(127,127,127,.5); padding-left: 1rem; margin: 1rem 0; }
+footer { margin-top: 3rem; border-top: 1px solid rgba(127,127,127,.4); padding-top: 1rem; font-size: .85rem; }
+""".strip()
+
+PACKET_SYNTHESIS_SECTIONS = (
+    ("executive_summary", "Executive summary"),
+    ("recommendation", "Recommendation"),
+    ("disagreements", "Disagreements"),
+    ("user_decisions", "Decisions reserved to the user"),
+    ("evidence_gaps", "Evidence gaps"),
+    ("rejected_alternatives", "Rejected alternatives"),
+)
+
+
+def _packet_escape(value: Any) -> str:
+    return html.escape(str(value), quote=True)
+
+
+def _packet_value_html(value: Any) -> str:
+    """Render any packet value faithfully: every field shown, everything escaped."""
+    if isinstance(value, dict):
+        parts = ["<dl>"]
+        for key, item in value.items():
+            parts.append(
+                "<dt>%s</dt><dd>%s</dd>" % (_packet_escape(key), _packet_value_html(item))
+            )
+        parts.append("</dl>")
+        return "".join(parts)
+    if isinstance(value, list):
+        if not value:
+            return '<p class="meta">(none)</p>'
+        parts = ["<ul>"]
+        for item in value:
+            parts.append("<li>%s</li>" % _packet_value_html(item))
+        parts.append("</ul>")
+        return "".join(parts)
+    if isinstance(value, bool):
+        return "<code>%s</code>" % ("true" if value else "false")
+    if value is None:
+        return "<code>null</code>"
+    if isinstance(value, (int, float)):
+        return "<code>%s</code>" % _packet_escape(json.dumps(value))
+    text = str(value)
+    paragraphs = [part for part in text.split("\n\n") if part.strip()] or [""]
+    return "".join(
+        '<p class="content">%s</p>' % _packet_escape(part).replace("\n", "<br>")
+        for part in paragraphs
+    )
+
+
+def _packet_submissions_html(items: Any, title: str, singular: str) -> str:
+    if not isinstance(items, list) or not items:
+        return ""
+    parts = ["<h2>%s</h2>" % _packet_escape(title)]
+    for index, item in enumerate(items, 1):
+        parts.append('<section class="submission">')
+        if isinstance(item, dict):
+            parts.append(
+                "<h3>%s %d &mdash; %s (round %s)</h3>"
+                % (
+                    _packet_escape(singular),
+                    index,
+                    _packet_escape(item.get("participant", "(unknown)")),
+                    _packet_escape(item.get("round", "?")),
+                )
+            )
+            parts.append(_packet_value_html(item.get("payload", {})))
+        else:
+            parts.append(_packet_value_html(item))
+        parts.append("</section>")
+    return "".join(parts)
+
+
+def build_packet_html(
+    packet: Dict[str, Any], digest_hex: str, verification: Dict[str, Any]
+) -> str:
+    """Build the self-contained decision-packet page.
+
+    The page embeds no scripts, no external assets, and no wall-clock
+    timestamps — only escaped content already present in the canonical
+    record — so identical input bytes always produce identical output bytes.
+    Dissent stays visible: disagreements, convergence challenges, and
+    representation checks render as first-class sections, never collapsed.
+    """
+    dialogue_id = packet.get("dialogue_id", "(missing dialogue_id)")
+    revision = packet.get("synthesis_revision")
+    synthesis = revision if isinstance(revision, dict) else packet.get("synthesis")
+    if not isinstance(synthesis, dict):
+        synthesis = {}
+    payload = synthesis.get("payload")
+    if not isinstance(payload, dict):
+        payload = {}
+    source_label = (
+        "synthesis (challenge-revised)" if isinstance(revision, dict) else "synthesis"
+    )
+    badge_class = "verified" if verification["state"] == "verified" else "fingerprint"
+
+    out = []
+    out.append("<!DOCTYPE html>")
+    out.append('<html lang="en"><head><meta charset="utf-8">')
+    out.append(
+        '<meta http-equiv="Content-Security-Policy" '
+        'content="default-src \'none\'; style-src \'unsafe-inline\'">'
+    )
+    out.append('<meta name="viewport" content="width=device-width, initial-scale=1">')
+    out.append("<title>Council decision packet %s</title>" % _packet_escape(dialogue_id))
+    out.append("<style>%s</style></head><body><main>" % RENDER_PAGE_CSS)
+    out.append('<header class="page">')
+    out.append("<h1>Council decision packet</h1>")
+    out.append('<p class="meta">Dialogue <code>%s</code></p>' % _packet_escape(dialogue_id))
+    out.append(
+        '<p><span class="badge %s">%s</span></p>'
+        % (badge_class, _packet_escape(verification["label"]))
+    )
+    completed_at = synthesis.get("submitted_at")
+    completed_note = (
+        " &middot; synthesis submitted %s" % _packet_escape(completed_at)
+        if isinstance(completed_at, str)
+        else ""
+    )
+    out.append(
+        '<p class="meta">final.json SHA-256: <code>%s</code> &middot; rendered from %s%s</p>'
+        % (_packet_escape(digest_hex), _packet_escape(source_label), completed_note)
+    )
+    out.append("</header>")
+
+    ordered = dict(PACKET_SYNTHESIS_SECTIONS)
+    for key, heading in PACKET_SYNTHESIS_SECTIONS:
+        if key in payload:
+            out.append("<h2>%s</h2>" % _packet_escape(heading))
+            out.append(_packet_value_html(payload[key]))
+    for key in payload:
+        if key not in ordered:
+            out.append("<h2>%s</h2>" % _packet_escape(key))
+            out.append(_packet_value_html(payload[key]))
+
+    out.append(
+        _packet_submissions_html(
+            packet.get("convergence_challenge"), "Convergence challenges", "Challenge"
+        )
+    )
+    out.append(
+        _packet_submissions_html(
+            packet.get("representation_checks"), "Representation checks", "Check"
+        )
+    )
+    out.append(
+        _packet_submissions_html(packet.get("revision_checks"), "Revision checks", "Check")
+    )
+
+    ledger = packet.get("claim_ledger_ids")
+    parked = packet.get("parked_claims")
+    retired = packet.get("retired_claims")
+    out.append("<h2>Ledger summary</h2>")
+    out.append(
+        '<p class="meta">%d canonical claims; %d parked; %d retired. '
+        "Full claim content lives in the dialogue record, not in final.json.</p>"
+        % (
+            len(ledger) if isinstance(ledger, list) else 0,
+            len(parked) if isinstance(parked, list) else 0,
+            len(retired) if isinstance(retired, list) else 0,
+        )
+    )
+
+    out.append("<footer>")
+    out.append(
+        "<p>This file is an immutable, digest-labeled point-in-time snapshot of the "
+        "canonical <code>final.json</code>. It cannot observe later changes to the "
+        "source record (including deletion). To check staleness, recompute "
+        "<code>shasum -a 256</code> over the current canonical file and compare with "
+        "the digest above.</p>"
+    )
+    out.append("</footer>")
+    out.append("</main></body></html>")
+    return "\n".join(part for part in out if part)
+
+
+def _parse_packet_bytes(raw: bytes) -> Dict[str, Any]:
+    try:
+        packet = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as error:
+        raise CouncilError("decision packet is not valid JSON: %s" % error)
+    if not isinstance(packet, dict):
+        raise CouncilError("decision packet must be a JSON object")
+    return packet
+
+
+def _audit_final_digests(audit_path: Path, dialogue_id: str) -> List[str]:
+    """Collect every final_ref sha256 the append-only audit log recorded."""
+    digests = set()
+
+    def walk(node: Any) -> None:
+        if isinstance(node, dict):
+            final_ref = node.get("final_ref")
+            if (
+                isinstance(final_ref, dict)
+                and final_ref.get("dialogue_id") == dialogue_id
+                and isinstance(final_ref.get("sha256"), str)
+            ):
+                digests.add(final_ref["sha256"])
+            for item in node.values():
+                walk(item)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    if not audit_path.is_file():
+        return []
+    with open(audit_path, "r", encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                walk(json.loads(line))
+            except ValueError:
+                continue
+    return sorted(digests)
+
+
+def render_dialogue_packet(
+    state_root: Path, dialogue_id: str
+) -> Tuple[str, Dict[str, Any]]:
+    """Render a completed dialogue's canonical final.json to a static page,
+    verified against the completion record in the dialogue's audit log.
+
+    The audit log is the non-circular trust anchor: it durably recorded the
+    canonical digest when the dialogue completed, independently of the
+    final.json bytes rendered here. A mismatch refuses to render. A deleted
+    (tombstoned) dialogue refuses to regenerate.
+    """
+    dialogue_id = safe_name(dialogue_id, "dialogue_id")
+    root = state_root.expanduser().resolve()
+    tombstone = root / "tombstones" / ("%s.json" % dialogue_id)
+    if tombstone.exists():
+        raise CouncilError(
+            "dialogue %s was deleted; its tombstone is present and regeneration "
+            "is unavailable" % dialogue_id
+        )
+    dialogue_root = root / "dialogues" / dialogue_id
+    manifest_path = dialogue_root / "manifest.json"
+    final_path = dialogue_root / "final.json"
+    if not manifest_path.is_file() or not final_path.is_file():
+        raise CouncilError("unknown completed dialogue: %s" % dialogue_id)
+    try:
+        manifest = read_json(manifest_path)
+    except (OSError, ValueError, TypeError, json.JSONDecodeError) as error:
+        raise CouncilError("completed dialogue record is invalid: %s" % error)
+    if not isinstance(manifest, dict) or manifest.get("phase") != "complete":
+        raise CouncilError("render is available only after completion")
+    raw = final_path.read_bytes()
+    digest = hashlib.sha256(raw).hexdigest()
+    anchors = _audit_final_digests(dialogue_root / "audit.jsonl", dialogue_id)
+    if anchors and anchors != [digest]:
+        raise CouncilError(
+            "canonical digest mismatch for %s: final.json is %s but the audit "
+            "log recorded %s — refusing to render"
+            % (dialogue_id, digest, ", ".join(anchors))
+        )
+    packet = _parse_packet_bytes(raw)
+    if packet.get("dialogue_id") != dialogue_id:
+        raise CouncilError("final.json does not belong to dialogue %s" % dialogue_id)
+    if anchors:
+        verification = {
+            "state": "verified",
+            "label": "VERIFIED — matches the completion record in the audit log",
+            "anchor": "audit_log",
+        }
+    else:
+        verification = {
+            "state": "fingerprint",
+            "label": (
+                "UNVERIFIED FINGERPRINT — no completion record found in the "
+                "audit log; digest is self-computed only"
+            ),
+            "anchor": None,
+        }
+    document = build_packet_html(packet, digest, verification)
+    return document, {
+        "dialogue_id": dialogue_id,
+        "sha256": digest,
+        "verification": verification["state"],
+        "anchor": verification["anchor"],
+    }
+
+
+def render_packet_file(
+    input_path: Path, expect_sha256: Optional[str]
+) -> Tuple[str, Dict[str, Any]]:
+    """Render a bare final.json path to a static page.
+
+    A self-contained file cannot non-circularly verify itself, so without an
+    independently obtained trusted digest the page is labeled an unverified
+    fingerprint; with --expect-sha256 it is VERIFIED only on an exact match
+    and refuses to render otherwise.
+    """
+    path = input_path.expanduser()
+    try:
+        raw = path.read_bytes()
+    except OSError as error:
+        raise CouncilError("cannot read decision packet: %s" % error)
+    digest = hashlib.sha256(raw).hexdigest()
+    if expect_sha256:
+        expected = expect_sha256.strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", expected):
+            raise CouncilError("--expect-sha256 must be 64 hex characters")
+        if not hmac.compare_digest(expected, digest):
+            raise CouncilError(
+                "refusing to render: computed sha256 %s does not match the "
+                "supplied trusted digest %s" % (digest, expected)
+            )
+        verification = {
+            "state": "verified",
+            "label": "VERIFIED — matches the supplied trusted digest",
+            "anchor": "supplied_digest",
+        }
+    else:
+        verification = {
+            "state": "fingerprint",
+            "label": (
+                "UNVERIFIED FINGERPRINT — self-consistent only "
+                "(no external reference supplied)"
+            ),
+            "anchor": None,
+        }
+    packet = _parse_packet_bytes(raw)
+    document = build_packet_html(packet, digest, verification)
+    return document, {
+        "dialogue_id": packet.get("dialogue_id"),
+        "sha256": digest,
+        "verification": verification["state"],
+        "anchor": verification["anchor"],
+    }
+
+
+def write_rendered_packet(document: str, output_path: Path) -> int:
+    """Write the page owner-only (0600); it contains dialogue content."""
+    encoded = document.encode("utf-8")
+    path = output_path.expanduser()
+    if path.exists() and not path.is_file():
+        raise CouncilError("render output path must be a regular file")
+    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+        os.write(fd, encoded)
+    finally:
+        os.close(fd)
+    return len(encoded)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Coordinate bounded multi-runtime councils")
     parser.add_argument("--state-root", type=Path, default=default_state_root())
@@ -5548,6 +5922,22 @@ def build_parser() -> argparse.ArgumentParser:
 
     report = subparsers.add_parser("report")
     report.add_argument("--dialogue-id", required=True)
+
+    render = subparsers.add_parser(
+        "render",
+        description=(
+            "Render a completed dialogue's canonical decision packet to one "
+            "self-contained offline HTML file. The output contains dialogue "
+            "content: it is written with owner-only (0600) permissions and is "
+            "an immutable, digest-labeled snapshot that survives later "
+            "deletion of the source record unless you remove it yourself."
+        ),
+    )
+    render_source = render.add_mutually_exclusive_group(required=True)
+    render_source.add_argument("--dialogue-id")
+    render_source.add_argument("--input", type=Path)
+    render.add_argument("--expect-sha256")
+    render.add_argument("--output", type=Path, required=True)
 
     delete = subparsers.add_parser("delete")
     delete.add_argument("--dialogue-id", required=True)
@@ -5583,6 +5973,25 @@ def run_cli(argv: Optional[List[str]] = None) -> int:
             result = installation_doctor(args.state_root)
         elif args.command == "report":
             result = completed_dialogue_report(args.state_root, args.dialogue_id)
+        elif args.command == "render":
+            if args.expect_sha256 and not args.input:
+                raise CouncilError(
+                    "--expect-sha256 applies only to --input; a dialogue-id "
+                    "render verifies against the audit log instead"
+                )
+            if args.input is not None:
+                document, info = render_packet_file(args.input, args.expect_sha256)
+            else:
+                document, info = render_dialogue_packet(
+                    args.state_root, args.dialogue_id
+                )
+            info["bytes"] = write_rendered_packet(document, args.output)
+            info["output"] = str(args.output)
+            info["note"] = (
+                "the rendered file contains dialogue content; it is an "
+                "immutable snapshot that survives deletion of the source record"
+            )
+            result = info
         elif args.command == "delete":
             state_root = args.state_root.expanduser().resolve()
             probe = CouncilClient(state_root, autostart=False)
