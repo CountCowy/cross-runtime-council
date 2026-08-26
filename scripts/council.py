@@ -579,7 +579,56 @@ def assert_no_secret(value: Any) -> None:
         raise CouncilError("payload resembles a credential and was blocked by the egress guard")
 
 
+# Test-only named failpoints. FAILPOINT_HOOK is None in production; the test
+# suites may install a callable that receives a stable seam name (for example
+# "atomic_json:manifest") immediately BEFORE each durable mutation, and may
+# raise from it to simulate a crash at that exact boundary. This is the
+# named-failpoint layer the v0.20 verification plan budgets; monkeypatching
+# the primitives directly remains available as the test-local fallback.
+FAILPOINT_HOOK: Optional[Any] = None
+
+_SEAM_FILE_NAMES = {
+    "manifest.json": "manifest",
+    "final.json": "final",
+    "audit.jsonl": "audit-log",
+    "router.json": "router",
+    "retention.json": "retention",
+    "opencode-runtime.json": "opencode-pin",
+    "broker.lock": "broker-lock",
+}
+_SEAM_PARENT_NAMES = {
+    "tombstones": "tombstone",
+    "registrations": "registration",
+    "submissions": "submission",
+}
+
+
+def durable_seam_name(path: Path) -> str:
+    """Stable seam name for a durable-artifact path, used by named failpoints."""
+    path = Path(path)
+    name = _SEAM_FILE_NAMES.get(path.name)
+    if name:
+        return name
+    name = _SEAM_PARENT_NAMES.get(path.parent.name)
+    if name:
+        return name
+    if path.parent.parent.name == "outbox":
+        return "outbox-record"
+    if path.name == "submissions":
+        return "submissions-dir"
+    if path.name.startswith("dlg-") and path.parent.name == "dialogues":
+        return "dialogue-dir"
+    return "other"
+
+
+def _failpoint(operation: str, path: Path) -> None:
+    hook = FAILPOINT_HOOK
+    if hook is not None:
+        hook("%s:%s" % (operation, durable_seam_name(path)))
+
+
 def atomic_json(path: Path, value: Any, mode: int = 0o600) -> None:
+    _failpoint("atomic_json", path)
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     fd, temporary = tempfile.mkstemp(prefix=".%s." % path.name, dir=str(path.parent))
     try:
@@ -599,6 +648,7 @@ def atomic_json(path: Path, value: Any, mode: int = 0o600) -> None:
 
 
 def append_jsonl(path: Path, value: Any) -> None:
+    _failpoint("append_jsonl", path)
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     repair_jsonl_tail(path)
     descriptor = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
@@ -610,6 +660,7 @@ def append_jsonl(path: Path, value: Any) -> None:
 
 def remove_file(path: Path) -> None:
     """Idempotent unlink: absence is success, never follow a symlink target."""
+    _failpoint("remove_file", path)
     try:
         path.unlink()
     except FileNotFoundError:
@@ -618,6 +669,7 @@ def remove_file(path: Path) -> None:
 
 def remove_empty_dir(path: Path) -> None:
     """Idempotent rmdir: absence is success; a non-empty directory fails loud."""
+    _failpoint("remove_empty_dir", path)
     try:
         path.rmdir()
     except FileNotFoundError:

@@ -11,9 +11,14 @@ import json
 import os
 import unittest
 
+import council
 from council import CouncilBroker, read_json
 from recovery_invariants import check_state_root
 from test_council import TerminalDialogueFixture
+
+
+class SeamCrash(Exception):
+    pass
 
 
 def write_json_0600(path, value):
@@ -218,6 +223,135 @@ class RecoveryInvariantTests(TerminalDialogueFixture):
         ]
         write_json_0600(self.manifest_path(dialogue), manifest)
         self.assert_violation("unknown duplicate target")
+
+
+class NamedFailpointTests(TerminalDialogueFixture):
+    """The named-failpoint layer: stable seam names before every durable
+    mutation, and crash-at-seam recovery asserted with the full oracle."""
+
+    def install_hook(self, hook):
+        council.FAILPOINT_HOOK = hook
+        self.addCleanup(setattr, council, "FAILPOINT_HOOK", None)
+
+    def crash_at(self, seam_name, occurrence=1):
+        state = {"seen": 0}
+
+        def hook(name):
+            if name == seam_name:
+                state["seen"] += 1
+                if state["seen"] == occurrence:
+                    raise SeamCrash(seam_name)
+
+        self.install_hook(hook)
+
+    def test_seam_names_cover_real_flows(self):
+        names = set()
+        self.install_hook(names.add)
+        dialogue = self.completed_dialogue()
+        self.broker.delete_terminal_dialogue(dialogue, "failpoint fixture")
+        council.FAILPOINT_HOOK = None
+        expected = {
+            "atomic_json:registration",
+            "atomic_json:manifest",
+            "atomic_json:submission",
+            "atomic_json:final",
+            "atomic_json:outbox-record",
+            "atomic_json:tombstone",
+            "append_jsonl:audit-log",
+            "remove_file:outbox-record",
+            "remove_file:manifest",
+            "remove_file:audit-log",
+            "remove_file:submission",
+            "remove_file:final",
+            "remove_empty_dir:submissions-dir",
+            "remove_empty_dir:dialogue-dir",
+        }
+        missing = expected - names
+        self.assertFalse(missing, "flows never touched seams %s" % sorted(missing))
+        unnamed = {name for name in names if name.endswith(":other")}
+        self.assertFalse(
+            unnamed, "durable mutations hit unclassified seams %s" % sorted(unnamed)
+        )
+
+    def test_crash_before_tombstone_write_recovers_intact(self):
+        dialogue = self.completed_dialogue()
+        self.crash_at("atomic_json:tombstone")
+        with self.assertRaises(SeamCrash):
+            self.broker.delete_terminal_dialogue(dialogue, "failpoint fixture")
+        council.FAILPOINT_HOOK = None
+        broker = CouncilBroker(self.root)
+        self.assertEqual(check_state_root(self.root), [])
+        self.assertFalse(
+            (self.root / "tombstones" / ("%s.json" % dialogue)).exists()
+        )
+        self.assertTrue((self.root / "dialogues" / dialogue).is_dir())
+        result = broker.delete_terminal_dialogue(dialogue, "failpoint fixture")
+        self.assertTrue(result["deleted"])
+        self.assertEqual(check_state_root(self.root), [])
+
+    def test_crash_at_first_deletion_unlink_converges_tombstoned(self):
+        dialogue = self.completed_dialogue()
+        self.crash_at("remove_file:outbox-record")
+        with self.assertRaises(SeamCrash):
+            self.broker.delete_terminal_dialogue(dialogue, "failpoint fixture")
+        council.FAILPOINT_HOOK = None
+        # The tombstone committed before the crash, so restart must finish
+        # the deletion on its own.
+        CouncilBroker(self.root)
+        self.assertEqual(check_state_root(self.root), [])
+        self.assertTrue(
+            (self.root / "tombstones" / ("%s.json" % dialogue)).exists()
+        )
+        self.assertFalse((self.root / "dialogues" / dialogue).exists())
+
+    def test_crash_at_audit_append_during_completion_recovers(self):
+        self.bind_pair()
+        from test_council import (
+            convergence_challenge,
+            exchange,
+            proposal,
+            representation_check,
+            synthesis,
+        )
+
+        dialogue = self.broker.start(
+            "alpha",
+            "beta",
+            "Failpoint plan",
+            "Crash the completion audit append.",
+            [{"source": "user", "claim": "failpoint fixture"}],
+        )["dialogue_id"]
+        self.broker.submit(dialogue, "alpha", "proposal", 0, proposal("alpha"))
+        self.broker.submit(dialogue, "beta", "proposal", 0, proposal("beta"))
+        self.broker.submit(dialogue, "alpha", "exchange", 1, exchange("alpha", True))
+        self.broker.submit(dialogue, "beta", "exchange", 1, exchange("beta", True))
+        self.broker.submit(
+            dialogue, "alpha", "exchange", 2, exchange("alpha", False, 2)
+        )
+        self.broker.submit(dialogue, "beta", "exchange", 2, exchange("beta", False, 2))
+        self.broker.submit(
+            dialogue, "alpha", "convergence_challenge", 2, convergence_challenge()
+        )
+        self.broker.submit(
+            dialogue, "beta", "convergence_challenge", 2, convergence_challenge()
+        )
+        self.broker.submit(dialogue, "alpha", "synthesis", 2, synthesis())
+        self.crash_at("append_jsonl:audit-log")
+        with self.assertRaises(SeamCrash):
+            self.broker.submit(
+                dialogue, "beta", "representation_check", 2, representation_check()
+            )
+        council.FAILPOINT_HOOK = None
+        broker = CouncilBroker(self.root)
+        self.assertEqual(check_state_root(self.root), [])
+        manifest = read_json(self.root / "dialogues" / dialogue / "manifest.json")
+        if manifest["phase"] != "complete":
+            result = broker.submit(
+                dialogue, "beta", "representation_check", 2, representation_check()
+            )
+            self.assertEqual(result["phase"], "complete")
+        self.assertEqual(check_state_root(self.root), [])
+        self.assertTrue(self.final_path(dialogue).is_file())
 
 
 if __name__ == "__main__":

@@ -31,6 +31,20 @@ disagreements with empirical resolution paths. The unmodified
 beside it and digest-verified in CI. That artifact is what this tool
 produces; if it isn't useful to you, stop reading here.
 
+Prefer it as a page? From a clone, one offline command renders the packet to
+a single static HTML file — no install, no state root, `python3` is enough:
+
+```
+python3 scripts/council.py render --input examples/v020-verification-depth/final.json \
+  --expect-sha256 "$(awk '{print $1}' examples/v020-verification-depth/final.json.sha256)" \
+  --output packet.html
+```
+
+The digest comes from the committed `final.json.sha256`, so **VERIFIED** on
+the page means exact agreement with the committed reference (CI runs this
+exact command on every push); drop the flag and the page honestly labels
+itself an unverified fingerprint instead.
+
 ## Quick start
 
 Fastest first dialogue: [docs/quickstart.md](docs/quickstart.md) — two Claude

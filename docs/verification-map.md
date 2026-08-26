@@ -62,11 +62,24 @@ a **blocking** release-checklist row from v0.20 onward.
 | L4 | Acknowledgement recovery over live transports | G4 (artifact half: I9 exemption + reconciliation test) |
 | L5 | Terminal delivery with identical canonical digests at every seat | G5 (artifact half: I6) |
 
+## Named failpoints (landed with Stage 1)
+
+The persistence primitives (`atomic_json`, `append_jsonl`, `remove_file`,
+`remove_empty_dir`) call a test-only hook (`council.FAILPOINT_HOOK`, `None`
+in production) with a stable seam name — `atomic_json:manifest`,
+`atomic_json:tombstone`, `append_jsonl:audit-log`,
+`remove_file:outbox-record`, and so on — immediately before every durable
+mutation. A test may raise from the hook to crash at that exact boundary.
+`test_recovery_invariants.py` pins that real flows touch every documented
+seam and never an unclassified one, and asserts crash-at-seam recovery with
+the full oracle; monkeypatching the primitives directly remains the
+test-local fallback.
+
 ## Planned next (Stage 2 of the ratified plan)
 
 A one-day recovery-window inventory (including an injectable-time-source
 check for lease/wake windows), then a ~24–36-row deterministic crash matrix
-over six structural transaction classes driven by named failpoints at the
-persistence seams, release-gated on killing a mutant corpus implemented as
-inverted failpoint behaviors — with at least one held-out mutant. The
-oracles above are the assertion layer those rows reuse.
+over six structural transaction classes driven by the named failpoints
+above, release-gated on killing a mutant corpus implemented as inverted
+failpoint behaviors — with at least one held-out mutant. The oracles above
+are the assertion layer those rows reuse.

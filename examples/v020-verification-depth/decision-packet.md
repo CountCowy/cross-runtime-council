@@ -61,5 +61,14 @@ The council's canonical executive summary, verbatim from `final.json`:
 
 ## Try it yourself
 
+Render this packet to a single offline HTML page (from a repository clone;
+`python3` is all you need):
+
+```
+python3 scripts/council.py render --input examples/v020-verification-depth/final.json \
+  --expect-sha256 "$(awk '{print $1}' examples/v020-verification-depth/final.json.sha256)" \
+  --output packet.html
+```
+
 The shortest live path is a two-session, single-runtime council — see the
 [quick start](../../README.md#quick-start).

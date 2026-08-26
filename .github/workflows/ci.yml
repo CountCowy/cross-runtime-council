@@ -50,6 +50,12 @@ jobs:
       - name: Example decision-packet digest binding
         run: shasum -a 256 -c final.json.sha256
         working-directory: examples/v020-verification-depth
+      - name: Example packet renders (the README command)
+        run: |
+          python3 scripts/council.py render \
+            --input examples/v020-verification-depth/final.json \
+            --expect-sha256 "$(awk '{print $1}' examples/v020-verification-depth/final.json.sha256)" \
+            --output /tmp/packet-check.html
 
   secret-scan:
     runs-on: ubuntu-latest
