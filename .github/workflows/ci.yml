@@ -35,6 +35,9 @@ jobs:
       - name: Deletion x recovery crash harness
         run: python3 test_deletion_crash.py
         working-directory: scripts
+      - name: Recovery invariant oracles
+        run: python3 test_recovery_invariants.py
+        working-directory: scripts
       - name: TypeScript type-check
         run: |
           npm install --no-save --silent typescript@5.6.3 "@opencode-ai/plugin@1.18.21" "@types/node@22.7.5"

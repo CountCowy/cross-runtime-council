@@ -5450,6 +5450,38 @@ class TerminalDialogueFixture(unittest.TestCase):
             binding_capability=CAP_BETA,
         )
 
+    def completed_dialogue(self):
+        self.bind_pair()
+        dialogue = self.broker.start(
+            "alpha",
+            "beta",
+            "Render plan",
+            "Exercise the decision-packet renderer.",
+            [{"source": "user", "claim": "render fixture"}],
+        )["dialogue_id"]
+        self.broker.submit(dialogue, "alpha", "proposal", 0, proposal("alpha"))
+        self.broker.submit(dialogue, "beta", "proposal", 0, proposal("beta"))
+        self.broker.submit(dialogue, "alpha", "exchange", 1, exchange("alpha", True))
+        self.broker.submit(dialogue, "beta", "exchange", 1, exchange("beta", True))
+        self.broker.submit(
+            dialogue, "alpha", "exchange", 2, exchange("alpha", False, 2)
+        )
+        self.broker.submit(dialogue, "beta", "exchange", 2, exchange("beta", False, 2))
+        self.broker.submit(
+            dialogue, "alpha", "convergence_challenge", 2, convergence_challenge()
+        )
+        self.broker.submit(
+            dialogue, "beta", "convergence_challenge", 2, convergence_challenge()
+        )
+        self.broker.submit(dialogue, "alpha", "synthesis", 2, synthesis())
+        self.broker.submit(
+            dialogue, "beta", "representation_check", 2, representation_check()
+        )
+        return dialogue
+
+    def final_path(self, dialogue):
+        return self.root / "dialogues" / dialogue / "final.json"
+
     def start_cancelled(self):
         dialogue = self.broker.start(
             "alpha",
@@ -5816,38 +5848,6 @@ class RetentionSweepTests(TerminalDialogueFixture):
 
 
 class RenderTests(TerminalDialogueFixture):
-    def completed_dialogue(self):
-        self.bind_pair()
-        dialogue = self.broker.start(
-            "alpha",
-            "beta",
-            "Render plan",
-            "Exercise the decision-packet renderer.",
-            [{"source": "user", "claim": "render fixture"}],
-        )["dialogue_id"]
-        self.broker.submit(dialogue, "alpha", "proposal", 0, proposal("alpha"))
-        self.broker.submit(dialogue, "beta", "proposal", 0, proposal("beta"))
-        self.broker.submit(dialogue, "alpha", "exchange", 1, exchange("alpha", True))
-        self.broker.submit(dialogue, "beta", "exchange", 1, exchange("beta", True))
-        self.broker.submit(
-            dialogue, "alpha", "exchange", 2, exchange("alpha", False, 2)
-        )
-        self.broker.submit(dialogue, "beta", "exchange", 2, exchange("beta", False, 2))
-        self.broker.submit(
-            dialogue, "alpha", "convergence_challenge", 2, convergence_challenge()
-        )
-        self.broker.submit(
-            dialogue, "beta", "convergence_challenge", 2, convergence_challenge()
-        )
-        self.broker.submit(dialogue, "alpha", "synthesis", 2, synthesis())
-        self.broker.submit(
-            dialogue, "beta", "representation_check", 2, representation_check()
-        )
-        return dialogue
-
-    def final_path(self, dialogue):
-        return self.root / "dialogues" / dialogue / "final.json"
-
     def test_dialogue_render_verified_and_deterministic(self):
         dialogue = self.completed_dialogue()
         document, info = render_dialogue_packet(self.root, dialogue)

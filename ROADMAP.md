@@ -32,7 +32,10 @@ final digest — targeted after the verification work), then revisit
   crash harness (release-blocking, runs in CI). In progress for v0.20: the
   staged verification plan decided in the
   [committed example packet](examples/v020-verification-depth/decision-packet.md)
-  — durable-artifact invariant checkers with test-only failpoints, then an
+  — durable-artifact invariant checkers (landed: see the
+  [invariant coverage map](docs/verification-map.md); the oracles run in CI
+  and inside the crash harness after every injected crash) with test-only
+  failpoints, then an
   expanded deterministic crash matrix release-gated on killing a mutant
   corpus, then an optional seeded adversarial sequencer; full property-based
   modeling is deferred to a v0.21 go/no-go decided on recorded mutant-corpus

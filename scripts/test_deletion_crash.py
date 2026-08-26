@@ -27,6 +27,7 @@ from pathlib import Path
 from unittest import mock
 
 import council
+import recovery_invariants
 from council import CouncilBroker, CouncilError, read_json
 
 CAP_ALPHA = "alpha-capability-" + "s" * 40
@@ -207,6 +208,9 @@ class DeletionCrashMatrixTests(unittest.TestCase):
 
     def assert_bimodal_invariant(self, root):
         broker = CouncilBroker(root)
+        # Every documented artifact invariant must hold after recovery,
+        # not just the deletion-specific bimodal one.
+        self.assertEqual(recovery_invariants.check_state_root(root), [])
         tombstone = root / "tombstones" / ("%s.json" % self.target_id)
         dialogue_dir = root / "dialogues" / self.target_id
         if tombstone.exists():
@@ -309,6 +313,7 @@ class DeletionCrashMatrixTests(unittest.TestCase):
         # legal steady state after any crash is fully swept: tombstoned with
         # zero content, zero references, and the control dialogue untouched.
         CouncilBroker(root)
+        self.assertEqual(recovery_invariants.check_state_root(root), [])
         tombstone = root / "tombstones" / ("%s.json" % self.target_id)
         self.assertTrue(tombstone.exists())
         self.assertEqual(read_json(tombstone)["reason"], "retention_sweep")
