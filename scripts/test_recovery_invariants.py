@@ -7,9 +7,11 @@ encodes. The oracles themselves live in recovery_invariants.py and are also
 run by the deletion x recovery crash harness after every injected crash.
 """
 
+import inspect
 import json
 import os
 import unittest
+from pathlib import Path
 
 import council
 from council import CouncilBroker, read_json
@@ -352,6 +354,95 @@ class NamedFailpointTests(TerminalDialogueFixture):
             self.assertEqual(result["phase"], "complete")
         self.assertEqual(check_state_root(self.root), [])
         self.assertTrue(self.final_path(dialogue).is_file())
+
+
+class InjectableTimeSourceTests(TerminalDialogueFixture):
+    """Stage 2 recovery-window inventory: every persisted recovery window is
+    deterministically crossable by rebinding the single wall-clock seam
+    (council.epoch_now); no persisted window reads any other clock."""
+
+    def install_clock(self):
+        original = council.epoch_now
+        clock = {"offset": 0.0}
+        council.epoch_now = lambda: original() + clock["offset"]
+        self.addCleanup(setattr, council, "epoch_now", original)
+        return clock
+
+    def test_epoch_now_is_the_single_wall_clock_seam(self):
+        source = Path(council.__file__).read_text(encoding="utf-8")
+        self.assertEqual(
+            source.count("time.time()"),
+            1,
+            "a persisted window may be reading the wall clock outside epoch_now",
+        )
+        self.assertIn("return time.time()", inspect.getsource(council.epoch_now))
+
+    def test_every_persisted_window_crosses_deterministically(self):
+        clock = self.install_clock()
+        self.bind_pair()
+        self.broker.start(
+            "alpha",
+            "beta",
+            "Window inventory",
+            "Cross every persisted recovery window.",
+            [{"source": "user", "claim": "window fixture"}],
+        )
+
+        def beta_wakes():
+            return [
+                item
+                for item in self.broker.pending_wakes()["notifications"]
+                if item["participant"] == "beta"
+            ]
+
+        # W3 wake lease: a leased wake is invisible until the lease expires.
+        first = beta_wakes()
+        self.assertEqual([item["notification_kind"] for item in first], ["wake"])
+        self.assertEqual(beta_wakes(), [])
+        clock["offset"] = council.WAKE_LEASE_SECONDS + 1
+        second = beta_wakes()
+        self.assertEqual([item["notification_kind"] for item in second], ["wake"])
+        self.assertEqual(second[0]["message_id"], first[0]["message_id"])
+
+        # W4 wake retry back-off: a delivered wake is quiet until the retry
+        # window passes; the attempt cap then routes to needs_attention (W5).
+        self.broker.wake_ack(
+            "beta", second[0]["message_id"], second[0]["notification_id"], "wake", True
+        )
+        self.assertEqual(beta_wakes(), [])
+        clock["offset"] += council.WAKE_RETRY_SECONDS + 1
+        attention = beta_wakes()
+        self.assertEqual(
+            [item["notification_kind"] for item in attention], ["needs_attention"]
+        )
+        self.assertEqual(beta_wakes(), [])
+        clock["offset"] += council.WAKE_LEASE_SECONDS + 1
+        self.assertEqual(
+            [item["notification_kind"] for item in beta_wakes()], ["needs_attention"]
+        )
+
+        # W2 claim window: an expired claim is re-claimable, same message.
+        claimed = self.broker.wait("beta")["message"]
+        self.assertEqual(claimed["kind"], "proposal_request")
+        self.assertIsNone(self.broker.wait("beta")["message"])
+        clock["offset"] += council.CLAIM_SECONDS + 1
+        reclaimed = self.broker.wait("beta")["message"]
+        self.assertEqual(reclaimed["message_id"], claimed["message_id"])
+
+        # W1 binding lease: expiry frees both seats.
+        clock["offset"] = council.DEFAULT_LEASE_MINUTES * 60 + 1
+        self.assertEqual(self.broker.ping()["bound_count"], 0)
+
+    def test_retention_window_crosses_deterministically(self):
+        clock = self.install_clock()
+        dialogue = self.completed_dialogue()
+        write_json_0600(self.root / "retention.json", {"days": 1})
+        clock["offset"] = 2 * 86400
+        CouncilBroker(self.root)
+        self.assertFalse((self.root / "dialogues" / dialogue).exists())
+        tombstone = read_json(self.root / "tombstones" / ("%s.json" % dialogue))
+        self.assertEqual(tombstone["reason"], "retention_sweep")
+        self.assertEqual(check_state_root(self.root), [])
 
 
 if __name__ == "__main__":

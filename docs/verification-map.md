@@ -75,11 +75,49 @@ seam and never an unclassified one, and asserts crash-at-seam recovery with
 the full oracle; monkeypatching the primitives directly remains the
 test-local fallback.
 
-## Planned next (Stage 2 of the ratified plan)
+## Recovery-window inventory (Stage 2, step 1)
 
-A one-day recovery-window inventory (including an injectable-time-source
-check for lease/wake windows), then a ~24–36-row deterministic crash matrix
-over six structural transaction classes driven by the named failpoints
-above, release-gated on killing a mutant corpus implemented as inverted
-failpoint behaviors — with at least one held-out mutant. The oracles above
-are the assertion layer those rows reuse.
+Every window the broker persists and later compares against the wall clock,
+with where it is created and every place its expiry changes behavior.
+
+| ID | Window | Duration | Created | Expiry behavior |
+|---|---|---|---|---|
+| W1 | Participant binding lease (`lease_expires_epoch`) | `lease_minutes` × 60 (default 120 min, bounds 1–1440) | `bind` | Restart deletes the expired route file; every authorized call raises "binding expired" and frees the seat; `ping` sweeps; bind idempotency and duplicate exact-route checks ignore expired peers; delivery skips an expired recipient (record stays pending) |
+| W2 | Envelope claim (`claim_until_epoch`) | `CLAIM_SECONDS` (120 s) | claim in `wait` | An expired claim is re-claimable by the next `wait`; the wake scheduler recovers an expired consumed claim to pending + `retry_pending` (or the safe-acknowledgement path) |
+| W3 | Wake notification lease (`wake_lease_until_epoch`) | `WAKE_LEASE_SECONDS` (120 s) | `pending_wakes` | A leased wake is invisible to the router until expiry, then re-leasable; cleared by `wake_ack`, by claim consumption, and by binding-generation rearm |
+| W4 | Wake retry back-off (`wake_retry_after_epoch`) | `WAKE_RETRY_SECONDS` (300 s) | `wake_ack(delivered=true)` | A notified record is quiet until the window passes, then re-attempted; `WAKE_MAX_ATTEMPTS` (2) exhausted routes to `needs_attention` |
+| W5 | Attention notification lease (`attention_lease_until_epoch`) | `WAKE_LEASE_SECONDS` (120 s) | `pending_wakes` attention branch | Same lease semantics as W3; attention attempts share the cap of 2, then the record waits for a human |
+| W6 | Retention cutoff | `days` × 86400 (retention.json, 1–3650) | broker startup sweep only | Terminal dialogues whose manifest terminal timestamp predates `epoch_now() − window` are tombstone-deleted; a missing or malformed timestamp always skips (never delete on an uncertain age) |
+
+Ordering checks that compare two **recorded** epochs (no "now"; deterministic
+via the already-mocked `_process_start_epoch` subprocess seam): the OpenCode
+pin rejects a process that started before `configured_at_epoch` was recorded,
+and relay reuse requires an exact `relay_process_start_epoch` match.
+
+Real-time waits excluded from the crash matrix (bounded, never persisted, no
+recovery semantics): the `wait` long-poll deadline (≤ 55 s, 1 s condition-var
+slices), the client's 3 s daemon-start spin, the launcher-death watchdog's
+1 s poll, and subprocess timeouts. The OpenCode relay's detached-tombstone
+TTL reads `Date.now()` in memory only — covered by the Node suite and the L1
+live-matrix row, never by artifact oracles.
+
+**Injectable-time-source check: PASS, no production change needed.**
+`epoch_now()` is the only wall-clock read in the broker (pinned by
+`test_epoch_now_is_the_single_wall_clock_seam`), and every W1–W6 comparison
+resolves it at call time, so rebinding `council.epoch_now` time-travels all
+six windows deterministically. `InjectableTimeSourceTests` proves each
+window crossing end to end (lease → invisible → re-offered; claim → expired
+→ re-claimed same message; binding expiry frees the seat; retention deletes
+on restart). Backdating the persisted epoch fields remains the equivalent
+per-record technique. Useful matrix fact: a +301 s jump crosses W2–W5 while
+every default binding lease stays live.
+
+## Planned next (Stage 2, step 2)
+
+A ~24–36-row deterministic crash matrix over six structural transaction
+classes driven by the named failpoints above — single-file atomic replace,
+audit append, multi-file forward transactions (intent → append → commit),
+deletion/tombstone, supersession/outbox fan-out, and window-expiry recovery
+transitions (the W-rows) — release-gated on killing a mutant corpus
+implemented as inverted failpoint behaviors, with at least one held-out
+mutant. The oracles above are the assertion layer those rows reuse.
