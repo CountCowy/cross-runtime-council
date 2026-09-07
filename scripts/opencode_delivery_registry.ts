@@ -19,23 +19,74 @@ export function normalizedBrokerPeer(peer: string | undefined) {
   return peer ?? null
 }
 
-export function shouldDropLocalBinding(error: string) {
-  return (
-    error.includes("participant is not bound") ||
-    error.includes("participant binding expired")
-  )
+export const ERROR_REASONS = [
+  "unknown", "not_bound", "binding_expired", "not_authorized",
+  "extension_precommit_rejected", "invalid_request", "request_too_large",
+  "request_timeout", "internal", "version_mismatch", "broker_unavailable",
+  "transport_lost", "malformed_response",
+] as const
+
+export type ErrorReason = typeof ERROR_REASONS[number]
+
+export function normalizeErrorReason(value: unknown): ErrorReason {
+  return typeof value === "string" && (ERROR_REASONS as readonly string[]).includes(value)
+    ? value as ErrorReason
+    : "unknown"
 }
 
-export function shouldRetainPendingExtension(error: string) {
-  return (
-    error.includes("participant is not bound:") ||
-    error.includes("participant binding expired:") ||
-    error.includes("this exact session is not authorized for participant")
-  )
+export function shouldDropLocalBinding(reason: unknown) {
+  return reason === "not_bound" || reason === "binding_expired"
+}
+
+export function shouldRetainPendingExtension(reason: unknown) {
+  return reason !== "extension_precommit_rejected"
 }
 
 export function extensionOperationKey(participant: string, dialogueID: string) {
   return `${participant}\u0000${dialogueID}`
+}
+
+type PendingExtension = { extensionID: string; additionalRounds: number }
+
+export class PendingExtensionRegistry {
+  private readonly operations = new Map<string, PendingExtension>()
+
+  begin(participant: string, dialogueID: string, additionalRounds: number, newID: () => string) {
+    const key = extensionOperationKey(participant, dialogueID)
+    let pending = this.operations.get(key)
+    if (pending && pending.additionalRounds !== additionalRounds) {
+      throw new Error("a prior extension attempt is ambiguous; retry its original round count")
+    }
+    if (!pending) {
+      pending = { extensionID: newID(), additionalRounds }
+      this.operations.set(key, pending)
+    }
+    return pending
+  }
+
+  private clear(participant: string, dialogueID: string, pending: PendingExtension) {
+    const key = extensionOperationKey(participant, dialogueID)
+    if (this.operations.get(key) === pending) this.operations.delete(key)
+  }
+
+  reject(participant: string, dialogueID: string, pending: PendingExtension, kind: unknown, reason: unknown) {
+    if (kind === "rejected" && !shouldRetainPendingExtension(reason)) {
+      this.clear(participant, dialogueID, pending)
+    }
+  }
+
+  complete(participant: string, dialogueID: string, pending: PendingExtension, result: unknown) {
+    if (result === null || typeof result !== "object" || Array.isArray(result)) return false
+    const value = result as Record<string, unknown>
+    if (
+      value.dialogue_id !== dialogueID || typeof value.phase !== "string" || !value.phase ||
+      typeof value.authorized_rounds !== "number" || !Number.isInteger(value.authorized_rounds) ||
+      value.authorized_rounds < 1 || typeof value.current_round !== "number" ||
+      !Number.isInteger(value.current_round) || value.current_round < 0
+    ) return false
+    this.clear(participant, dialogueID, pending)
+    return true
+  }
 }
 
 export function bindingGenerationMatches(

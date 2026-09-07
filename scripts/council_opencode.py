@@ -21,7 +21,11 @@ from council import (
 def main() -> int:
     raw = sys.stdin.buffer.readline(MAX_LINE_BYTES + 1)
     if not raw or len(raw) > MAX_LINE_BYTES:
-        print(json.dumps({"ok": False, "error": "bridge request is missing or too large"}))
+        print(json.dumps({
+            "ok": False, "error": "bridge request is missing or too large",
+            "error_kind": "error",
+            "reason": "request_too_large" if raw else "invalid_request",
+        }))
         return 2
     try:
         request = json.loads(raw.decode("utf-8"))
@@ -34,14 +38,22 @@ def main() -> int:
         result = CouncilClient().request(action, **arguments)
         response: Dict[str, Any] = {"ok": True, "result": result}
     except CouncilRequestRejected as error:
-        response = {"ok": False, "error": str(error), "error_kind": "rejected"}
+        response = {
+            "ok": False, "error": str(error), "error_kind": "rejected",
+            "reason": error.reason,
+        }
     except (CouncilError, ValueError, TypeError, json.JSONDecodeError) as error:
-        response = {"ok": False, "error": str(error), "error_kind": "error"}
+        response = {
+            "ok": False, "error": str(error),
+            "error_kind": error.error_kind if isinstance(error, CouncilError) else "error",
+            "reason": error.reason if isinstance(error, CouncilError) else "invalid_request",
+        }
     except Exception as error:
         response = {
             "ok": False,
             "error": "internal OpenCode bridge error: %s" % error,
             "error_kind": "internal",
+            "reason": "internal",
         }
     print(json.dumps(response, separators=(",", ":"), ensure_ascii=False))
     return 0 if response.get("ok") else 2
