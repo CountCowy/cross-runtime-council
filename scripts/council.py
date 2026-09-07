@@ -458,12 +458,61 @@ def response_contract_for(
     return contract
 
 
+ERROR_REASONS = (
+    "unknown",
+    "not_bound",
+    "binding_expired",
+    "not_authorized",
+    "extension_precommit_rejected",
+    "invalid_request",
+    "request_too_large",
+    "request_timeout",
+    "internal",
+    "version_mismatch",
+    "broker_unavailable",
+    "transport_lost",
+    "malformed_response",
+)
+
+
 class CouncilError(Exception):
-    """Expected, user-facing broker error."""
+    """User-facing error; a reason describes cause, not a prior commit outcome."""
+
+    def __init__(
+        self, *args: Any, reason: Any = "unknown", error_kind: str = "error"
+    ):
+        super().__init__(*args)
+        self.reason = (
+            reason if isinstance(reason, str) and reason in ERROR_REASONS else "unknown"
+        )
+        self.error_kind = (
+            error_kind if error_kind in ("rejected", "error", "internal") else "error"
+        )
 
 
 class CouncilRequestRejected(CouncilError):
-    """The broker returned a typed, definitive request rejection."""
+    """The current request was rejected; an earlier attempt may have committed."""
+
+    def __init__(self, *args: Any, reason: Any = "unknown"):
+        super().__init__(*args, reason=reason, error_kind="rejected")
+
+
+def validate_extension_result(result: Any, dialogue_id: str) -> Dict[str, Any]:
+    """Require an extension acknowledgement before discarding its retry identity."""
+    if (
+        not isinstance(result, dict)
+        or result.get("dialogue_id") != dialogue_id
+        or not isinstance(result.get("phase"), str)
+        or not result["phase"]
+        or type(result.get("authorized_rounds")) is not int
+        or result["authorized_rounds"] < 1
+        or type(result.get("current_round")) is not int
+        or result["current_round"] < 0
+    ):
+        raise CouncilError(
+            "broker returned an invalid extension result", reason="malformed_response"
+        )
+    return result
 
 
 def utc_now() -> str:
@@ -1605,22 +1654,33 @@ class CouncilBroker:
         with self.changed:
             registration = self.registrations.get(participant)
             if not registration:
-                raise CouncilError("participant is not bound: %s" % participant)
+                raise CouncilError(
+                    "participant is not bound: %s" % participant, reason="not_bound"
+                )
             if registration["lease_expires_epoch"] <= epoch_now():
                 self.registrations.pop(participant, None)
                 self._remove_persisted_registration(participant)
                 self._clear_registration_restore_error(participant)
-                raise CouncilError("participant binding expired: %s" % participant)
+                raise CouncilError(
+                    "participant binding expired: %s" % participant,
+                    reason="binding_expired",
+                )
             return registration
 
     def _authorize_participant(self, participant: str, capability: Any) -> str:
         registration = self._registration(participant)
         if not isinstance(capability, str):
-            raise CouncilError("this exact session is not authorized for participant %s" % participant)
+            raise CouncilError(
+                "this exact session is not authorized for participant %s" % participant,
+                reason="not_authorized",
+            )
         presented = capability_hash(capability)
         expected = registration.get("capability_hash")
         if not isinstance(expected, str) or not hmac.compare_digest(expected, presented):
-            raise CouncilError("this exact session is not authorized for participant %s" % participant)
+            raise CouncilError(
+                "this exact session is not authorized for participant %s" % participant,
+                reason="not_authorized",
+            )
         return registration["binding_generation"]
 
     def _router_config(self) -> Dict[str, Any]:
@@ -4269,10 +4329,16 @@ class CouncilBroker:
                     "duplicate": True,
                 }
             if manifest["phase"] not in ("collecting_exchange", "collecting_synthesis"):
-                raise CouncilError("rounds can be extended only during adversarial exchange or at the synthesis gate")
+                raise CouncilError(
+                    "rounds can be extended only during adversarial exchange or at the synthesis gate",
+                    reason="extension_precommit_rejected",
+                )
             updated = manifest["authorized_rounds"] + additional_rounds
             if updated > manifest["max_rounds"]:
-                raise CouncilError("extension exceeds max_rounds=%d" % manifest["max_rounds"])
+                raise CouncilError(
+                    "extension exceeds max_rounds=%d" % manifest["max_rounds"],
+                    reason="extension_precommit_rejected",
+                )
             manifest["authorized_rounds"] = updated
             round_policy = manifest.setdefault(
                 "round_policy",
@@ -5091,9 +5157,15 @@ class BrokerRequestHandler(socketserver.StreamRequestHandler):
         except (socket.timeout, TimeoutError, OSError):
             raw = b""
         if len(raw) > MAX_LINE_BYTES:
-            response = {"ok": False, "error": "request exceeds 1 MiB"}
+            response = {
+                "ok": False, "error": "request exceeds 1 MiB",
+                "error_kind": "error", "reason": "request_too_large",
+            }
         elif not raw:
-            response = {"ok": False, "error": "broker request timed out or was empty"}
+            response = {
+                "ok": False, "error": "broker request timed out or was empty",
+                "error_kind": "error", "reason": "request_timeout",
+            }
         else:
             try:
                 request = json.loads(raw.decode("utf-8"))
@@ -5113,12 +5185,14 @@ class BrokerRequestHandler(socketserver.StreamRequestHandler):
                     "ok": False,
                     "error": str(error),
                     "error_kind": "rejected",
+                    "reason": error.reason if isinstance(error, CouncilError) else "invalid_request",
                 }
             except Exception as error:
                 response = {
                     "ok": False,
                     "error": "internal broker error: %s" % error,
                     "error_kind": "internal",
+                    "reason": "internal",
                 }
         self.wfile.write(json.dumps(response, separators=(",", ":")).encode("utf-8") + b"\n")
 
@@ -5287,27 +5361,50 @@ class CouncilClient:
     def _send(self, request: Dict[str, Any]) -> Dict[str, Any]:
         client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         client.settimeout(60)
+        connected = False
+        reader = None
         try:
             client.connect(str(self.socket_path))
+            connected = True
             verify_broker_peer(client, self.state_root)
             client.sendall(json.dumps(request, separators=(",", ":")).encode("utf-8") + b"\n")
             reader = client.makefile("rb")
             raw = reader.readline(MAX_LINE_BYTES + 1)
         except OSError as error:
-            raise CouncilError("broker unavailable: %s" % error)
+            raise CouncilError(
+                "broker unavailable: %s" % error,
+                reason="transport_lost" if connected else "broker_unavailable",
+            ) from error
         finally:
-            client.close()
+            try:
+                if reader is not None:
+                    reader.close()
+            finally:
+                client.close()
         if len(raw) > MAX_LINE_BYTES:
-            raise CouncilError("broker response exceeds 1 MiB")
+            raise CouncilError("broker response exceeds 1 MiB", reason="malformed_response")
         if not raw:
-            raise CouncilError("broker closed without a response")
-        response = json.loads(raw.decode("utf-8"))
-        if not response.get("ok"):
-            error = response.get("error") or "broker request failed"
+            raise CouncilError("broker closed without a response", reason="transport_lost")
+        try:
+            response = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError) as error:
+            raise CouncilError("broker returned invalid JSON", reason="malformed_response") from error
+        if not isinstance(response, dict) or type(response.get("ok")) is not bool:
+            raise CouncilError("broker returned an invalid response", reason="malformed_response")
+        if response["ok"] is False:
+            error = response.get("error")
+            if not isinstance(error, str) or not error:
+                error = "broker request failed"
             if response.get("error_kind") == "rejected":
-                raise CouncilRequestRejected(error)
-            raise CouncilError(error)
-        return response["result"]
+                raise CouncilRequestRejected(error, reason=response.get("reason"))
+            raise CouncilError(
+                error, reason=response.get("reason"),
+                error_kind=response.get("error_kind", "error"),
+            )
+        result = response.get("result")
+        if not isinstance(result, dict):
+            raise CouncilError("broker returned an invalid result", reason="malformed_response")
+        return result
 
     def ensure_daemon(self) -> None:
         try:
@@ -5343,7 +5440,7 @@ class CouncilClient:
             else:
                 self._require_current_broker(result)
                 return
-        raise CouncilError("broker failed to start: %s" % last_error)
+        raise CouncilError("broker failed to start: %s" % last_error, reason="broker_unavailable")
 
     def _require_current_broker(self, result: Any) -> None:
         version = result.get("broker_version") if isinstance(result, dict) else None
@@ -5351,7 +5448,8 @@ class CouncilClient:
             raise CouncilError(
                 "Council adapter/broker version mismatch: adapter=%s broker=%s; "
                 "the owning runtime must stop the old broker and retry"
-                % (BROKER_VERSION, version or "unknown")
+                % (BROKER_VERSION, version or "unknown"),
+                reason="version_mismatch",
             )
 
     def request(self, action: str, **arguments: Any) -> Any:

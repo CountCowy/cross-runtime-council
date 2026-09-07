@@ -6,14 +6,15 @@ import { join } from "node:path"
 import { createServer, type Socket } from "node:net"
 import {
   bindingGenerationMatches,
-  extensionOperationKey,
+  normalizeErrorReason,
   normalizedBrokerPeer,
   OpenCodeDeliveryRegistry,
+  PendingExtensionRegistry,
   prepareRelaySocket,
   rejectOversizedRelayBuffer,
   safeRelayEnd,
   shouldDropLocalBinding,
-  shouldRetainPendingExtension,
+  type ErrorReason,
 } from "./opencode_delivery_registry"
 
 type BridgeResponse = {
@@ -21,6 +22,7 @@ type BridgeResponse = {
   result?: unknown
   error?: string
   error_kind?: "rejected" | "error" | "internal"
+  reason?: unknown
 }
 
 // Must match ENVELOPE_PREAMBLE and RELAY_ENVELOPE_KINDS in council.py exactly;
@@ -58,8 +60,11 @@ type PendingRotation = {
 }
 
 class BridgeError extends Error {
-  constructor(message: string, readonly kind?: string) {
+  readonly reason: ErrorReason
+
+  constructor(message: string, readonly kind?: string, reason?: unknown) {
     super(message)
+    this.reason = normalizeErrorReason(reason)
   }
 }
 
@@ -84,10 +89,7 @@ const brokerPath = join(
 const bindings = new Map<string, Binding>()
 const pendingRotations = new Map<string, PendingRotation>()
 const deliveryRegistry = new OpenCodeDeliveryRegistry()
-const pendingExtensions = new Map<
-  string,
-  { extensionID: string; additionalRounds: number }
->()
+const pendingExtensions = new PendingExtensionRegistry()
 
 const submitDescription =
   "Submit the response requested by a Council envelope. Use payload.response_contract from that exact envelope as the authoritative kind, round, payload schema, enum, and active-claim contract; never guess an omitted field or enum."
@@ -120,10 +122,20 @@ async function rawBridge(action: string, args: Record<string, unknown>) {
     throw new BridgeError(
       `OpenCode Council bridge returned invalid JSON${stderr ? `: ${stderr.trim()}` : ""}`,
       "internal",
+      "malformed_response",
     )
   }
-  if (!response.ok) {
-    throw new BridgeError(response.error ?? `bridge exited ${exitCode}`, response.error_kind)
+  if (!response || typeof response !== "object" || Array.isArray(response) || typeof response.ok !== "boolean") {
+    throw new BridgeError("OpenCode Council bridge returned an invalid response", "internal", "malformed_response")
+  }
+  if (response.ok === false) {
+    throw new BridgeError(
+      typeof response.error === "string" ? response.error : `bridge exited ${exitCode}`,
+      response.error_kind, response.reason,
+    )
+  }
+  if (response.result === null || typeof response.result !== "object" || Array.isArray(response.result)) {
+    throw new BridgeError("OpenCode Council bridge returned no broker JSON object", "internal", "malformed_response")
   }
   return response.result
 }
@@ -178,11 +190,11 @@ function bindingFor(sessionID: string, participant: string) {
 
 function safeResult(value: unknown) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    throw new BridgeError("OpenCode Council bridge returned no broker JSON object", "internal")
+    throw new BridgeError("OpenCode Council bridge returned no broker JSON object", "internal", "malformed_response")
   }
   const encoded = JSON.stringify(value, null, 2)
   if (!encoded.trim()) {
-    throw new BridgeError("OpenCode Council bridge returned an empty broker result", "internal")
+    throw new BridgeError("OpenCode Council bridge returned an empty broker result", "internal", "malformed_response")
   }
   return encoded
 }
@@ -317,7 +329,7 @@ export const CouncilPlugin: Plugin = async ({ client }) => {
       if (
         error instanceof BridgeError &&
         error.kind === "rejected" &&
-        shouldDropLocalBinding(error.message)
+        shouldDropLocalBinding(error.reason)
       ) {
         if (
           bindingGenerationMatches(
@@ -559,22 +571,12 @@ export const CouncilPlugin: Plugin = async ({ client }) => {
           additional_rounds: tool.schema.number().int().min(1).max(100),
         },
         async execute(args, context) {
-          const extensionKey = extensionOperationKey(
+          const pending = pendingExtensions.begin(
             args.participant,
             args.dialogue_id,
+            args.additional_rounds,
+            () => `ext-${randomBytes(16).toString("hex")}`,
           )
-          let pending = pendingExtensions.get(extensionKey)
-          if (!pending) {
-            pending = {
-              extensionID: `ext-${randomBytes(16).toString("hex")}`,
-              additionalRounds: args.additional_rounds,
-            }
-            pendingExtensions.set(extensionKey, pending)
-          } else if (pending.additionalRounds !== args.additional_rounds) {
-            throw new BridgeError(
-              "a prior extension attempt is ambiguous; retry its original round count",
-            )
-          }
           try {
             const result = await authenticated(
               context.sessionID,
@@ -582,15 +584,16 @@ export const CouncilPlugin: Plugin = async ({ client }) => {
               "extend",
               { ...args, extension_id: pending.extensionID },
             )
-            pendingExtensions.delete(extensionKey)
-            return safeResult(result)
+            const rendered = safeResult(result)
+            if (!pendingExtensions.complete(args.participant, args.dialogue_id, pending, result)) {
+              throw new BridgeError("broker returned an invalid extension result", "error", "malformed_response")
+            }
+            return rendered
           } catch (error) {
-            if (
-              error instanceof BridgeError &&
-              error.kind === "rejected" &&
-              !shouldRetainPendingExtension(error.message)
-            ) {
-              pendingExtensions.delete(extensionKey)
+            if (error instanceof BridgeError) {
+              pendingExtensions.reject(
+                args.participant, args.dialogue_id, pending, error.kind, error.reason,
+              )
             }
             throw error
           }

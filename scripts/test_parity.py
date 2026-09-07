@@ -21,6 +21,7 @@ TS_PLUGIN_SRC = (ROOT / "scripts" / "opencode_council_plugin.ts").read_text()
 SKILL_SRC = (ROOT / "SKILL.md").read_text()
 PROTOCOL_SRC = (ROOT / "references" / "protocol.md").read_text()
 COUNCIL_SRC = (ROOT / "scripts" / "council.py").read_text()
+TS_REGISTRY_SRC = (ROOT / "scripts" / "opencode_delivery_registry.ts").read_text()
 
 
 def mcp_tool(name):
@@ -110,6 +111,12 @@ class SubmitKindParity(unittest.TestCase):
 
 
 class EnumAndBoundParity(unittest.TestCase):
+    def test_error_reasons_match_the_typescript_catalog(self):
+        match = re.search(r"export const ERROR_REASONS = \[(.*?)\] as const", TS_REGISTRY_SRC, re.S)
+        self.assertIsNotNone(match)
+        reasons = re.findall(r'"([a-z_]+)"', match.group(1))
+        self.assertEqual(reasons, list(council.ERROR_REASONS))
+
     def test_concession_bases_appear_in_the_protocol_reference(self):
         missing = [
             basis

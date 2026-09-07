@@ -30,6 +30,7 @@ from council import (
     post_to_claude,
     validate_claude_socket,
     validate_relay_envelope_content,
+    validate_extension_result,
 )
 
 
@@ -47,14 +48,9 @@ MAX_CONCURRENT_RELAY_HANDLERS = 32
 
 
 def extension_rejection_is_ambiguous(error: Exception) -> bool:
-    message = str(error)
-    return any(
-        marker in message
-        for marker in (
-            "participant is not bound:",
-            "participant binding expired:",
-            "this exact session is not authorized for participant",
-        )
+    return not (
+        isinstance(error, CouncilRequestRejected)
+        and error.reason == "extension_precommit_rejected"
     )
 
 
@@ -652,6 +648,12 @@ def call_tool(
         result = client.request("wake_ack", _router_capability=auth, **arguments)
     elif name == "council_extend":
         identity, auth = participant_capability(arguments["participant"], request_meta)
+        additional_rounds = arguments["additional_rounds"]
+        if type(additional_rounds) is not int or not 1 <= additional_rounds <= MAX_COUNCIL_ROUNDS:
+            raise CouncilError(
+                "additional_rounds must be an integer between 1 and %d" % MAX_COUNCIL_ROUNDS,
+                reason="invalid_request",
+            )
         operation_key = (identity, arguments["dialogue_id"])
         with CAPABILITIES_LOCK:
             pending = PENDING_EXTENSION_OPERATIONS.get(operation_key)
@@ -672,6 +674,7 @@ def call_tool(
                 _auth_capability=auth,
                 **arguments,
             )
+            validate_extension_result(result, arguments["dialogue_id"])
         except CouncilRequestRejected as error:
             if not extension_rejection_is_ambiguous(error):
                 with CAPABILITIES_LOCK:
@@ -679,7 +682,8 @@ def call_tool(
                         PENDING_EXTENSION_OPERATIONS.pop(operation_key, None)
             raise
         with CAPABILITIES_LOCK:
-            PENDING_EXTENSION_OPERATIONS.pop(operation_key, None)
+            if PENDING_EXTENSION_OPERATIONS.get(operation_key) is pending:
+                PENDING_EXTENSION_OPERATIONS.pop(operation_key, None)
     elif name == "council_request_extension":
         _, auth = participant_capability(arguments["participant"], request_meta)
         result = client.request("request_extension", _auth_capability=auth, **arguments)
@@ -737,7 +741,14 @@ def handle(message: Dict[str, Any]) -> None:
                 params.get("name"), params.get("arguments") or {}, request_meta=request_meta
             )
         except (CouncilError, KeyError, OSError, TypeError, ValueError) as error:
-            result = content_result({"error": str(error)}, is_error=True)
+            result = content_result(
+                {
+                    "error": str(error),
+                    "reason": error.reason if isinstance(error, CouncilError) else "unknown",
+                    "error_kind": error.error_kind if isinstance(error, CouncilError) else "error",
+                },
+                is_error=True,
+            )
         respond(request_id, result)
     elif request_id is not None:
         respond(request_id, error={"code": -32601, "message": "method not found: %s" % method})

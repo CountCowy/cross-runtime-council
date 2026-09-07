@@ -18,6 +18,8 @@ from pathlib import Path
 from unittest import mock
 
 from council import (
+    BrokerRequestHandler,
+    ERROR_REASONS,
     MAX_CONCURRENT_BROKER_HANDLERS,
     MAX_COUNCIL_ROUNDS,
     MAX_EXTENSION_REQUESTS,
@@ -2733,7 +2735,7 @@ class CouncilBrokerTests(unittest.TestCase):
                 try:
                     return broker.handle({"action": action, "arguments": arguments})
                 except CouncilError as error:
-                    raise CouncilRequestRejected(str(error))
+                    raise CouncilRequestRejected(str(error), reason=error.reason)
 
         request = {"dialogue_id": dialogue, "participant": "alpha"}
         pending_key = (identity, dialogue)
@@ -4994,7 +4996,7 @@ class CouncilBrokerTests(unittest.TestCase):
                 try:
                     result = broker.handle({"action": action, "arguments": arguments})
                 except CouncilError as error:
-                    raise CouncilRequestRejected(str(error))
+                    raise CouncilRequestRejected(str(error), reason=error.reason)
                 if action == "extend" and self.lose_response:
                     self.lose_response = False
                     raise CouncilError("extension response was lost")
@@ -5042,6 +5044,248 @@ class CouncilBrokerTests(unittest.TestCase):
         self.assertTrue(payload["duplicate"])
         self.assertEqual(payload["authorized_rounds"], 2)
         self.assertNotIn(pending_key, PENDING_EXTENSION_OPERATIONS)
+
+    def _broker_wire_response(self, broker, request):
+        handler = BrokerRequestHandler.__new__(BrokerRequestHandler)
+        handler.request = mock.Mock()
+        handler.rfile = io.BytesIO(json.dumps(request).encode() + b"\n")
+        handler.wfile = io.BytesIO()
+        handler.server = mock.Mock()
+        handler.server.broker = broker
+        handler.handle()
+        return handler.wfile.getvalue()
+
+    def _decode_wire_response(self, raw):
+        transport = mock.Mock()
+        reader = io.BytesIO(raw)
+        transport.makefile.return_value = reader
+        with mock.patch("council.socket.socket", return_value=transport), mock.patch(
+            "council.verify_broker_peer", return_value=1
+        ):
+            try:
+                return CouncilClient(self.root, autostart=False)._send({"action": "extend"})
+            finally:
+                self.assertTrue(reader.closed)
+                transport.close.assert_called_once()
+
+    def test_postcommit_typed_rejection_keeps_extension_identity(self):
+        dialogue = self.start_dialogue(rounds=1, max_rounds=3, stop=False)
+        self.broker.submit(dialogue, "alpha", "proposal", 0, proposal("alpha"))
+        self.broker.submit(dialogue, "beta", "proposal", 0, proposal("beta"))
+        identity = ("codex", "thread-alpha", "alpha")
+        BINDING_CAPABILITIES[identity] = CAP_ALPHA
+        owner = self
+
+        class WireClient:
+            def request(self, action, **arguments):
+                raw = owner._broker_wire_response(
+                    owner.broker, {"action": action, "arguments": arguments}
+                )
+                return owner._decode_wire_response(raw)
+
+        arguments = {"dialogue_id": dialogue, "participant": "alpha", "additional_rounds": 1}
+        with mock.patch("council_mcp.CouncilClient", return_value=WireClient()):
+            with mock.patch.object(
+                self.broker, "_activate_transition",
+                side_effect=CouncilError("wording unrelated to authorization"),
+            ), self.assertRaises(CouncilRequestRejected) as caught:
+                call_tool("council_extend", arguments, request_meta={"threadId": "thread-alpha"})
+            self.assertEqual(caught.exception.reason, "unknown")
+            pending = PENDING_EXTENSION_OPERATIONS[(identity, dialogue)]
+            self.assertEqual(self.broker.status(dialogue)["authorized_rounds"], 2)
+            response = call_tool("council_extend", arguments, request_meta={"threadId": "thread-alpha"})
+        result = json.loads(response["content"][0]["text"])
+        self.assertTrue(result["duplicate"])
+        state = self.broker.status(dialogue)
+        self.assertEqual(state["authorized_rounds"], 2)
+        self.assertEqual(list(state["extension_operations"]), [pending["extension_id"]])
+        self.assertNotIn((identity, dialogue), PENDING_EXTENSION_OPERATIONS)
+        events = [json.loads(line) for line in (self.root / "dialogues" / dialogue / "audit.jsonl").read_text().splitlines()]
+        self.assertEqual(sum(event["event"] == "rounds_extended" for event in events), 1)
+
+    def test_extension_precommit_reason_does_not_cover_other_rejections(self):
+        dialogue = self.start_dialogue(rounds=1, max_rounds=2, stop=False)
+        with self.assertRaises(CouncilError) as phase:
+            self.broker.extend(dialogue, "alpha", 1, extension_id="ext-phase")
+        self.assertEqual(phase.exception.reason, "extension_precommit_rejected")
+        with self.assertRaises(CouncilError) as invalid:
+            self.broker.extend(dialogue, "alpha", 0, extension_id="ext-invalid")
+        self.assertEqual(invalid.exception.reason, "unknown")
+        self.broker.submit(dialogue, "alpha", "proposal", 0, proposal("alpha"))
+        self.broker.submit(dialogue, "beta", "proposal", 0, proposal("beta"))
+        self.broker.extend(dialogue, "alpha", 1, extension_id="ext-existing")
+        with self.assertRaises(CouncilError) as conflict:
+            self.broker.extend(dialogue, "alpha", 2, extension_id="ext-existing")
+        self.assertEqual(conflict.exception.reason, "unknown")
+        with self.assertRaises(CouncilError) as ceiling:
+            self.broker.extend(dialogue, "alpha", 1, extension_id="ext-ceiling")
+        self.assertEqual(ceiling.exception.reason, "extension_precommit_rejected")
+
+    def test_mcp_retains_pending_extension_on_every_ambiguous_reason(self):
+        identity = ("codex", "thread-alpha", "alpha")
+        BINDING_CAPABILITIES[identity] = CAP_ALPHA
+        arguments = {"dialogue_id": "dlg-reasons", "participant": "alpha", "additional_rounds": 1}
+        client = mock.Mock()
+        pending = None
+        with mock.patch("council_mcp.CouncilClient", return_value=client):
+            for reason in [item for item in ERROR_REASONS if item != "extension_precommit_rejected"] + [None, [], "future_reason"]:
+                with self.subTest(reason=reason):
+                    client.request.side_effect = CouncilRequestRejected("changed human wording", reason=reason)
+                    with self.assertRaises(CouncilRequestRejected):
+                        call_tool("council_extend", arguments, request_meta={"threadId": "thread-alpha"})
+                    current = PENDING_EXTENSION_OPERATIONS[(identity, "dlg-reasons")]
+                    pending = pending or current
+                    self.assertIs(current, pending)
+            sent = client.request.call_count
+            with self.assertRaises(CouncilError) as invalid:
+                call_tool("council_extend", {**arguments, "additional_rounds": 0}, request_meta={"threadId": "thread-alpha"})
+            self.assertEqual(invalid.exception.reason, "invalid_request")
+            self.assertIs(PENDING_EXTENSION_OPERATIONS[(identity, "dlg-reasons")], pending)
+            with self.assertRaisesRegex(CouncilError, "original round count"):
+                call_tool("council_extend", {**arguments, "additional_rounds": 2}, request_meta={"threadId": "thread-alpha"})
+            self.assertEqual(client.request.call_count, sent)
+            client.request.side_effect = CouncilError("not a broker rejection", reason="extension_precommit_rejected")
+            with self.assertRaises(CouncilError):
+                call_tool("council_extend", arguments, request_meta={"threadId": "thread-alpha"})
+            self.assertIs(PENDING_EXTENSION_OPERATIONS[(identity, "dlg-reasons")], pending)
+
+    def test_mcp_invalid_extension_count_allows_corrected_tool_call(self):
+        dialogue = self.start_dialogue(rounds=1, max_rounds=3, stop=False)
+        for participant in ("alpha", "beta"):
+            self.broker.submit(dialogue, participant, "proposal", 0, proposal(participant))
+        identity = ("codex", "thread-alpha", "alpha")
+        BINDING_CAPABILITIES[identity] = CAP_ALPHA
+        client = mock.Mock()
+        client.request.side_effect = lambda action, **arguments: self._decode_wire_response(
+            self._broker_wire_response(self.broker, {"action": action, "arguments": arguments})
+        )
+        invalid_counts = [0, -1, True, 1.5, "1", None, MAX_COUNCIL_ROUNDS + 1]
+        with mock.patch("council_mcp.CouncilClient", return_value=client), mock.patch(
+            "council_mcp.respond"
+        ) as respond:
+            for request_id, count in enumerate(invalid_counts + [1]):
+                with self.subTest(count=count):
+                    handle_mcp_message({
+                        "method": "tools/call", "id": request_id,
+                        "params": {
+                            "name": "council_extend",
+                            "arguments": {
+                                "dialogue_id": dialogue, "participant": "alpha",
+                                "additional_rounds": count,
+                            },
+                            "_meta": {"threadId": "thread-alpha"},
+                        },
+                    })
+                    self.assertEqual(respond.call_args.args[0], request_id)
+                    result = respond.call_args.args[1]
+                    body = json.loads(result["content"][0]["text"])
+                    self.assertNotIn((identity, dialogue), PENDING_EXTENSION_OPERATIONS)
+                    if request_id < len(invalid_counts):
+                        self.assertTrue(result["isError"])
+                        self.assertEqual(body["reason"], "invalid_request")
+                        client.request.assert_not_called()
+                    else:
+                        self.assertNotIn("isError", result)
+                        self.assertEqual(body["authorized_rounds"], 2)
+        self.assertEqual(client.request.call_count, 1)
+        self.assertEqual(self.broker.status(dialogue)["authorized_rounds"], 2)
+
+    def test_mcp_malformed_success_preserves_pending_extension(self):
+        identity = ("codex", "thread-alpha", "alpha")
+        BINDING_CAPABILITIES[identity] = CAP_ALPHA
+        arguments = {"dialogue_id": "dlg-result", "participant": "alpha", "additional_rounds": 1}
+        client = mock.Mock()
+        valid = {"dialogue_id": "dlg-result", "phase": "collecting_exchange", "current_round": 1, "authorized_rounds": 2}
+        invalid = [None, [], {}, {**valid, "dialogue_id": "dlg-other"}, {**valid, "authorized_rounds": True}, {**valid, "current_round": -1}]
+        with mock.patch("council_mcp.CouncilClient", return_value=client):
+            pending = None
+            for value in invalid:
+                with self.subTest(value=value):
+                    client.request.return_value = value
+                    with self.assertRaises(CouncilError) as caught:
+                        call_tool("council_extend", arguments, request_meta={"threadId": "thread-alpha"})
+                    self.assertEqual(caught.exception.reason, "malformed_response")
+                    current = PENDING_EXTENSION_OPERATIONS[(identity, "dlg-result")]
+                    pending = pending or current
+                    self.assertIs(current, pending)
+            client.request.return_value = valid
+            call_tool("council_extend", arguments, request_meta={"threadId": "thread-alpha"})
+        self.assertNotIn((identity, "dlg-result"), PENDING_EXTENSION_OPERATIONS)
+
+    def test_client_rejects_malformed_wire_responses_conservatively(self):
+        cases = [b"\xff", b"not json", b"null", b"[]", b"1", b'{}', b'{"ok":1,"result":{}}', b'{"ok":true}', b'{"ok":true,"result":null}', b'{"ok":true,"result":[]}', b"x" * (1024 * 1024 + 1)]
+        for raw in cases:
+            with self.subTest(raw_length=len(raw)), self.assertRaises(CouncilError) as caught:
+                self._decode_wire_response(raw)
+            self.assertEqual(caught.exception.reason, "malformed_response")
+        with self.assertRaises(CouncilError) as eof:
+            self._decode_wire_response(b"")
+        self.assertEqual(eof.exception.reason, "transport_lost")
+
+    def test_client_distinguishes_unavailable_broker_from_lost_response(self):
+        for stage, reason in [("connect", "broker_unavailable"), ("read", "transport_lost")]:
+            transport = mock.Mock()
+            reader = mock.Mock()
+            transport.makefile.return_value = reader
+            if stage == "connect":
+                transport.connect.side_effect = OSError("unavailable")
+            else:
+                reader.readline.side_effect = socket.timeout("timed out")
+            with mock.patch("council.socket.socket", return_value=transport), mock.patch(
+                "council.verify_broker_peer", return_value=1
+            ), self.assertRaises(CouncilError) as caught:
+                CouncilClient(self.root, autostart=False)._send({"action": "extend"})
+            self.assertEqual(caught.exception.reason, reason)
+            transport.close.assert_called_once()
+            if stage == "read":
+                reader.close.assert_called_once()
+
+    def test_reason_and_kind_survive_broker_client_bridge_and_mcp(self):
+        import council_opencode
+
+        cases = [
+            (CouncilError("changed wording", reason="binding_expired"), "rejected", "binding_expired"),
+            (CouncilError("participant is not bound: misleading prose"), "rejected", "unknown"),
+            (CouncilError("future", reason="future_reason"), "rejected", "unknown"),
+            (RuntimeError("unexpected"), "internal", "internal"),
+        ]
+        for error, kind, reason in cases:
+            with self.subTest(kind=kind, reason=reason):
+                broker = mock.Mock()
+                broker.handle.side_effect = error
+                raw = self._broker_wire_response(broker, {"action": "extend", "arguments": {}})
+                with self.assertRaises(CouncilError) as caught:
+                    self._decode_wire_response(raw)
+                transported = caught.exception
+                self.assertEqual((transported.error_kind, transported.reason), (kind, reason))
+                client = mock.Mock()
+                client.request.side_effect = transported
+                output = io.StringIO()
+                with mock.patch("council_opencode.CouncilClient", return_value=client), mock.patch(
+                    "council_opencode.sys.stdin", mock.Mock(buffer=io.BytesIO(b'{"action":"extend","arguments":{}}\n'))
+                ), contextlib.redirect_stdout(output):
+                    self.assertEqual(council_opencode.main(), 2)
+                bridge = json.loads(output.getvalue())
+                self.assertEqual((bridge["error_kind"], bridge["reason"]), (kind, reason))
+                with mock.patch("council_mcp.call_tool", side_effect=transported), mock.patch("council_mcp.respond") as respond:
+                    handle_mcp_message({"method": "tools/call", "id": 73, "params": {"name": "council_extend"}})
+                self.assertEqual(respond.call_args.args[0], 73)
+                result = respond.call_args.args[1]
+                self.assertTrue(result["isError"])
+                body = json.loads(result["content"][0]["text"])
+                self.assertEqual((body["error_kind"], body["reason"]), (kind, reason))
+
+    def test_broker_framing_errors_do_not_become_definitive_rejections(self):
+        for raw, reason in [(b"", "request_timeout"), (b"x" * (1024 * 1024 + 1), "request_too_large")]:
+            handler = BrokerRequestHandler.__new__(BrokerRequestHandler)
+            handler.request = mock.Mock()
+            handler.rfile = io.BytesIO(raw)
+            handler.wfile = io.BytesIO()
+            handler.handle()
+            with self.assertRaises(CouncilError) as caught:
+                self._decode_wire_response(handler.wfile.getvalue())
+            self.assertNotIsInstance(caught.exception, CouncilRequestRejected)
+            self.assertEqual(caught.exception.reason, reason)
 
     def test_mcp_ping_exposes_redacted_broker_recovery_health(self):
         fake_client = mock.Mock()
@@ -5212,9 +5456,11 @@ class CouncilBrokerTests(unittest.TestCase):
             client,
             "_send",
             return_value={"ok": True, "broker_version": "0.18.5"},
-        ), mock.patch("council.subprocess.Popen") as popen:
-            with self.assertRaisesRegex(CouncilError, "version mismatch"):
-                client.ensure_daemon()
+        ) as send, mock.patch("council.subprocess.Popen") as popen:
+            with self.assertRaisesRegex(CouncilError, "version mismatch") as caught:
+                client.request("extend", dialogue_id="dlg-version", additional_rounds=1)
+        self.assertEqual(caught.exception.reason, "version_mismatch")
+        send.assert_called_once_with({"action": "ping", "arguments": {}})
         popen.assert_not_called()
 
     def test_broker_server_rejects_connections_over_handler_budget(self):
