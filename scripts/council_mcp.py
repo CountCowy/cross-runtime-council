@@ -13,6 +13,9 @@ import sys
 import threading
 from typing import Any, Dict, List, Optional
 
+from council_protocol import tool_schema
+import council
+
 from council import (
     BROKER_VERSION,
     MAX_LINE_BYTES,
@@ -32,6 +35,12 @@ from council import (
     validate_relay_envelope_content,
     validate_extension_result,
 )
+
+PACKAGE_ID = "2365dc2bf6f083cfa07f4abf6d3c6e96e442f68dea58e516342e526d29b6f8d8"
+RUNTIME_COHORT = "5f0deaae436f790f960a08f2ec51d6e112379f6b73b6d6084aa5928f2179950a"
+if RUNTIME_COHORT != council.RUNTIME_COHORT:
+    raise RuntimeError("Council MCP/helper cohort mismatch; refresh the complete runtime set")
+
 
 
 SERVER_VERSION = BROKER_VERSION
@@ -274,241 +283,69 @@ def router_capability(client: CouncilClient, request_meta: Dict[str, Any]) -> st
 
 TOOLS: List[Dict[str, Any]] = [
     {
-        "name": "council_ping",
-        "description": "Read broker version, aggregate binding count, and aggregate fail-closed restoration health. Exact routes and participant identifiers are never returned.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {},
-            "additionalProperties": False,
-        },
+        "name": 'council_ping',
+        "description": 'Read broker version, aggregate binding count, and aggregate fail-closed restoration health. Exact routes and participant identifiers are never returned.',
+        "inputSchema": tool_schema('council_ping'),
     },
     {
-        "name": "council_bind",
-        "description": "Bind the current Claude session or Codex task to a project-scoped, expiring council participant. For Claude, this live MCP child relays messages to its parent session without exporting a token.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "runtime": {"type": "string", "enum": ["claude", "codex"]},
-                "participant": {"type": "string"},
-                "label": {"type": "string"},
-                "project": {"type": "string"},
-                "lease_minutes": {"type": "integer", "minimum": 1, "maximum": 1440, "default": DEFAULT_LEASE_MINUTES},
-            },
-            "required": ["runtime", "participant", "label", "project"],
-            "additionalProperties": False,
-        },
+        "name": 'council_bind',
+        "description": 'Bind the current Claude session or Codex task to a project-scoped, expiring council participant. For Claude, this live MCP child relays messages to its parent session without exporting a token.',
+        "inputSchema": tool_schema('council_bind'),
     },
     {
-        "name": "council_unbind",
-        "description": "Remove an expiring council participant binding. This does not erase dialogue history.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {"participant": {"type": "string"}},
-            "required": ["participant"],
-            "additionalProperties": False,
-        },
+        "name": 'council_unbind',
+        "description": 'Remove an expiring council participant binding. This does not erase dialogue history.',
+        "inputSchema": tool_schema('council_unbind'),
     },
     {
-        "name": "council_start",
-        "description": "Start a bounded two- or three-participant council with blind proposals followed by adversarial exchange rounds. Explicit user round and ledger values are binding and must never be silently clamped or replaced by defaults.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "initiator": {"type": "string"},
-                "peer": {"type": "string"},
-                "peers": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "minItems": 1,
-                    "maxItems": 2,
-                    "uniqueItems": True,
-                    "description": "One or two peers. Use this instead of peer for a triad.",
-                },
-                "topic": {"type": "string"},
-                "brief": {"type": "string"},
-                "premises": {"type": "array", "items": {}},
-                "minimum_rounds": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": MAX_COUNCIL_ROUNDS,
-                    "description": "Hard floor before early convergence is eligible. 'At least N' and 'exactly N' must pass N here.",
-                },
-                "rounds": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": MAX_COUNCIL_ROUNDS,
-                    "default": DEFAULT_ROUNDS,
-                    "description": "Initially authorized adversarial rounds. Pass an explicit user value exactly; never normalize it to a preferred default.",
-                },
-                "max_rounds": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": MAX_COUNCIL_ROUNDS,
-                    "default": DEFAULT_MAX_ROUNDS,
-                    "description": "User-authorized ceiling for extensions. 'Permit up to N' means max_rounds=N; never lower or clamp it silently.",
-                },
-                "stop_on_convergence": {
-                    "type": "boolean",
-                    "default": True,
-                    "description": "Whether all participants may end before the authorized round count when all report no material delta. Preserve an explicit user choice exactly.",
-                },
-                "active_claim_ceiling": {
-                    "type": "integer",
-                    "minimum": 2,
-                    "maximum": 24,
-                    "default": DEFAULT_ACTIVE_CLAIM_CEILING,
-                    "description": "Maximum active canonical claims. Preserve an explicit user value exactly; parked overflow remains visible.",
-                },
-            },
-            "required": ["initiator", "topic", "brief", "premises"],
-            "oneOf": [
-                {"required": ["peer"], "not": {"required": ["peers"]}},
-                {"required": ["peers"], "not": {"required": ["peer"]}},
-            ],
-            "additionalProperties": False,
-        },
+        "name": 'council_start',
+        "description": 'Start a bounded two- or three-participant council with blind proposals followed by adversarial exchange rounds. Explicit user round and ledger values are binding and must never be silently clamped or replaced by defaults.',
+        "inputSchema": tool_schema('council_start'),
     },
     {
-        "name": "council_submit",
-        "description": "Submit the response for an exact broker envelope round. The envelope payload.response_contract is the authoritative kind, round, payload schema, enum, and active-claim contract. Duplicate identical submissions are idempotent and old rounds return stale without changing state.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "dialogue_id": {"type": "string"},
-                "participant": {"type": "string"},
-                "kind": {
-                    "type": "string",
-                    "enum": [
-                        "proposal",
-                        "exchange",
-                        "convergence_challenge",
-                        "synthesis",
-                        "representation_check",
-                        "synthesis_revision",
-                        "revision_check",
-                    ],
-                },
-                "round_number": {"type": "integer", "minimum": 0},
-                "payload": {"type": "object"},
-            },
-            "required": ["dialogue_id", "participant", "kind", "round_number", "payload"],
-            "additionalProperties": False,
-        },
+        "name": 'council_submit',
+        "description": 'Submit the response for an exact broker envelope round. The envelope payload.response_contract is the authoritative kind, round, payload schema, enum, and active-claim contract. Duplicate identical submissions are idempotent and old rounds return stale without changing state.',
+        "inputSchema": tool_schema('council_submit'),
     },
     {
-        "name": "council_wait",
-        "description": "Claim the next queued council envelope for this participant. Use timeout 0 for an idle-task heartbeat and up to 55 seconds during an active council turn.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "participant": {"type": "string"},
-                "timeout_seconds": {"type": "integer", "minimum": 0, "maximum": 55, "default": 0},
-            },
-            "required": ["participant"],
-            "additionalProperties": False,
-        },
+        "name": 'council_wait',
+        "description": 'Claim the next queued council envelope for this participant. Use timeout 0 for an idle-task heartbeat and up to 55 seconds during an active council turn.',
+        "inputSchema": tool_schema('council_wait'),
     },
     {
-        "name": "council_ack",
-        "description": "Acknowledge a claimed council envelope only after its requested response has been submitted or consciously handled.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {"participant": {"type": "string"}, "message_id": {"type": "string"}},
-            "required": ["participant", "message_id"],
-            "additionalProperties": False,
-        },
+        "name": 'council_ack',
+        "description": 'Acknowledge a claimed council envelope only after its requested response has been submitted or consciously handled.',
+        "inputSchema": tool_schema('council_ack'),
     },
     {
-        "name": "council_pending_wakes",
-        "description": "Router-only: lease opaque Codex wake metadata without reading or claiming council envelope content.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20}
-            },
-            "additionalProperties": False,
-        },
+        "name": 'council_pending_wakes',
+        "description": 'Router-only: lease opaque Codex wake metadata without reading or claiming council envelope content.',
+        "inputSchema": tool_schema('council_pending_wakes'),
     },
     {
-        "name": "council_wake_ack",
-        "description": "Router-only: record whether a fixed-content Codex wake or needs-attention notification was delivered.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "participant": {"type": "string"},
-                "message_id": {"type": "string"},
-                "notification_id": {"type": "string"},
-                "notification_kind": {"type": "string", "enum": ["wake", "needs_attention"]},
-                "delivered": {"type": "boolean"},
-            },
-            "required": [
-                "participant",
-                "message_id",
-                "notification_id",
-                "notification_kind",
-                "delivered",
-            ],
-            "additionalProperties": False,
-        },
+        "name": 'council_wake_ack',
+        "description": 'Router-only: record whether a fixed-content Codex wake or needs-attention notification was delivered.',
+        "inputSchema": tool_schema('council_wake_ack'),
     },
     {
-        "name": "council_extend",
-        "description": "Apply additional adversarial rounds at the synthesis gate. Call only after the user explicitly authorizes the extension.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "dialogue_id": {"type": "string"},
-                "participant": {"type": "string"},
-                "additional_rounds": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": MAX_COUNCIL_ROUNDS,
-                },
-            },
-            "required": ["dialogue_id", "participant", "additional_rounds"],
-            "additionalProperties": False,
-        },
+        "name": 'council_extend',
+        "description": 'Apply additional adversarial rounds at the synthesis gate. Call only after the user explicitly authorizes the extension.',
+        "inputSchema": tool_schema('council_extend'),
     },
     {
-        "name": "council_request_extension",
+        "name": 'council_request_extension',
         "description": "Record a participant's reason for wanting more rounds without extending the council. User authorization remains required.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "dialogue_id": {"type": "string"},
-                "participant": {"type": "string"},
-                "reason": {"type": "string"},
-            },
-            "required": ["dialogue_id", "participant", "reason"],
-            "additionalProperties": False,
-        },
+        "inputSchema": tool_schema('council_request_extension'),
     },
     {
-        "name": "council_status",
-        "description": "Read the capability-authorized participant binding and durable dialogue progress.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "participant": {"type": "string"},
-                "dialogue_id": {"type": ["string", "null"]},
-            },
-            "required": ["participant"],
-            "additionalProperties": False,
-        },
+        "name": 'council_status',
+        "description": 'Read the capability-authorized participant binding and durable dialogue progress.',
+        "inputSchema": tool_schema('council_status'),
     },
     {
-        "name": "council_cancel",
-        "description": "Cancel a dialogue and notify its other participant.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "dialogue_id": {"type": "string"},
-                "participant": {"type": "string"},
-                "reason": {"type": "string"},
-            },
-            "required": ["dialogue_id", "participant", "reason"],
-            "additionalProperties": False,
-        },
+        "name": 'council_cancel',
+        "description": 'Cancel a dialogue and notify its other participant.',
+        "inputSchema": tool_schema('council_cancel'),
     },
 ]
 

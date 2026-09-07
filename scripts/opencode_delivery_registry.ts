@@ -1,3 +1,32 @@
+import { ERROR_REASONS, MAX_LINE_BYTES, RUNTIME_COHORT as PROTOCOL_COHORT } from "./council_protocol.ts"
+import type { ToolDefinition } from "@opencode-ai/plugin"
+
+export const PACKAGE_ID = "2365dc2bf6f083cfa07f4abf6d3c6e96e442f68dea58e516342e526d29b6f8d8"
+export const RUNTIME_COHORT = "5f0deaae436f790f960a08f2ec51d6e112379f6b73b6d6084aa5928f2179950a"
+if (RUNTIME_COHORT !== PROTOCOL_COHORT) {
+  throw new Error("Council registry/definitions cohort mismatch; refresh the complete runtime set")
+}
+
+export const TOOL_REGISTRY_KEY = Symbol.for("council.opencode.tool-definitions.v1")
+export type ToolRegistration = {
+  format: 1
+  cohort: string
+  tools: Record<string, ToolDefinition>
+}
+
+export function registeredTools(value: unknown, cohort: string): Record<string, ToolDefinition> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Council OpenCode plugin is not initialized; restart with the complete runtime set")
+  }
+  const record = value as Partial<ToolRegistration>
+  if (record.format !== 1 || record.cohort !== cohort || record.tools === null ||
+      typeof record.tools !== "object" || Array.isArray(record.tools) ||
+      Object.values(record.tools).some((entry) => !entry || typeof entry.execute !== "function")) {
+    throw new Error("Council wrapper/plugin cohort or registry mismatch; refresh copies and restart OpenCode")
+  }
+  return record.tools
+}
+
 type DeliveryState = {
   delivered: Set<string>
   inFlight: Map<string, Promise<void>>
@@ -19,13 +48,7 @@ export function normalizedBrokerPeer(peer: string | undefined) {
   return peer ?? null
 }
 
-export const ERROR_REASONS = [
-  "unknown", "not_bound", "binding_expired", "not_authorized",
-  "extension_precommit_rejected", "invalid_request", "request_too_large",
-  "request_timeout", "internal", "version_mismatch", "broker_unavailable",
-  "transport_lost", "malformed_response",
-] as const
-
+export { ERROR_REASONS } from "./council_protocol.ts"
 export type ErrorReason = typeof ERROR_REASONS[number]
 
 export function normalizeErrorReason(value: unknown): ErrorReason {
@@ -103,7 +126,7 @@ export function prepareRelaySocket(socket: RelaySocket) {
 export function rejectOversizedRelayBuffer(
   socket: RelaySocket,
   length: number,
-  maximum = 1024 * 1024,
+  maximum = MAX_LINE_BYTES,
 ) {
   if (length <= maximum) return false
   socket.destroy()

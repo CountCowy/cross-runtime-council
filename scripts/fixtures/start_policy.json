@@ -1,0 +1,32 @@
+[
+  {
+    "name": "omitted",
+    "input": {},
+    "values": {"minimum_rounds": 2, "rounds": 2, "max_rounds": 5, "stop_on_convergence": true, "active_claim_ceiling": 24},
+    "provided": {"minimum_rounds": false, "rounds": false, "max_rounds": false, "stop_on_convergence": false, "active_claim_ceiling": false}
+  },
+  {
+    "name": "explicit defaults",
+    "input": {"minimum_rounds": 2, "rounds": 2, "max_rounds": 5, "stop_on_convergence": true, "active_claim_ceiling": 24},
+    "values": {"minimum_rounds": 2, "rounds": 2, "max_rounds": 5, "stop_on_convergence": true, "active_claim_ceiling": 24},
+    "provided": {"minimum_rounds": true, "rounds": true, "max_rounds": true, "stop_on_convergence": true, "active_claim_ceiling": true}
+  },
+  {
+    "name": "one round",
+    "input": {"rounds": 1},
+    "values": {"minimum_rounds": 1, "rounds": 1, "max_rounds": 5, "stop_on_convergence": true, "active_claim_ceiling": 24},
+    "provided": {"minimum_rounds": false, "rounds": true, "max_rounds": false, "stop_on_convergence": false, "active_claim_ceiling": false}
+  },
+  {
+    "name": "explicit false",
+    "input": {"stop_on_convergence": false, "active_claim_ceiling": 2},
+    "values": {"minimum_rounds": 2, "rounds": 2, "max_rounds": 5, "stop_on_convergence": false, "active_claim_ceiling": 2},
+    "provided": {"minimum_rounds": false, "rounds": false, "max_rounds": false, "stop_on_convergence": true, "active_claim_ceiling": true}
+  },
+  {
+    "name": "six through thirty",
+    "input": {"minimum_rounds": 6, "rounds": 6, "max_rounds": 30},
+    "values": {"minimum_rounds": 6, "rounds": 6, "max_rounds": 30, "stop_on_convergence": true, "active_claim_ceiling": 24},
+    "provided": {"minimum_rounds": true, "rounds": true, "max_rounds": true, "stop_on_convergence": false, "active_claim_ceiling": false}
+  }
+]
