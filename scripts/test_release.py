@@ -154,6 +154,26 @@ class ReleaseTests(unittest.TestCase):
         self.run_builder("--output", str(self.source / "output"), success=False)
         self.assertFalse((self.source / "output").exists())
 
+    def test_write_refuses_manifest_symlinks_and_nonregular_targets_before_stamping(self):
+        manifest = self.source / "release_manifest.json"
+        outside = self.base / "preserve.txt"
+        outside.write_bytes(b"independent file\n")
+        manifest.symlink_to(outside)
+        subprocess.run(["git", "add", "release_manifest.json"], cwd=self.source, check=True)
+        before = {name: (self.source / name).read_bytes() for name in RUNTIME_FILES}
+
+        result = self.run_builder("--write", success=False)
+        self.assertIn("release manifest must be a regular file", result.stderr)
+        self.assertTrue(manifest.is_symlink())
+        self.assertEqual(outside.read_bytes(), b"independent file\n")
+        self.assertEqual(before, {name: (self.source / name).read_bytes() for name in RUNTIME_FILES})
+
+        manifest.unlink()
+        manifest.mkdir()
+        self.run_builder("--write", success=False)
+        self.assertTrue(manifest.is_dir())
+        self.assertEqual(before, {name: (self.source / name).read_bytes() for name in RUNTIME_FILES})
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

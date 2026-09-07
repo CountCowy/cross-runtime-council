@@ -112,9 +112,12 @@ def main():
             if stale:
                 raise ValueError("release stamps are stale; run python3 scripts/build_release.py --write: " + ", ".join(stale))
         elif args.write:
+            manifest_path = ROOT / MANIFEST
+            if manifest_path.is_symlink() or (manifest_path.exists() and not manifest_path.is_file()):
+                raise ValueError("release manifest must be a regular file, not a symlink")
             for name in RUNTIME_FILES:
                 (ROOT / name).write_bytes(stamped[name])
-            (ROOT / MANIFEST).write_bytes(manifest)
+            manifest_path.write_bytes(manifest)
         else:
             output = args.output.expanduser().resolve()
             if output == ROOT or ROOT in output.parents or output in ROOT.parents:

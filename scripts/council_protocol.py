@@ -6,7 +6,7 @@ These descriptions do not replace broker authorization or dialogue validation.
 
 from copy import deepcopy
 
-PACKAGE_ID = "2365dc2bf6f083cfa07f4abf6d3c6e96e442f68dea58e516342e526d29b6f8d8"
+PACKAGE_ID = "2d7458236799dbf14d6266f31a525bd29b06aec6e8e664789b530045fd057de1"
 RUNTIME_COHORT = "5f0deaae436f790f960a08f2ec51d6e112379f6b73b6d6084aa5928f2179950a"
 
 SCHEMA_VERSION = 1
