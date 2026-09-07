@@ -648,6 +648,12 @@ def call_tool(
         result = client.request("wake_ack", _router_capability=auth, **arguments)
     elif name == "council_extend":
         identity, auth = participant_capability(arguments["participant"], request_meta)
+        additional_rounds = arguments["additional_rounds"]
+        if type(additional_rounds) is not int or not 1 <= additional_rounds <= MAX_COUNCIL_ROUNDS:
+            raise CouncilError(
+                "additional_rounds must be an integer between 1 and %d" % MAX_COUNCIL_ROUNDS,
+                reason="invalid_request",
+            )
         operation_key = (identity, arguments["dialogue_id"])
         with CAPABILITIES_LOCK:
             pending = PENDING_EXTENSION_OPERATIONS.get(operation_key)

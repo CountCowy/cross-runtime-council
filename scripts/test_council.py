@@ -5137,6 +5137,10 @@ class CouncilBrokerTests(unittest.TestCase):
                     pending = pending or current
                     self.assertIs(current, pending)
             sent = client.request.call_count
+            with self.assertRaises(CouncilError) as invalid:
+                call_tool("council_extend", {**arguments, "additional_rounds": 0}, request_meta={"threadId": "thread-alpha"})
+            self.assertEqual(invalid.exception.reason, "invalid_request")
+            self.assertIs(PENDING_EXTENSION_OPERATIONS[(identity, "dlg-reasons")], pending)
             with self.assertRaisesRegex(CouncilError, "original round count"):
                 call_tool("council_extend", {**arguments, "additional_rounds": 2}, request_meta={"threadId": "thread-alpha"})
             self.assertEqual(client.request.call_count, sent)
@@ -5144,6 +5148,47 @@ class CouncilBrokerTests(unittest.TestCase):
             with self.assertRaises(CouncilError):
                 call_tool("council_extend", arguments, request_meta={"threadId": "thread-alpha"})
             self.assertIs(PENDING_EXTENSION_OPERATIONS[(identity, "dlg-reasons")], pending)
+
+    def test_mcp_invalid_extension_count_allows_corrected_tool_call(self):
+        dialogue = self.start_dialogue(rounds=1, max_rounds=3, stop=False)
+        for participant in ("alpha", "beta"):
+            self.broker.submit(dialogue, participant, "proposal", 0, proposal(participant))
+        identity = ("codex", "thread-alpha", "alpha")
+        BINDING_CAPABILITIES[identity] = CAP_ALPHA
+        client = mock.Mock()
+        client.request.side_effect = lambda action, **arguments: self._decode_wire_response(
+            self._broker_wire_response(self.broker, {"action": action, "arguments": arguments})
+        )
+        invalid_counts = [0, -1, True, 1.5, "1", None, MAX_COUNCIL_ROUNDS + 1]
+        with mock.patch("council_mcp.CouncilClient", return_value=client), mock.patch(
+            "council_mcp.respond"
+        ) as respond:
+            for request_id, count in enumerate(invalid_counts + [1]):
+                with self.subTest(count=count):
+                    handle_mcp_message({
+                        "method": "tools/call", "id": request_id,
+                        "params": {
+                            "name": "council_extend",
+                            "arguments": {
+                                "dialogue_id": dialogue, "participant": "alpha",
+                                "additional_rounds": count,
+                            },
+                            "_meta": {"threadId": "thread-alpha"},
+                        },
+                    })
+                    self.assertEqual(respond.call_args.args[0], request_id)
+                    result = respond.call_args.args[1]
+                    body = json.loads(result["content"][0]["text"])
+                    self.assertNotIn((identity, dialogue), PENDING_EXTENSION_OPERATIONS)
+                    if request_id < len(invalid_counts):
+                        self.assertTrue(result["isError"])
+                        self.assertEqual(body["reason"], "invalid_request")
+                        client.request.assert_not_called()
+                    else:
+                        self.assertNotIn("isError", result)
+                        self.assertEqual(body["authorized_rounds"], 2)
+        self.assertEqual(client.request.call_count, 1)
+        self.assertEqual(self.broker.status(dialogue)["authorized_rounds"], 2)
 
     def test_mcp_malformed_success_preserves_pending_extension(self):
         identity = ("codex", "thread-alpha", "alpha")
