@@ -6,6 +6,7 @@ Git selects tracked inputs; Python 3.9 standard-library code does all generation
 """
 
 import argparse
+import fnmatch
 import hashlib
 import importlib.util
 import json
@@ -128,8 +129,7 @@ def main():
                         try:
                             with os.scandir(directory) as entries:
                                 caches = [directory / entry.name for entry in entries
-                                          if entry.name.startswith(path.stem + ".")
-                                          and entry.name.endswith(".pyc")]
+                                          if fnmatch.fnmatchcase(entry.name, path.stem + ".*.pyc")]
                         except FileNotFoundError:
                             continue
                         for cache in caches:

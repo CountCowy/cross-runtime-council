@@ -277,15 +277,28 @@ class ReleaseTests(unittest.TestCase):
         source = self.source.resolve()
         directory = source / "scripts/__pycache__"
         self.assertFalse(directory.exists())
-        with mock.patch("build_release.ROOT", source), \
-                mock.patch.object(sys, "argv", ["build_release.py", "--write"]), \
-                mock.patch.object(sys, "pycache_prefix", None):
-            build_main()
-            directory.mkdir()
-            unrelated = directory / "other.fixture.pyc"
-            unrelated.write_bytes(b"unrelated cache")
-            build_main()
-            self.assertEqual(unrelated.read_bytes(), b"unrelated cache")
+        for prefix in (None, str(self.base.resolve() / "preserved-cache")):
+            with self.subTest(cache_prefix=prefix), \
+                    mock.patch("build_release.ROOT", source), \
+                    mock.patch.object(sys, "argv", ["build_release.py", "--write"]), \
+                    mock.patch.object(sys, "pycache_prefix", prefix):
+                build_main()
+                directories = {directory,
+                               Path(importlib.util.cache_from_source(str(source / "scripts/council.py"))).parent}
+                preserved, tagged = [], []
+                for cache_directory in directories:
+                    cache_directory.mkdir(parents=True, exist_ok=True)
+                    for name in ("other.fixture.pyc", "council.pyc"):
+                        unrelated = cache_directory / name
+                        unrelated.write_bytes(b"unrelated cache")
+                        preserved.append(unrelated)
+                    cache = cache_directory / "council.fixture.pyc"
+                    cache.write_bytes(b"tagged cache")
+                    tagged.append(cache)
+                build_main()
+                for unrelated in preserved:
+                    self.assertEqual(unrelated.read_bytes(), b"unrelated cache")
+                self.assertTrue(all(not cache.exists() for cache in tagged))
 
     def test_stale_definition_stamp_or_manifest_fails_readonly_check(self):
         self.run_builder("--write")
