@@ -919,6 +919,61 @@ class CohortTests(unittest.TestCase):
             self.assertEqual(council_opencode.main(), 0)
             client.assert_called_once_with(origin_cohort=council.RUNTIME_COHORT)
 
+    def test_bridge_origin_substitution_mutant_fails_the_refusal_oracle(self):
+        copied = Path(self.temp.name) / "mutant-scripts"
+        copied.mkdir()
+        for name in (
+            "council.py",
+            "council_protocol.py",
+            "council_admission.py",
+            "council_opencode.py",
+        ):
+            (copied / name).write_bytes((SCRIPTS / name).read_bytes())
+        program = "\n".join(
+            [
+                "import sys; sys.path.insert(0, " + repr(str(copied)) + ")",
+                "import council_opencode as bridge",
+                "class FakeClient:",
+                "    def __init__(self, **kwargs): pass",
+                "    def request(self, *args, **kwargs): return {}",
+                "bridge.CouncilClient = FakeClient",
+                "raise SystemExit(bridge.main())",
+            ]
+        )
+
+        def invoke():
+            return subprocess.run(
+                [sys.executable, "-I", "-B", "-c", program],
+                input=json.dumps(
+                    {
+                        "action": "ping",
+                        "runtime_cohort": "stale-plugin",
+                        "arguments": {},
+                    }
+                )
+                + "\n",
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+
+        def refuses_origin(response):
+            self.assertEqual(response.returncode, 2, response.stderr)
+            self.assertEqual(json.loads(response.stdout)["reason"], "version_mismatch")
+
+        refuses_origin(invoke())
+        path = copied / "council_opencode.py"
+        original = path.read_text()
+        mutant = original.replace(
+            'origin = request.get("runtime_cohort")', "origin = RUNTIME_COHORT"
+        )
+        self.assertNotEqual(mutant, original)
+        path.write_text(mutant)
+        # Substituting the newly loaded bridge's stamp must be caught by the
+        # same refusal oracle. No broker or live state participates in control.
+        with self.assertRaises(AssertionError):
+            refuses_origin(invoke())
+
     def test_explicit_ping_checks_legacy_broker_cohort_response(self):
         client = council.CouncilClient(self.root)
         for response in (

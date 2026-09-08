@@ -20,7 +20,7 @@ sys.dont_write_bytecode = True
 import council_admission as admission
 import council_protocol as protocol
 
-PACKAGE_ID = "4873bbfab7e79c82e81c9c123bade7b7011ee22ba5b5ec3488eb26725e624d54"
+PACKAGE_ID = "683fe8e084b075dc2b42e2bf276d6a97997b86d367d70b20a63d182deb51585e"
 RUNTIME_COHORT = "e5eed435bb8e236e619eb86e6834789f5bc3e055526219263d72c095c43139b0"
 if (
     RUNTIME_COHORT != admission.RUNTIME_COHORT
