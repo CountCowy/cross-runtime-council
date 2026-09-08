@@ -3,6 +3,8 @@
 
 import hashlib
 import importlib.util
+import io
+import itertools
 import json
 import os
 import py_compile
@@ -127,10 +129,13 @@ class ReleaseTests(unittest.TestCase):
         os.utime(protocol, (timestamp, timestamp))
         prefix = str(self.base.resolve() / "definition-cache")
         with mock.patch.object(sys, "pycache_prefix", prefix):
-            py_compile.compile(str(protocol), doraise=True)
+            cache = Path(py_compile.compile(str(protocol), doraise=True, optimize=0,
+                                           invalidation_mode=py_compile.PycInvalidationMode.TIMESTAMP))
+        self.assertEqual(int.from_bytes(cache.read_bytes()[4:8], "little"), 0)
         protocol.write_bytes(changed)
         os.utime(protocol, (timestamp, timestamp))
         env = dict(os.environ, PYTHONPYCACHEPREFIX=prefix)
+        env.pop("PYTHONOPTIMIZE", None)
 
         def run(*args):
             return subprocess.run([sys.executable, "-B", *args], cwd=source,
@@ -167,15 +172,40 @@ class ReleaseTests(unittest.TestCase):
                 os.utime(path, (timestamp, timestamp))
             return result
 
-        for prefix in (None, str(self.base.resolve() / "python-cache")):
-            with self.subTest(cache_prefix=prefix), mock.patch.object(sys, "pycache_prefix", prefix):
+        modes = (py_compile.PycInvalidationMode.TIMESTAMP, py_compile.PycInvalidationMode.CHECKED_HASH)
+        prefixes = (None, str(self.base.resolve() / "python-cache"))
+        for prefix, mode in itertools.product(prefixes, modes):
+            with self.subTest(cache_prefix=prefix, mode=mode), mock.patch.object(sys, "pycache_prefix", prefix):
                 broker = source / "scripts/council.py"
                 broker.write_bytes(broker.read_bytes() + b"\n# runtime generation fixture\n")
                 for path in python_sources:
                     os.utime(path, (timestamp, timestamp))
                     for optimization in (0, 1, 2):
-                        py_compile.compile(str(path), doraise=True, optimize=optimization)
+                        cache = Path(py_compile.compile(str(path), doraise=True, optimize=optimization,
+                                                        invalidation_mode=mode))
+                        self.assertEqual(int.from_bytes(cache.read_bytes()[4:8], "little"),
+                                         0 if mode == py_compile.PycInvalidationMode.TIMESTAMP else 3)
                 sizes = {path: path.stat().st_size for path in python_sources}
+                env = dict(os.environ)
+                env.pop("PYTHONOPTIMIZE", None)
+                script = ("import json, sys; sys.pycache_prefix = " + repr(prefix) + "; "
+                          "import council_protocol, council, council_mcp, council_opencode; "
+                          "print(json.dumps({m.__name__: m.RUNTIME_COHORT for m in "
+                          "(council_protocol, council, council_mcp, council_opencode)}))")
+
+                def loaded_cohorts(optimization):
+                    result = subprocess.run([sys.executable, "-B", *optimization, "-c", script],
+                                            cwd=source / "scripts", env=env, capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    return json.loads(result.stdout)
+
+                expected_cohort = json.loads(release(source)[2])["runtime_cohort"]
+                expected = {name: expected_cohort for name in
+                            ("council_protocol", "council", "council_mcp", "council_opencode")}
+                for optimization in ([], ["-O"], ["-OO"]):
+                    # Imports succeed for a coherent old generation; the parent
+                    # oracle must still distinguish it at every optimization level.
+                    self.assertNotEqual(loaded_cohorts(optimization), expected)
                 # Model a coarse filesystem clock without depending on wall-clock timing.
                 with mock.patch("build_release.ROOT", source), \
                         mock.patch.object(sys, "argv", ["build_release.py", "--write"]), \
@@ -184,14 +214,78 @@ class ReleaseTests(unittest.TestCase):
                 self.assertEqual(sizes, {path: path.stat().st_size for path in python_sources})
                 self.assertTrue(all(int(path.stat().st_mtime) == timestamp for path in python_sources))
                 manifest = json.loads((source / "release_manifest.json").read_text())
-                script = ("import sys; sys.pycache_prefix = " + repr(prefix) + "; "
-                          "import council_protocol, council, council_mcp, council_opencode; "
-                          "assert all(module.RUNTIME_COHORT == " + repr(manifest["runtime_cohort"]) +
-                          " for module in (council_protocol, council, council_mcp, council_opencode))")
+                self.assertEqual(manifest["runtime_cohort"], expected_cohort)
                 for optimization in ([], ["-O"], ["-OO"]):
-                    result = subprocess.run([sys.executable, *optimization, "-c", script],
-                                            cwd=source / "scripts", capture_output=True, text=True)
-                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    with self.subTest(optimization=optimization):
+                        self.assertEqual(loaded_cohorts(optimization), expected)
+
+    def test_checked_hash_cache_observes_changed_source(self):
+        protocol = self.source.resolve() / "scripts/council_protocol.py"
+        original = protocol.read_bytes()
+        changed = original.replace(b"DEFAULT_ROUNDS = 2\n", b"DEFAULT_ROUNDS = 3\n")
+        self.assertNotEqual(original, changed)
+        self.assertEqual(len(original), len(changed))
+        timestamp = 1_700_000_000
+        os.utime(protocol, (timestamp, timestamp))
+        prefix = str(self.base.resolve() / "checked-hash-cache")
+        with mock.patch.object(sys, "pycache_prefix", prefix):
+            cache = Path(py_compile.compile(str(protocol), doraise=True, optimize=0,
+                                           invalidation_mode=py_compile.PycInvalidationMode.CHECKED_HASH))
+        self.assertEqual(int.from_bytes(cache.read_bytes()[4:8], "little"), 3)
+        protocol.write_bytes(changed)
+        os.utime(protocol, (timestamp, timestamp))
+        env = dict(os.environ, PYTHONPYCACHEPREFIX=prefix)
+        env.pop("PYTHONOPTIMIZE", None)
+        result = subprocess.run([sys.executable, "-B", "-c",
+                                 "import council_protocol; print(council_protocol.DEFAULT_ROUNDS)"],
+                                cwd=protocol.parent, env=env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "3")
+
+    def test_cache_enumeration_failure_preserves_sources_and_manifest(self):
+        self.run_builder("--write")
+        source = self.source.resolve()
+        broker = source / "scripts/council.py"
+        broker.write_bytes(broker.read_bytes() + b"\n# pending source edit\n")
+        before = {name: (source / name).read_bytes() for name in (*RUNTIME_FILES, "release_manifest.json")}
+        scandir = os.scandir
+        for prefix in (None, str(self.base.resolve() / "restricted-cache")):
+            with self.subTest(cache_prefix=prefix), mock.patch.object(sys, "pycache_prefix", prefix):
+                directory = Path(importlib.util.cache_from_source(str(broker))).parent
+                directory.mkdir(parents=True, exist_ok=True)
+                (directory / "council.fixture.pyc").write_bytes(b"readable cache fixture")
+                encountered = []
+
+                def unavailable(path):
+                    if Path(path) == directory:
+                        encountered.append(path)
+                        raise PermissionError("cannot enumerate fixture cache directory")
+                    return scandir(path)
+
+                with mock.patch("build_release.ROOT", source), \
+                        mock.patch.object(sys, "argv", ["build_release.py", "--write"]), \
+                        mock.patch("os.scandir", side_effect=unavailable), \
+                        mock.patch("sys.stderr", new_callable=io.StringIO) as stderr:
+                    with self.assertRaises(SystemExit) as failure:
+                        build_main()
+                self.assertEqual(failure.exception.code, 1)
+                self.assertTrue(encountered)
+                self.assertIn("cannot enumerate fixture cache directory", stderr.getvalue())
+                self.assertEqual(before, {name: (source / name).read_bytes() for name in before})
+
+    def test_missing_cache_directory_and_unrelated_files_are_preserved(self):
+        source = self.source.resolve()
+        directory = source / "scripts/__pycache__"
+        self.assertFalse(directory.exists())
+        with mock.patch("build_release.ROOT", source), \
+                mock.patch.object(sys, "argv", ["build_release.py", "--write"]), \
+                mock.patch.object(sys, "pycache_prefix", None):
+            build_main()
+            directory.mkdir()
+            unrelated = directory / "other.fixture.pyc"
+            unrelated.write_bytes(b"unrelated cache")
+            build_main()
+            self.assertEqual(unrelated.read_bytes(), b"unrelated cache")
 
     def test_stale_definition_stamp_or_manifest_fails_readonly_check(self):
         self.run_builder("--write")

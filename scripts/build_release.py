@@ -9,6 +9,7 @@ import argparse
 import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
 import re
 import shutil
@@ -124,7 +125,14 @@ def main():
                     cache_dirs = {path.parent / "__pycache__",
                                   Path(importlib.util.cache_from_source(str(path))).parent}
                     for directory in cache_dirs:
-                        for cache in directory.glob(path.stem + ".*.pyc"):
+                        try:
+                            with os.scandir(directory) as entries:
+                                caches = [directory / entry.name for entry in entries
+                                          if entry.name.startswith(path.stem + ".")
+                                          and entry.name.endswith(".pyc")]
+                        except FileNotFoundError:
+                            continue
+                        for cache in caches:
                             cache.unlink(missing_ok=True)
             for name in RUNTIME_FILES:
                 (ROOT / name).write_bytes(stamped[name])
