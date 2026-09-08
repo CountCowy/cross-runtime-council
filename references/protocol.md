@@ -227,3 +227,19 @@ The broker's state files are canonical. A runtime must read its participant-scop
 - The broker is local-only and exposes no TCP or HTTP listener.
 - Unrelated or sensitive sessions are never implicit candidates. The user binds the planning session explicitly.
 - A session that receives or sends council content is warm for that topic. Council output never satisfies a cold, independent code review, even when two vendors agree.
+
+## Definition ownership and component identity
+
+Shared enums, bounds and static tool arguments live in `scripts/council_protocol.py`.
+`generate_protocol.py` produces the committed TypeScript representation; Python
+consumers import the canonical definitions. Substantive concession membership is
+explicit and independent of presentation order. Tool generation preserves omitted
+arguments, and the broker still owns dialogue-dependent payload contracts and all
+authorization, phase, ledger, persistence and acknowledgement behavior.
+
+`ping` exposes loaded `package_id` and `runtime_cohort` literals. Entrypoints check
+loaded helper cohorts; the OpenCode wrapper also checks the plugin's private typed
+registry before delegation. These are local compatibility checks. Authenticated
+cross-process cohort admission, target-reader compatibility and recoverable
+installation remain separate lifecycle work; matching identities do not imply
+that those gates ran. See `docs/development.md` in the source checkout.

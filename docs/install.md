@@ -121,7 +121,8 @@ re-bootstraps on its next scheduled run.
    mkdir -p ~/.config/opencode/tools
    cp ~/.claude/skills/council/scripts/opencode_council_plugin.ts   ~/.config/opencode/council-plugin.ts
    cp ~/.claude/skills/council/scripts/opencode_delivery_registry.ts ~/.config/opencode/opencode_delivery_registry.ts
-   cp ~/.claude/skills/council/scripts/opencode_council_tools.ts     ~/.config/opencode/tools/council.ts
+   cp ~/.claude/skills/council/scripts/council_protocol.ts          ~/.config/opencode/council_protocol.ts
+   cp ~/.claude/skills/council/scripts/tools/council.ts             ~/.config/opencode/tools/council.ts
    ```
 
    Then add the plugin to `~/.config/opencode/opencode.json`:

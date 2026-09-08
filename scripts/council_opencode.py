@@ -10,12 +10,20 @@ import json
 import sys
 from typing import Any, Dict
 
+import council
+
 from council import (
     MAX_LINE_BYTES,
     CouncilClient,
     CouncilError,
     CouncilRequestRejected,
 )
+
+PACKAGE_ID = "250c703fbe6e229aa76b87af8d8044a5293bb5e5670615a45bef02a5befffccf"
+RUNTIME_COHORT = "5f0deaae436f790f960a08f2ec51d6e112379f6b73b6d6084aa5928f2179950a"
+if RUNTIME_COHORT != council.RUNTIME_COHORT:
+    raise RuntimeError("Council bridge/helper cohort mismatch; refresh the complete runtime set")
+
 
 
 def main() -> int:

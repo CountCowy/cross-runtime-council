@@ -4088,7 +4088,10 @@ class CouncilBrokerTests(unittest.TestCase):
         scripts.mkdir(parents=True)
         (skill_root / "SKILL.md").write_text("---\nname: council\n---\n", encoding="utf-8")
         source_plugin = scripts / "opencode_council_plugin.ts"
-        source_tools = scripts / "opencode_council_tools.ts"
+        (scripts / "tools").mkdir()
+        source_tools = scripts / "tools" / "council.ts"
+        source_protocol = scripts / "council_protocol.ts"
+        source_protocol.write_text("export const definition = true\n", encoding="utf-8")
         source_delivery_registry = scripts / "opencode_delivery_registry.ts"
         source_plugin.write_text("export const plugin = true\n", encoding="utf-8")
         source_tools.write_text("export const tools = true\n", encoding="utf-8")
@@ -4101,6 +4104,7 @@ class CouncilBrokerTests(unittest.TestCase):
         opencode_root = Path(self.temporary.name) / "opencode-config"
         (opencode_root / "tools").mkdir(parents=True)
         shutil.copyfile(source_plugin, opencode_root / "council-plugin.ts")
+        shutil.copyfile(source_protocol, opencode_root / "council_protocol.ts")
         shutil.copyfile(source_tools, opencode_root / "tools" / "council.ts")
         shutil.copyfile(
             source_delivery_registry,
@@ -4151,6 +4155,11 @@ class CouncilBrokerTests(unittest.TestCase):
             result["opencode"]["delivery_registry_installed_current"]
         )
         self.assertTrue(result["opencode"]["plugin_registered"])
+        self.assertTrue(result["opencode"]["protocol_definitions_installed_current"])
+        (opencode_root / "council_protocol.ts").write_text("stale helper")
+        with mock.patch("council.CouncilClient.request", return_value={}):
+            stale = installation_doctor(self.root, skill_root=skill_root, opencode_config_root=opencode_root)
+        self.assertFalse(stale["opencode"]["protocol_definitions_installed_current"])
 
     def test_installation_doctor_reports_malformed_json_without_crashing(self):
         malformed_state = Path(self.temporary.name) / "malformed-state"

@@ -128,3 +128,5 @@ feature requests, not defects. Security issues: see [SECURITY.md](SECURITY.md)
 ## License
 
 Apache-2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE).
+
+Maintainers: [shared definitions and offline release preparation](docs/development.md).
