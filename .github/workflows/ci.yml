@@ -55,6 +55,10 @@ jobs:
       - name: Protocol and adapter semantics
         run: node --experimental-transform-types --test scripts/test_protocol.ts
       - name: Offline release provenance
+        run: env -u SOURCE_DATE_EPOCH python3 scripts/test_release.py
+      - name: Offline release provenance with reproducible-build environment
+        env:
+          SOURCE_DATE_EPOCH: "1700000000"
         run: python3 scripts/test_release.py
       - name: Lifecycle script syntax
         run: for f in install/*.sh; do sh -n "$f"; done
