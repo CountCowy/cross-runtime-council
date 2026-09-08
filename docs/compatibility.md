@@ -6,6 +6,11 @@ not listed is **untested** — it may work, but failures on untested
 configurations are triaged as feature requests, not defects, and fail-closed
 authentication errors on them are expected behavior.
 
+New recovery claims use the [live rehearsal contract](live-rehearsal.md) and a
+completed run record tied to the tested source/artifact/runtime tuple. The dated
+observations below remain historical; this contract and its empty template do not
+retroactively qualify them or establish live acceptance of the current source.
+
 ## Platform
 
 | Component | Requirement | Status |
