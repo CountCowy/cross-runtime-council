@@ -1237,6 +1237,11 @@ class CouncilBrokerTests(unittest.TestCase):
         )
         self.assertEqual(
             synthesis_request["payload"]["required_fields"],
+            ["executive_summary", "recommendation", "disagreements",
+             "rejected_alternatives", "evidence_gaps", "user_decisions"],
+        )
+        self.assertEqual(
+            synthesis_request["payload"]["required_fields"],
             synthesis_request["payload"]["response_contract"]["payload_schema"]
             ["required"],
         )
@@ -1281,6 +1286,11 @@ class CouncilBrokerTests(unittest.TestCase):
         self.assertEqual(
             revision_request["payload"]["response_contract"]["submit_kind"],
             "synthesis_revision",
+        )
+        self.assertEqual(
+            revision_request["payload"]["required_fields"],
+            ["executive_summary", "recommendation", "disagreements",
+             "rejected_alternatives", "evidence_gaps", "user_decisions"],
         )
         self.assertEqual(
             revision_request["payload"]["required_fields"],

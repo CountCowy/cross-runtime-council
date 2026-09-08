@@ -74,11 +74,12 @@ from council_protocol import (
     RESOLUTION_COSTS as RESOLUTION_COSTS,
     ERROR_REASONS as ERROR_REASONS,
     REQUEST_SUBMISSION_KINDS,
+    SYNTHESIS_REQUIRED_FIELDS,
 )
 import council_protocol
 
-PACKAGE_ID = "2078685457c4bcdca6bb823908056af0902b7b1b79804ad7fc5584b444d67b7e"
-RUNTIME_COHORT = "5f0deaae436f790f960a08f2ec51d6e112379f6b73b6d6084aa5928f2179950a"
+PACKAGE_ID = "24e1b0902fe95d929f365cb57a156e454236e7f82b57dcb68b146ba12bb5ba47"
+RUNTIME_COHORT = "9401f1780d0d666764923aef9755778135399b0c6f17ed33aea21686d2715328"
 if RUNTIME_COHORT != council_protocol.RUNTIME_COHORT:
     raise RuntimeError("Council broker/helper cohort mismatch; refresh the complete runtime set")
 
@@ -347,14 +348,7 @@ def response_contract_for(
     elif submit_kind in ("synthesis", "synthesis_revision"):
         payload_schema = {
             "type": "object",
-            "required": [
-                "executive_summary",
-                "recommendation",
-                "disagreements",
-                "rejected_alternatives",
-                "evidence_gaps",
-                "user_decisions",
-            ],
+            "required": list(SYNTHESIS_REQUIRED_FIELDS),
             "properties": {
                 "executive_summary": {
                     "type": "string",
@@ -3675,14 +3669,7 @@ class CouncilBroker:
                 "retired_claims": self._public_claim_items(
                     manifest.get("retired_claims", []), participant=initiator
                 ),
-                "required_fields": [
-                    "executive_summary",
-                    "recommendation",
-                    "disagreements",
-                    "rejected_alternatives",
-                    "evidence_gaps",
-                    "user_decisions",
-                ],
+                "required_fields": list(SYNTHESIS_REQUIRED_FIELDS),
             }
         if len(participants) == 2:
             payload["initiator_position"] = positions_by_participant[initiator]
@@ -3759,14 +3746,7 @@ class CouncilBroker:
                     "Correct material representation errors once. Preserve unresolved "
                     "corrections as claim-linked minority reports; introduce no new argument."
                 ),
-                "required_fields": [
-                    "executive_summary",
-                    "recommendation",
-                    "disagreements",
-                    "rejected_alternatives",
-                    "evidence_gaps",
-                    "user_decisions",
-                ],
+                "required_fields": list(SYNTHESIS_REQUIRED_FIELDS),
             },
             manifest["current_round"],
             transition_id=transition_id,

@@ -1,0 +1,2563 @@
+{
+  "payloads": {
+    "proposal": {
+      "recommendation": "Retain the local path.",
+      "material_claims": [
+        {
+          "claim_id": "local-1",
+          "claim": "Retain the local path.",
+          "importance": "high",
+          "decision_consequence": "Avoid an external dependency.",
+          "evidence": [],
+          "falsifier": "An unsupported runtime needs it."
+        }
+      ]
+    },
+    "exchange": {
+      "recommendation": "Retain the local path.",
+      "changed_position": [],
+      "evidence": [],
+      "remaining_disagreements": [],
+      "falsifiable_tests": [],
+      "material_delta": false,
+      "claim_assessments": [
+        {
+          "claim_id": "clm-peer",
+          "position": "accept",
+          "concession_basis": "initial_assessment",
+          "concession_reason": "The path is supported.",
+          "evidence": []
+        }
+      ],
+      "strongest_opposing_point": {
+        "claim_id": "clm-peer",
+        "rationale": "Deployment may differ.",
+        "unresolved_risk": "An unsupported runtime."
+      },
+      "convergence_candidate": false
+    },
+    "convergence_challenge": {
+      "strongest_failure_mode": "Runtime mismatch.",
+      "counterexample": "A different runtime.",
+      "premortem": "The build fails.",
+      "material_issue_found": false,
+      "reopen_claim_ids": [],
+      "evidence": [],
+      "falsifiable_tests": []
+    },
+    "synthesis": {
+      "executive_summary": "Retain the local path.",
+      "recommendation": "Keep it.",
+      "disagreements": [],
+      "rejected_alternatives": [],
+      "evidence_gaps": [],
+      "user_decisions": []
+    },
+    "representation_check": {
+      "accurate": true,
+      "corrections": [],
+      "decision_quality": {
+        "material_disputes_resolved": true,
+        "unresolved_claim_ids": [],
+        "hidden_assumptions": [],
+        "confidence": 0.5
+      }
+    },
+    "synthesis_revision": {
+      "executive_summary": "Retain the local path.",
+      "recommendation": "Keep it.",
+      "disagreements": [],
+      "rejected_alternatives": [],
+      "evidence_gaps": [],
+      "user_decisions": []
+    },
+    "revision_check": {
+      "accurate": true,
+      "corrections": [],
+      "decision_quality": {
+        "material_disputes_resolved": true,
+        "unresolved_claim_ids": [],
+        "hidden_assumptions": [],
+        "confidence": 0.5
+      }
+    }
+  },
+  "required_fields": {
+    "proposal": {
+      "recommendation": [
+        null,
+        false,
+        1,
+        [],
+        {},
+        "",
+        " \t\n"
+      ],
+      "material_claims": [
+        null,
+        false,
+        1,
+        "",
+        {},
+        []
+      ],
+      "material_claims/0/claim_id": [
+        null,
+        false,
+        1,
+        [],
+        {},
+        "",
+        " \t\n",
+        "../id",
+        "-id",
+        "white space",
+        "é",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ],
+      "material_claims/0/claim": [
+        null,
+        false,
+        1,
+        [],
+        {},
+        "",
+        " \t\n"
+      ],
+      "material_claims/0/importance": [
+        null,
+        false,
+        1,
+        [],
+        {},
+        "critical"
+      ],
+      "material_claims/0/decision_consequence": [
+        null,
+        false,
+        1,
+        [],
+        {},
+        "",
+        " \t\n"
+      ],
+      "material_claims/0/evidence": [
+        null,
+        false,
+        1,
+        "",
+        {}
+      ],
+      "material_claims/0/falsifier": [
+        null,
+        false,
+        1,
+        [],
+        {},
+        "",
+        " \t\n"
+      ]
+    },
+    "exchange": {
+      "recommendation": [
+        null,
+        false,
+        1,
+        [],
+        {},
+        "",
+        " \t\n"
+      ],
+      "changed_position": [
+        null,
+        false,
+        1,
+        "",
+        {}
+      ],
+      "evidence": [
+        null,
+        false,
+        1,
+        "",
+        {}
+      ],
+      "remaining_disagreements": [
+        null,
+        false,
+        1,
+        "",
+        {}
+      ],
+      "falsifiable_tests": [
+        null,
+        false,
+        1,
+        "",
+        {}
+      ],
+      "claim_assessments": [
+        null,
+        false,
+        1,
+        "",
+        {}
+      ],
+      "material_delta": [
+        null,
+        0,
+        1,
+        "true",
+        [],
+        {}
+      ],
+      "convergence_candidate": [
+        null,
+        0,
+        1,
+        "true",
+        [],
+        {}
+      ],
+      "strongest_opposing_point": [
+        null,
+        false,
+        1,
+        "",
+        []
+      ],
+      "strongest_opposing_point/claim_id": [
+        null,
+        false,
+        1,
+        [],
+        {},
+        "",
+        " \t\n",
+        "clm-unknown"
+      ],
+      "strongest_opposing_point/rationale": [
+        null,
+        false,
+        1,
+        [],
+        {},
+        "",
+        " \t\n"
+      ],
+      "strongest_opposing_point/unresolved_risk": [
+        null,
+        false,
+        1,
+        [],
+        {},
+        "",
+        " \t\n"
+      ],
+      "claim_assessments/0/claim_id": [
+        null,
+        false,
+        1,
+        [],
+        {},
+        "",
+        " \t\n",
+        "clm-unknown"
+      ],
+      "claim_assessments/0/position": [
+        null,
+        false,
+        1,
+        [],
+        {},
+        "agree"
+      ],
+      "claim_assessments/0/concession_basis": [
+        null,
+        false,
+        1,
+        [],
+        {},
+        "new_reasoning"
+      ],
+      "claim_assessments/0/concession_reason": [
+        null,
+        false,
+        1,
+        [],
+        {},
+        "",
+        " \t\n"
+      ],
+      "claim_assessments/0/evidence": [
+        null,
+        false,
+        1,
+        "",
+        {}
+      ]
+    },
+    "convergence_challenge": {
+      "strongest_failure_mode": [
+        null,
+        false,
+        1,
+        [],
+        {},
+        "",
+        " \t\n"
+      ],
+      "counterexample": [
+        null,
+        false,
+        1,
+        [],
+        {},
+        "",
+        " \t\n"
+      ],
+      "premortem": [
+        null,
+        false,
+        1,
+        [],
+        {},
+        "",
+        " \t\n"
+      ],
+      "material_issue_found": [
+        null,
+        0,
+        1,
+        "true",
+        [],
+        {}
+      ],
+      "reopen_claim_ids": [
+        null,
+        false,
+        1,
+        "",
+        {}
+      ],
+      "evidence": [
+        null,
+        false,
+        1,
+        "",
+        {}
+      ],
+      "falsifiable_tests": [
+        null,
+        false,
+        1,
+        "",
+        {}
+      ]
+    },
+    "synthesis": {
+      "executive_summary": [
+        null,
+        false,
+        1,
+        [],
+        {},
+        "",
+        " \t\n"
+      ],
+      "recommendation": [
+        null,
+        false,
+        1,
+        [],
+        {},
+        "",
+        " \t\n"
+      ],
+      "disagreements": [
+        null,
+        false,
+        1,
+        "",
+        {}
+      ],
+      "rejected_alternatives": [
+        null,
+        false,
+        1,
+        "",
+        {}
+      ],
+      "evidence_gaps": [
+        null,
+        false,
+        1,
+        "",
+        {}
+      ],
+      "user_decisions": [
+        null,
+        false,
+        1,
+        "",
+        {}
+      ]
+    },
+    "representation_check": {
+      "accurate": [
+        null,
+        0,
+        1,
+        "true",
+        [],
+        {}
+      ],
+      "corrections": [
+        null,
+        false,
+        1,
+        "",
+        {}
+      ],
+      "decision_quality": [
+        null,
+        false,
+        1,
+        "",
+        []
+      ],
+      "decision_quality/material_disputes_resolved": [
+        null,
+        0,
+        1,
+        "true",
+        [],
+        {}
+      ],
+      "decision_quality/unresolved_claim_ids": [
+        null,
+        false,
+        1,
+        "",
+        {}
+      ],
+      "decision_quality/hidden_assumptions": [
+        null,
+        false,
+        1,
+        "",
+        {},
+        [
+          null
+        ],
+        [
+          ""
+        ]
+      ],
+      "decision_quality/confidence": [
+        null,
+        false,
+        true,
+        "",
+        [],
+        {},
+        -0.01,
+        1.01
+      ]
+    },
+    "synthesis_revision": {
+      "executive_summary": [
+        null,
+        false,
+        1,
+        [],
+        {},
+        "",
+        " \t\n"
+      ],
+      "recommendation": [
+        null,
+        false,
+        1,
+        [],
+        {},
+        "",
+        " \t\n"
+      ],
+      "disagreements": [
+        null,
+        false,
+        1,
+        "",
+        {}
+      ],
+      "rejected_alternatives": [
+        null,
+        false,
+        1,
+        "",
+        {}
+      ],
+      "evidence_gaps": [
+        null,
+        false,
+        1,
+        "",
+        {}
+      ],
+      "user_decisions": [
+        null,
+        false,
+        1,
+        "",
+        {}
+      ]
+    },
+    "revision_check": {
+      "accurate": [
+        null,
+        0,
+        1,
+        "true",
+        [],
+        {}
+      ],
+      "corrections": [
+        null,
+        false,
+        1,
+        "",
+        {}
+      ],
+      "decision_quality": [
+        null,
+        false,
+        1,
+        "",
+        []
+      ],
+      "decision_quality/material_disputes_resolved": [
+        null,
+        0,
+        1,
+        "true",
+        [],
+        {}
+      ],
+      "decision_quality/unresolved_claim_ids": [
+        null,
+        false,
+        1,
+        "",
+        {}
+      ],
+      "decision_quality/hidden_assumptions": [
+        null,
+        false,
+        1,
+        "",
+        {},
+        [
+          null
+        ],
+        [
+          ""
+        ]
+      ],
+      "decision_quality/confidence": [
+        null,
+        false,
+        true,
+        "",
+        [],
+        {},
+        -0.01,
+        1.01
+      ]
+    }
+  },
+  "cases": [
+    {
+      "name": "extra-field",
+      "kind": "proposal",
+      "accepted": true,
+      "patches": {
+        "extension": {
+          "arbitrary": [
+            null,
+            1,
+            false
+          ]
+        }
+      }
+    },
+    {
+      "name": "extra-field",
+      "kind": "exchange",
+      "accepted": true,
+      "patches": {
+        "extension": {
+          "arbitrary": [
+            null,
+            1,
+            false
+          ]
+        }
+      }
+    },
+    {
+      "name": "extra-field",
+      "kind": "convergence_challenge",
+      "accepted": true,
+      "patches": {
+        "extension": {
+          "arbitrary": [
+            null,
+            1,
+            false
+          ]
+        }
+      }
+    },
+    {
+      "name": "extra-field",
+      "kind": "synthesis",
+      "accepted": true,
+      "patches": {
+        "extension": {
+          "arbitrary": [
+            null,
+            1,
+            false
+          ]
+        }
+      }
+    },
+    {
+      "name": "extra-field",
+      "kind": "representation_check",
+      "accepted": true,
+      "patches": {
+        "extension": {
+          "arbitrary": [
+            null,
+            1,
+            false
+          ]
+        }
+      }
+    },
+    {
+      "name": "extra-field",
+      "kind": "synthesis_revision",
+      "accepted": true,
+      "patches": {
+        "extension": {
+          "arbitrary": [
+            null,
+            1,
+            false
+          ]
+        }
+      }
+    },
+    {
+      "name": "extra-field",
+      "kind": "revision_check",
+      "accepted": true,
+      "patches": {
+        "extension": {
+          "arbitrary": [
+            null,
+            1,
+            false
+          ]
+        }
+      }
+    },
+    {
+      "name": "optional-premises",
+      "kind": "proposal",
+      "accepted": true,
+      "patches": {
+        "premises": [
+          null,
+          2,
+          {}
+        ]
+      }
+    },
+    {
+      "name": "wrong-premises",
+      "kind": "proposal",
+      "accepted": false,
+      "patches": {
+        "premises": {}
+      }
+    },
+    {
+      "name": "claim-count-0",
+      "kind": "proposal",
+      "accepted": false,
+      "patches": {
+        "material_claims": []
+      }
+    },
+    {
+      "name": "claim-count-1",
+      "kind": "proposal",
+      "accepted": true,
+      "patches": {
+        "material_claims": [
+          {
+            "claim_id": "local-0",
+            "claim": "Retain the local path.",
+            "importance": "high",
+            "decision_consequence": "Avoid an external dependency.",
+            "evidence": [],
+            "falsifier": "An unsupported runtime needs it."
+          }
+        ]
+      }
+    },
+    {
+      "name": "claim-count-8",
+      "kind": "proposal",
+      "accepted": true,
+      "patches": {
+        "material_claims": [
+          {
+            "claim_id": "local-0",
+            "claim": "Retain the local path.",
+            "importance": "high",
+            "decision_consequence": "Avoid an external dependency.",
+            "evidence": [],
+            "falsifier": "An unsupported runtime needs it."
+          },
+          {
+            "claim_id": "local-1",
+            "claim": "Retain the local path.",
+            "importance": "high",
+            "decision_consequence": "Avoid an external dependency.",
+            "evidence": [],
+            "falsifier": "An unsupported runtime needs it."
+          },
+          {
+            "claim_id": "local-2",
+            "claim": "Retain the local path.",
+            "importance": "high",
+            "decision_consequence": "Avoid an external dependency.",
+            "evidence": [],
+            "falsifier": "An unsupported runtime needs it."
+          },
+          {
+            "claim_id": "local-3",
+            "claim": "Retain the local path.",
+            "importance": "high",
+            "decision_consequence": "Avoid an external dependency.",
+            "evidence": [],
+            "falsifier": "An unsupported runtime needs it."
+          },
+          {
+            "claim_id": "local-4",
+            "claim": "Retain the local path.",
+            "importance": "high",
+            "decision_consequence": "Avoid an external dependency.",
+            "evidence": [],
+            "falsifier": "An unsupported runtime needs it."
+          },
+          {
+            "claim_id": "local-5",
+            "claim": "Retain the local path.",
+            "importance": "high",
+            "decision_consequence": "Avoid an external dependency.",
+            "evidence": [],
+            "falsifier": "An unsupported runtime needs it."
+          },
+          {
+            "claim_id": "local-6",
+            "claim": "Retain the local path.",
+            "importance": "high",
+            "decision_consequence": "Avoid an external dependency.",
+            "evidence": [],
+            "falsifier": "An unsupported runtime needs it."
+          },
+          {
+            "claim_id": "local-7",
+            "claim": "Retain the local path.",
+            "importance": "high",
+            "decision_consequence": "Avoid an external dependency.",
+            "evidence": [],
+            "falsifier": "An unsupported runtime needs it."
+          }
+        ]
+      }
+    },
+    {
+      "name": "claim-count-9",
+      "kind": "proposal",
+      "accepted": false,
+      "patches": {
+        "material_claims": [
+          {
+            "claim_id": "local-0",
+            "claim": "Retain the local path.",
+            "importance": "high",
+            "decision_consequence": "Avoid an external dependency.",
+            "evidence": [],
+            "falsifier": "An unsupported runtime needs it."
+          },
+          {
+            "claim_id": "local-1",
+            "claim": "Retain the local path.",
+            "importance": "high",
+            "decision_consequence": "Avoid an external dependency.",
+            "evidence": [],
+            "falsifier": "An unsupported runtime needs it."
+          },
+          {
+            "claim_id": "local-2",
+            "claim": "Retain the local path.",
+            "importance": "high",
+            "decision_consequence": "Avoid an external dependency.",
+            "evidence": [],
+            "falsifier": "An unsupported runtime needs it."
+          },
+          {
+            "claim_id": "local-3",
+            "claim": "Retain the local path.",
+            "importance": "high",
+            "decision_consequence": "Avoid an external dependency.",
+            "evidence": [],
+            "falsifier": "An unsupported runtime needs it."
+          },
+          {
+            "claim_id": "local-4",
+            "claim": "Retain the local path.",
+            "importance": "high",
+            "decision_consequence": "Avoid an external dependency.",
+            "evidence": [],
+            "falsifier": "An unsupported runtime needs it."
+          },
+          {
+            "claim_id": "local-5",
+            "claim": "Retain the local path.",
+            "importance": "high",
+            "decision_consequence": "Avoid an external dependency.",
+            "evidence": [],
+            "falsifier": "An unsupported runtime needs it."
+          },
+          {
+            "claim_id": "local-6",
+            "claim": "Retain the local path.",
+            "importance": "high",
+            "decision_consequence": "Avoid an external dependency.",
+            "evidence": [],
+            "falsifier": "An unsupported runtime needs it."
+          },
+          {
+            "claim_id": "local-7",
+            "claim": "Retain the local path.",
+            "importance": "high",
+            "decision_consequence": "Avoid an external dependency.",
+            "evidence": [],
+            "falsifier": "An unsupported runtime needs it."
+          },
+          {
+            "claim_id": "local-8",
+            "claim": "Retain the local path.",
+            "importance": "high",
+            "decision_consequence": "Avoid an external dependency.",
+            "evidence": [],
+            "falsifier": "An unsupported runtime needs it."
+          }
+        ]
+      }
+    },
+    {
+      "name": "duplicate-local-id",
+      "kind": "proposal",
+      "accepted": false,
+      "patches": {
+        "material_claims": [
+          {
+            "claim_id": "local-1",
+            "claim": "Retain the local path.",
+            "importance": "high",
+            "decision_consequence": "Avoid an external dependency.",
+            "evidence": [],
+            "falsifier": "An unsupported runtime needs it."
+          },
+          {
+            "claim_id": "local-1",
+            "claim": "Retain the local path.",
+            "importance": "high",
+            "decision_consequence": "Avoid an external dependency.",
+            "evidence": [],
+            "falsifier": "An unsupported runtime needs it."
+          }
+        ]
+      }
+    },
+    {
+      "name": "scalar-claim",
+      "kind": "proposal",
+      "accepted": false,
+      "patches": {
+        "material_claims": [
+          "claim"
+        ]
+      }
+    },
+    {
+      "name": "importance-high",
+      "kind": "proposal",
+      "accepted": true,
+      "patches": {
+        "material_claims/0/importance": "high"
+      }
+    },
+    {
+      "name": "importance-medium",
+      "kind": "proposal",
+      "accepted": true,
+      "patches": {
+        "material_claims/0/importance": "medium"
+      }
+    },
+    {
+      "name": "importance-low",
+      "kind": "proposal",
+      "accepted": true,
+      "patches": {
+        "material_claims/0/importance": "low"
+      }
+    },
+    {
+      "name": "identifier-80-characters",
+      "kind": "proposal",
+      "accepted": true,
+      "patches": {
+        "material_claims/0/claim_id": "A._-a._-a._-a._-a._-a._-a._-a._-a._-a._-a._-a._-a._-a._-a._-a._-a._-a._-a._-axyz"
+      }
+    },
+    {
+      "name": "unconstrained-evidence",
+      "kind": "proposal",
+      "accepted": true,
+      "patches": {
+        "material_claims/0/evidence": [
+          null,
+          false,
+          {},
+          []
+        ]
+      }
+    },
+    {
+      "name": "assessment-coverage-20",
+      "kind": "exchange",
+      "accepted": false,
+      "patches": {
+        "claim_assessments": []
+      }
+    },
+    {
+      "name": "assessment-coverage-21",
+      "kind": "exchange",
+      "accepted": false,
+      "patches": {
+        "claim_assessments": [
+          {
+            "claim_id": "clm-peer",
+            "position": "accept",
+            "concession_basis": "initial_assessment",
+            "concession_reason": "The path is supported.",
+            "evidence": []
+          },
+          {
+            "claim_id": "clm-peer",
+            "position": "accept",
+            "concession_basis": "initial_assessment",
+            "concession_reason": "The path is supported.",
+            "evidence": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "assessment-coverage-22",
+      "kind": "exchange",
+      "accepted": false,
+      "patches": {
+        "claim_assessments": [
+          "claim"
+        ]
+      }
+    },
+    {
+      "name": "assessment-coverage-23",
+      "kind": "exchange",
+      "accepted": false,
+      "patches": {
+        "claim_assessments": [
+          {
+            "claim_id": "clm-unknown",
+            "position": "accept",
+            "concession_basis": "initial_assessment",
+            "concession_reason": "The path is supported.",
+            "evidence": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "opposing-own-claim",
+      "kind": "exchange",
+      "accepted": false,
+      "patches": {},
+      "ledger": [
+        {
+          "claim_id": "clm-peer",
+          "origin_participant": "alpha"
+        }
+      ]
+    },
+    {
+      "name": "no-ledger",
+      "kind": "exchange",
+      "accepted": false,
+      "patches": {},
+      "ledger": []
+    },
+    {
+      "name": "null-duplicate-permitted",
+      "kind": "exchange",
+      "accepted": true,
+      "patches": {
+        "claim_assessments/0/duplicate_of": null
+      }
+    },
+    {
+      "name": "invalid-duplicate-clm-peer",
+      "kind": "exchange",
+      "accepted": false,
+      "patches": {
+        "claim_assessments/0/position": "nonmaterial",
+        "claim_assessments/0/duplicate_of": "clm-peer"
+      }
+    },
+    {
+      "name": "invalid-duplicate-clm-unknown",
+      "kind": "exchange",
+      "accepted": false,
+      "patches": {
+        "claim_assessments/0/position": "nonmaterial",
+        "claim_assessments/0/duplicate_of": "clm-unknown"
+      }
+    },
+    {
+      "name": "invalid-duplicate-bad/id",
+      "kind": "exchange",
+      "accepted": false,
+      "patches": {
+        "claim_assessments/0/position": "nonmaterial",
+        "claim_assessments/0/duplicate_of": "bad/id"
+      }
+    },
+    {
+      "name": "duplicate-position-accept",
+      "kind": "exchange",
+      "accepted": false,
+      "patches": {
+        "claim_assessments": [
+          {
+            "claim_id": "clm-peer",
+            "position": "accept",
+            "concession_basis": "initial_assessment",
+            "concession_reason": "The path is supported.",
+            "evidence": [],
+            "duplicate_of": "clm-other"
+          },
+          {
+            "claim_id": "clm-other",
+            "position": "accept",
+            "concession_basis": "initial_assessment",
+            "concession_reason": "The path is supported.",
+            "evidence": []
+          }
+        ]
+      },
+      "ledger": [
+        {
+          "claim_id": "clm-peer",
+          "origin_participant": "beta"
+        },
+        {
+          "claim_id": "clm-other",
+          "origin_participant": "gamma"
+        }
+      ]
+    },
+    {
+      "name": "duplicate-position-nonmaterial",
+      "kind": "exchange",
+      "accepted": true,
+      "patches": {
+        "claim_assessments": [
+          {
+            "claim_id": "clm-peer",
+            "position": "nonmaterial",
+            "concession_basis": "initial_assessment",
+            "concession_reason": "The path is supported.",
+            "evidence": [],
+            "duplicate_of": "clm-other"
+          },
+          {
+            "claim_id": "clm-other",
+            "position": "accept",
+            "concession_basis": "initial_assessment",
+            "concession_reason": "The path is supported.",
+            "evidence": []
+          }
+        ]
+      },
+      "ledger": [
+        {
+          "claim_id": "clm-peer",
+          "origin_participant": "beta"
+        },
+        {
+          "claim_id": "clm-other",
+          "origin_participant": "gamma"
+        }
+      ]
+    },
+    {
+      "name": "disagreement-position-accept",
+      "kind": "exchange",
+      "accepted": false,
+      "patches": {
+        "claim_assessments/0/position": "accept",
+        "remaining_disagreements": [
+          {
+            "claim_id": "clm-peer",
+            "decision_consequence": "Deployment blocks.",
+            "confidence": 0.5,
+            "falsifier": "Build succeeds.",
+            "resolution_cost": "low",
+            "new_evidence": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "disagreement-position-reject",
+      "kind": "exchange",
+      "accepted": true,
+      "patches": {
+        "claim_assessments/0/position": "reject",
+        "remaining_disagreements": [
+          {
+            "claim_id": "clm-peer",
+            "decision_consequence": "Deployment blocks.",
+            "confidence": 0.5,
+            "falsifier": "Build succeeds.",
+            "resolution_cost": "low",
+            "new_evidence": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "disagreement-position-uncertain",
+      "kind": "exchange",
+      "accepted": true,
+      "patches": {
+        "claim_assessments/0/position": "uncertain",
+        "remaining_disagreements": [
+          {
+            "claim_id": "clm-peer",
+            "decision_consequence": "Deployment blocks.",
+            "confidence": 0.5,
+            "falsifier": "Build succeeds.",
+            "resolution_cost": "low",
+            "new_evidence": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "disagreement-position-nonmaterial",
+      "kind": "exchange",
+      "accepted": false,
+      "patches": {
+        "claim_assessments/0/position": "nonmaterial",
+        "remaining_disagreements": [
+          {
+            "claim_id": "clm-peer",
+            "decision_consequence": "Deployment blocks.",
+            "confidence": 0.5,
+            "falsifier": "Build succeeds.",
+            "resolution_cost": "low",
+            "new_evidence": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "disagreement-claim_id-0",
+      "kind": "exchange",
+      "accepted": false,
+      "patches": {
+        "claim_assessments/0/position": "reject",
+        "remaining_disagreements": [
+          {
+            "claim_id": "clm-unknown",
+            "decision_consequence": "Deployment blocks.",
+            "confidence": 0.5,
+            "falsifier": "Build succeeds.",
+            "resolution_cost": "low",
+            "new_evidence": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "disagreement-decision_consequence-0",
+      "kind": "exchange",
+      "accepted": false,
+      "patches": {
+        "claim_assessments/0/position": "reject",
+        "remaining_disagreements": [
+          {
+            "claim_id": "clm-peer",
+            "decision_consequence": null,
+            "confidence": 0.5,
+            "falsifier": "Build succeeds.",
+            "resolution_cost": "low",
+            "new_evidence": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "disagreement-decision_consequence-1",
+      "kind": "exchange",
+      "accepted": false,
+      "patches": {
+        "claim_assessments/0/position": "reject",
+        "remaining_disagreements": [
+          {
+            "claim_id": "clm-peer",
+            "decision_consequence": false,
+            "confidence": 0.5,
+            "falsifier": "Build succeeds.",
+            "resolution_cost": "low",
+            "new_evidence": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "disagreement-decision_consequence-2",
+      "kind": "exchange",
+      "accepted": false,
+      "patches": {
+        "claim_assessments/0/position": "reject",
+        "remaining_disagreements": [
+          {
+            "claim_id": "clm-peer",
+            "decision_consequence": 1,
+            "confidence": 0.5,
+            "falsifier": "Build succeeds.",
+            "resolution_cost": "low",
+            "new_evidence": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "disagreement-decision_consequence-3",
+      "kind": "exchange",
+      "accepted": false,
+      "patches": {
+        "claim_assessments/0/position": "reject",
+        "remaining_disagreements": [
+          {
+            "claim_id": "clm-peer",
+            "decision_consequence": [],
+            "confidence": 0.5,
+            "falsifier": "Build succeeds.",
+            "resolution_cost": "low",
+            "new_evidence": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "disagreement-decision_consequence-4",
+      "kind": "exchange",
+      "accepted": false,
+      "patches": {
+        "claim_assessments/0/position": "reject",
+        "remaining_disagreements": [
+          {
+            "claim_id": "clm-peer",
+            "decision_consequence": {},
+            "confidence": 0.5,
+            "falsifier": "Build succeeds.",
+            "resolution_cost": "low",
+            "new_evidence": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "disagreement-decision_consequence-5",
+      "kind": "exchange",
+      "accepted": false,
+      "patches": {
+        "claim_assessments/0/position": "reject",
+        "remaining_disagreements": [
+          {
+            "claim_id": "clm-peer",
+            "decision_consequence": "",
+            "confidence": 0.5,
+            "falsifier": "Build succeeds.",
+            "resolution_cost": "low",
+            "new_evidence": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "disagreement-decision_consequence-6",
+      "kind": "exchange",
+      "accepted": false,
+      "patches": {
+        "claim_assessments/0/position": "reject",
+        "remaining_disagreements": [
+          {
+            "claim_id": "clm-peer",
+            "decision_consequence": " \t\n",
+            "confidence": 0.5,
+            "falsifier": "Build succeeds.",
+            "resolution_cost": "low",
+            "new_evidence": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "disagreement-confidence-0",
+      "kind": "exchange",
+      "accepted": false,
+      "patches": {
+        "claim_assessments/0/position": "reject",
+        "remaining_disagreements": [
+          {
+            "claim_id": "clm-peer",
+            "decision_consequence": "Deployment blocks.",
+            "confidence": null,
+            "falsifier": "Build succeeds.",
+            "resolution_cost": "low",
+            "new_evidence": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "disagreement-confidence-1",
+      "kind": "exchange",
+      "accepted": false,
+      "patches": {
+        "claim_assessments/0/position": "reject",
+        "remaining_disagreements": [
+          {
+            "claim_id": "clm-peer",
+            "decision_consequence": "Deployment blocks.",
+            "confidence": true,
+            "falsifier": "Build succeeds.",
+            "resolution_cost": "low",
+            "new_evidence": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "disagreement-confidence-2",
+      "kind": "exchange",
+      "accepted": false,
+      "patches": {
+        "claim_assessments/0/position": "reject",
+        "remaining_disagreements": [
+          {
+            "claim_id": "clm-peer",
+            "decision_consequence": "Deployment blocks.",
+            "confidence": -0.1,
+            "falsifier": "Build succeeds.",
+            "resolution_cost": "low",
+            "new_evidence": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "disagreement-confidence-3",
+      "kind": "exchange",
+      "accepted": false,
+      "patches": {
+        "claim_assessments/0/position": "reject",
+        "remaining_disagreements": [
+          {
+            "claim_id": "clm-peer",
+            "decision_consequence": "Deployment blocks.",
+            "confidence": 1.1,
+            "falsifier": "Build succeeds.",
+            "resolution_cost": "low",
+            "new_evidence": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "disagreement-confidence-4",
+      "kind": "exchange",
+      "accepted": false,
+      "patches": {
+        "claim_assessments/0/position": "reject",
+        "remaining_disagreements": [
+          {
+            "claim_id": "clm-peer",
+            "decision_consequence": "Deployment blocks.",
+            "confidence": "high",
+            "falsifier": "Build succeeds.",
+            "resolution_cost": "low",
+            "new_evidence": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "disagreement-falsifier-0",
+      "kind": "exchange",
+      "accepted": false,
+      "patches": {
+        "claim_assessments/0/position": "reject",
+        "remaining_disagreements": [
+          {
+            "claim_id": "clm-peer",
+            "decision_consequence": "Deployment blocks.",
+            "confidence": 0.5,
+            "falsifier": null,
+            "resolution_cost": "low",
+            "new_evidence": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "disagreement-falsifier-1",
+      "kind": "exchange",
+      "accepted": false,
+      "patches": {
+        "claim_assessments/0/position": "reject",
+        "remaining_disagreements": [
+          {
+            "claim_id": "clm-peer",
+            "decision_consequence": "Deployment blocks.",
+            "confidence": 0.5,
+            "falsifier": false,
+            "resolution_cost": "low",
+            "new_evidence": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "disagreement-falsifier-2",
+      "kind": "exchange",
+      "accepted": false,
+      "patches": {
+        "claim_assessments/0/position": "reject",
+        "remaining_disagreements": [
+          {
+            "claim_id": "clm-peer",
+            "decision_consequence": "Deployment blocks.",
+            "confidence": 0.5,
+            "falsifier": 1,
+            "resolution_cost": "low",
+            "new_evidence": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "disagreement-falsifier-3",
+      "kind": "exchange",
+      "accepted": false,
+      "patches": {
+        "claim_assessments/0/position": "reject",
+        "remaining_disagreements": [
+          {
+            "claim_id": "clm-peer",
+            "decision_consequence": "Deployment blocks.",
+            "confidence": 0.5,
+            "falsifier": [],
+            "resolution_cost": "low",
+            "new_evidence": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "disagreement-falsifier-4",
+      "kind": "exchange",
+      "accepted": false,
+      "patches": {
+        "claim_assessments/0/position": "reject",
+        "remaining_disagreements": [
+          {
+            "claim_id": "clm-peer",
+            "decision_consequence": "Deployment blocks.",
+            "confidence": 0.5,
+            "falsifier": {},
+            "resolution_cost": "low",
+            "new_evidence": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "disagreement-falsifier-5",
+      "kind": "exchange",
+      "accepted": false,
+      "patches": {
+        "claim_assessments/0/position": "reject",
+        "remaining_disagreements": [
+          {
+            "claim_id": "clm-peer",
+            "decision_consequence": "Deployment blocks.",
+            "confidence": 0.5,
+            "falsifier": "",
+            "resolution_cost": "low",
+            "new_evidence": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "disagreement-falsifier-6",
+      "kind": "exchange",
+      "accepted": false,
+      "patches": {
+        "claim_assessments/0/position": "reject",
+        "remaining_disagreements": [
+          {
+            "claim_id": "clm-peer",
+            "decision_consequence": "Deployment blocks.",
+            "confidence": 0.5,
+            "falsifier": " \t\n",
+            "resolution_cost": "low",
+            "new_evidence": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "disagreement-resolution_cost-0",
+      "kind": "exchange",
+      "accepted": false,
+      "patches": {
+        "claim_assessments/0/position": "reject",
+        "remaining_disagreements": [
+          {
+            "claim_id": "clm-peer",
+            "decision_consequence": "Deployment blocks.",
+            "confidence": 0.5,
+            "falsifier": "Build succeeds.",
+            "resolution_cost": "expensive",
+            "new_evidence": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "disagreement-resolution_cost-1",
+      "kind": "exchange",
+      "accepted": false,
+      "patches": {
+        "claim_assessments/0/position": "reject",
+        "remaining_disagreements": [
+          {
+            "claim_id": "clm-peer",
+            "decision_consequence": "Deployment blocks.",
+            "confidence": 0.5,
+            "falsifier": "Build succeeds.",
+            "resolution_cost": null,
+            "new_evidence": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "disagreement-new_evidence-0",
+      "kind": "exchange",
+      "accepted": false,
+      "patches": {
+        "claim_assessments/0/position": "reject",
+        "remaining_disagreements": [
+          {
+            "claim_id": "clm-peer",
+            "decision_consequence": "Deployment blocks.",
+            "confidence": 0.5,
+            "falsifier": "Build succeeds.",
+            "resolution_cost": "low",
+            "new_evidence": null
+          }
+        ]
+      }
+    },
+    {
+      "name": "disagreement-new_evidence-1",
+      "kind": "exchange",
+      "accepted": false,
+      "patches": {
+        "claim_assessments/0/position": "reject",
+        "remaining_disagreements": [
+          {
+            "claim_id": "clm-peer",
+            "decision_consequence": "Deployment blocks.",
+            "confidence": 0.5,
+            "falsifier": "Build succeeds.",
+            "resolution_cost": "low",
+            "new_evidence": false
+          }
+        ]
+      }
+    },
+    {
+      "name": "disagreement-new_evidence-2",
+      "kind": "exchange",
+      "accepted": false,
+      "patches": {
+        "claim_assessments/0/position": "reject",
+        "remaining_disagreements": [
+          {
+            "claim_id": "clm-peer",
+            "decision_consequence": "Deployment blocks.",
+            "confidence": 0.5,
+            "falsifier": "Build succeeds.",
+            "resolution_cost": "low",
+            "new_evidence": 1
+          }
+        ]
+      }
+    },
+    {
+      "name": "disagreement-new_evidence-3",
+      "kind": "exchange",
+      "accepted": false,
+      "patches": {
+        "claim_assessments/0/position": "reject",
+        "remaining_disagreements": [
+          {
+            "claim_id": "clm-peer",
+            "decision_consequence": "Deployment blocks.",
+            "confidence": 0.5,
+            "falsifier": "Build succeeds.",
+            "resolution_cost": "low",
+            "new_evidence": ""
+          }
+        ]
+      }
+    },
+    {
+      "name": "disagreement-new_evidence-4",
+      "kind": "exchange",
+      "accepted": false,
+      "patches": {
+        "claim_assessments/0/position": "reject",
+        "remaining_disagreements": [
+          {
+            "claim_id": "clm-peer",
+            "decision_consequence": "Deployment blocks.",
+            "confidence": 0.5,
+            "falsifier": "Build succeeds.",
+            "resolution_cost": "low",
+            "new_evidence": {}
+          }
+        ]
+      }
+    },
+    {
+      "name": "missing-disagreement-claim_id",
+      "kind": "exchange",
+      "accepted": false,
+      "patches": {
+        "claim_assessments/0/position": "reject",
+        "remaining_disagreements": [
+          {
+            "decision_consequence": "Deployment blocks.",
+            "confidence": 0.5,
+            "falsifier": "Build succeeds.",
+            "resolution_cost": "low",
+            "new_evidence": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "missing-disagreement-decision_consequence",
+      "kind": "exchange",
+      "accepted": false,
+      "patches": {
+        "claim_assessments/0/position": "reject",
+        "remaining_disagreements": [
+          {
+            "claim_id": "clm-peer",
+            "confidence": 0.5,
+            "falsifier": "Build succeeds.",
+            "resolution_cost": "low",
+            "new_evidence": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "missing-disagreement-confidence",
+      "kind": "exchange",
+      "accepted": false,
+      "patches": {
+        "claim_assessments/0/position": "reject",
+        "remaining_disagreements": [
+          {
+            "claim_id": "clm-peer",
+            "decision_consequence": "Deployment blocks.",
+            "falsifier": "Build succeeds.",
+            "resolution_cost": "low",
+            "new_evidence": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "missing-disagreement-falsifier",
+      "kind": "exchange",
+      "accepted": false,
+      "patches": {
+        "claim_assessments/0/position": "reject",
+        "remaining_disagreements": [
+          {
+            "claim_id": "clm-peer",
+            "decision_consequence": "Deployment blocks.",
+            "confidence": 0.5,
+            "resolution_cost": "low",
+            "new_evidence": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "missing-disagreement-resolution_cost",
+      "kind": "exchange",
+      "accepted": false,
+      "patches": {
+        "claim_assessments/0/position": "reject",
+        "remaining_disagreements": [
+          {
+            "claim_id": "clm-peer",
+            "decision_consequence": "Deployment blocks.",
+            "confidence": 0.5,
+            "falsifier": "Build succeeds.",
+            "new_evidence": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "missing-disagreement-new_evidence",
+      "kind": "exchange",
+      "accepted": false,
+      "patches": {
+        "claim_assessments/0/position": "reject",
+        "remaining_disagreements": [
+          {
+            "claim_id": "clm-peer",
+            "decision_consequence": "Deployment blocks.",
+            "confidence": 0.5,
+            "falsifier": "Build succeeds.",
+            "resolution_cost": "low"
+          }
+        ]
+      }
+    },
+    {
+      "name": "duplicate-disagreement",
+      "kind": "exchange",
+      "accepted": false,
+      "patches": {
+        "claim_assessments/0/position": "reject",
+        "remaining_disagreements": [
+          {
+            "claim_id": "clm-peer",
+            "decision_consequence": "Deployment blocks.",
+            "confidence": 0.5,
+            "falsifier": "Build succeeds.",
+            "resolution_cost": "low",
+            "new_evidence": []
+          },
+          {
+            "claim_id": "clm-peer",
+            "decision_consequence": "Deployment blocks.",
+            "confidence": 0.5,
+            "falsifier": "Build succeeds.",
+            "resolution_cost": "low",
+            "new_evidence": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "scalar-disagreement",
+      "kind": "exchange",
+      "accepted": false,
+      "patches": {
+        "remaining_disagreements": [
+          "dispute"
+        ]
+      }
+    },
+    {
+      "name": "disagreement-cost-low-0",
+      "kind": "exchange",
+      "accepted": true,
+      "patches": {
+        "claim_assessments/0/position": "reject",
+        "remaining_disagreements": [
+          {
+            "claim_id": "clm-peer",
+            "decision_consequence": "Deployment blocks.",
+            "confidence": 0,
+            "falsifier": "Build succeeds.",
+            "resolution_cost": "low",
+            "new_evidence": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "disagreement-cost-low-1",
+      "kind": "exchange",
+      "accepted": true,
+      "patches": {
+        "claim_assessments/0/position": "reject",
+        "remaining_disagreements": [
+          {
+            "claim_id": "clm-peer",
+            "decision_consequence": "Deployment blocks.",
+            "confidence": 1,
+            "falsifier": "Build succeeds.",
+            "resolution_cost": "low",
+            "new_evidence": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "disagreement-cost-medium-0",
+      "kind": "exchange",
+      "accepted": true,
+      "patches": {
+        "claim_assessments/0/position": "reject",
+        "remaining_disagreements": [
+          {
+            "claim_id": "clm-peer",
+            "decision_consequence": "Deployment blocks.",
+            "confidence": 0,
+            "falsifier": "Build succeeds.",
+            "resolution_cost": "medium",
+            "new_evidence": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "disagreement-cost-medium-1",
+      "kind": "exchange",
+      "accepted": true,
+      "patches": {
+        "claim_assessments/0/position": "reject",
+        "remaining_disagreements": [
+          {
+            "claim_id": "clm-peer",
+            "decision_consequence": "Deployment blocks.",
+            "confidence": 1,
+            "falsifier": "Build succeeds.",
+            "resolution_cost": "medium",
+            "new_evidence": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "disagreement-cost-high-0",
+      "kind": "exchange",
+      "accepted": true,
+      "patches": {
+        "claim_assessments/0/position": "reject",
+        "remaining_disagreements": [
+          {
+            "claim_id": "clm-peer",
+            "decision_consequence": "Deployment blocks.",
+            "confidence": 0,
+            "falsifier": "Build succeeds.",
+            "resolution_cost": "high",
+            "new_evidence": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "disagreement-cost-high-1",
+      "kind": "exchange",
+      "accepted": true,
+      "patches": {
+        "claim_assessments/0/position": "reject",
+        "remaining_disagreements": [
+          {
+            "claim_id": "clm-peer",
+            "decision_consequence": "Deployment blocks.",
+            "confidence": 1,
+            "falsifier": "Build succeeds.",
+            "resolution_cost": "high",
+            "new_evidence": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "convergence-False-False-False",
+      "kind": "exchange",
+      "accepted": true,
+      "patches": {
+        "convergence_candidate": false,
+        "material_delta": false,
+        "claim_assessments/0/position": "reject",
+        "remaining_disagreements": []
+      }
+    },
+    {
+      "name": "convergence-False-False-True",
+      "kind": "exchange",
+      "accepted": true,
+      "patches": {
+        "convergence_candidate": false,
+        "material_delta": false,
+        "claim_assessments/0/position": "reject",
+        "remaining_disagreements": [
+          {
+            "claim_id": "clm-peer",
+            "decision_consequence": "Deployment blocks.",
+            "confidence": 0.5,
+            "falsifier": "Build succeeds.",
+            "resolution_cost": "low",
+            "new_evidence": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "convergence-False-True-False",
+      "kind": "exchange",
+      "accepted": true,
+      "patches": {
+        "convergence_candidate": false,
+        "material_delta": true,
+        "claim_assessments/0/position": "reject",
+        "remaining_disagreements": []
+      }
+    },
+    {
+      "name": "convergence-False-True-True",
+      "kind": "exchange",
+      "accepted": true,
+      "patches": {
+        "convergence_candidate": false,
+        "material_delta": true,
+        "claim_assessments/0/position": "reject",
+        "remaining_disagreements": [
+          {
+            "claim_id": "clm-peer",
+            "decision_consequence": "Deployment blocks.",
+            "confidence": 0.5,
+            "falsifier": "Build succeeds.",
+            "resolution_cost": "low",
+            "new_evidence": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "convergence-True-False-False",
+      "kind": "exchange",
+      "accepted": true,
+      "patches": {
+        "convergence_candidate": true,
+        "material_delta": false,
+        "claim_assessments/0/position": "reject",
+        "remaining_disagreements": []
+      }
+    },
+    {
+      "name": "convergence-True-False-True",
+      "kind": "exchange",
+      "accepted": false,
+      "patches": {
+        "convergence_candidate": true,
+        "material_delta": false,
+        "claim_assessments/0/position": "reject",
+        "remaining_disagreements": [
+          {
+            "claim_id": "clm-peer",
+            "decision_consequence": "Deployment blocks.",
+            "confidence": 0.5,
+            "falsifier": "Build succeeds.",
+            "resolution_cost": "low",
+            "new_evidence": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "convergence-True-True-False",
+      "kind": "exchange",
+      "accepted": false,
+      "patches": {
+        "convergence_candidate": true,
+        "material_delta": true,
+        "claim_assessments/0/position": "reject",
+        "remaining_disagreements": []
+      }
+    },
+    {
+      "name": "convergence-True-True-True",
+      "kind": "exchange",
+      "accepted": false,
+      "patches": {
+        "convergence_candidate": true,
+        "material_delta": true,
+        "claim_assessments/0/position": "reject",
+        "remaining_disagreements": [
+          {
+            "claim_id": "clm-peer",
+            "decision_consequence": "Deployment blocks.",
+            "confidence": 0.5,
+            "falsifier": "Build succeeds.",
+            "resolution_cost": "low",
+            "new_evidence": []
+          }
+        ]
+      }
+    },
+    {
+      "name": "reopen-False-[]",
+      "kind": "convergence_challenge",
+      "accepted": true,
+      "patches": {
+        "material_issue_found": false,
+        "reopen_claim_ids": []
+      }
+    },
+    {
+      "name": "reopen-False-['clm-peer']",
+      "kind": "convergence_challenge",
+      "accepted": false,
+      "patches": {
+        "material_issue_found": false,
+        "reopen_claim_ids": [
+          "clm-peer"
+        ]
+      }
+    },
+    {
+      "name": "reopen-False-['clm-unknown']",
+      "kind": "convergence_challenge",
+      "accepted": false,
+      "patches": {
+        "material_issue_found": false,
+        "reopen_claim_ids": [
+          "clm-unknown"
+        ]
+      }
+    },
+    {
+      "name": "reopen-False-['clm-peer', 'clm-peer']",
+      "kind": "convergence_challenge",
+      "accepted": false,
+      "patches": {
+        "material_issue_found": false,
+        "reopen_claim_ids": [
+          "clm-peer",
+          "clm-peer"
+        ]
+      }
+    },
+    {
+      "name": "reopen-False-[3]",
+      "kind": "convergence_challenge",
+      "accepted": false,
+      "patches": {
+        "material_issue_found": false,
+        "reopen_claim_ids": [
+          3
+        ]
+      }
+    },
+    {
+      "name": "reopen-True-[]",
+      "kind": "convergence_challenge",
+      "accepted": false,
+      "patches": {
+        "material_issue_found": true,
+        "reopen_claim_ids": []
+      }
+    },
+    {
+      "name": "reopen-True-['clm-peer']",
+      "kind": "convergence_challenge",
+      "accepted": true,
+      "patches": {
+        "material_issue_found": true,
+        "reopen_claim_ids": [
+          "clm-peer"
+        ]
+      }
+    },
+    {
+      "name": "reopen-True-['clm-unknown']",
+      "kind": "convergence_challenge",
+      "accepted": false,
+      "patches": {
+        "material_issue_found": true,
+        "reopen_claim_ids": [
+          "clm-unknown"
+        ]
+      }
+    },
+    {
+      "name": "reopen-True-['clm-peer', 'clm-peer']",
+      "kind": "convergence_challenge",
+      "accepted": false,
+      "patches": {
+        "material_issue_found": true,
+        "reopen_claim_ids": [
+          "clm-peer",
+          "clm-peer"
+        ]
+      }
+    },
+    {
+      "name": "reopen-True-[3]",
+      "kind": "convergence_challenge",
+      "accepted": false,
+      "patches": {
+        "material_issue_found": true,
+        "reopen_claim_ids": [
+          3
+        ]
+      }
+    },
+    {
+      "name": "unresolved-False-[]",
+      "kind": "representation_check",
+      "accepted": true,
+      "patches": {
+        "decision_quality/material_disputes_resolved": false,
+        "decision_quality/unresolved_claim_ids": []
+      }
+    },
+    {
+      "name": "unresolved-False-['clm-peer']",
+      "kind": "representation_check",
+      "accepted": true,
+      "patches": {
+        "decision_quality/material_disputes_resolved": false,
+        "decision_quality/unresolved_claim_ids": [
+          "clm-peer"
+        ]
+      }
+    },
+    {
+      "name": "unresolved-False-['clm-unknown']",
+      "kind": "representation_check",
+      "accepted": false,
+      "patches": {
+        "decision_quality/material_disputes_resolved": false,
+        "decision_quality/unresolved_claim_ids": [
+          "clm-unknown"
+        ]
+      }
+    },
+    {
+      "name": "unresolved-False-['clm-peer', 'clm-peer']",
+      "kind": "representation_check",
+      "accepted": false,
+      "patches": {
+        "decision_quality/material_disputes_resolved": false,
+        "decision_quality/unresolved_claim_ids": [
+          "clm-peer",
+          "clm-peer"
+        ]
+      }
+    },
+    {
+      "name": "unresolved-False-[3]",
+      "kind": "representation_check",
+      "accepted": false,
+      "patches": {
+        "decision_quality/material_disputes_resolved": false,
+        "decision_quality/unresolved_claim_ids": [
+          3
+        ]
+      }
+    },
+    {
+      "name": "unresolved-True-[]",
+      "kind": "representation_check",
+      "accepted": true,
+      "patches": {
+        "decision_quality/material_disputes_resolved": true,
+        "decision_quality/unresolved_claim_ids": []
+      }
+    },
+    {
+      "name": "unresolved-True-['clm-peer']",
+      "kind": "representation_check",
+      "accepted": false,
+      "patches": {
+        "decision_quality/material_disputes_resolved": true,
+        "decision_quality/unresolved_claim_ids": [
+          "clm-peer"
+        ]
+      }
+    },
+    {
+      "name": "unresolved-True-['clm-unknown']",
+      "kind": "representation_check",
+      "accepted": false,
+      "patches": {
+        "decision_quality/material_disputes_resolved": true,
+        "decision_quality/unresolved_claim_ids": [
+          "clm-unknown"
+        ]
+      }
+    },
+    {
+      "name": "unresolved-True-['clm-peer', 'clm-peer']",
+      "kind": "representation_check",
+      "accepted": false,
+      "patches": {
+        "decision_quality/material_disputes_resolved": true,
+        "decision_quality/unresolved_claim_ids": [
+          "clm-peer",
+          "clm-peer"
+        ]
+      }
+    },
+    {
+      "name": "unresolved-True-[3]",
+      "kind": "representation_check",
+      "accepted": false,
+      "patches": {
+        "decision_quality/material_disputes_resolved": true,
+        "decision_quality/unresolved_claim_ids": [
+          3
+        ]
+      }
+    },
+    {
+      "name": "permissive-corrections-False",
+      "kind": "representation_check",
+      "accepted": true,
+      "patches": {
+        "accurate": false,
+        "corrections": [
+          null,
+          false,
+          1,
+          {},
+          [
+            "nested"
+          ],
+          "text"
+        ]
+      }
+    },
+    {
+      "name": "permissive-corrections-True",
+      "kind": "representation_check",
+      "accepted": true,
+      "patches": {
+        "accurate": true,
+        "corrections": [
+          null,
+          false,
+          1,
+          {},
+          [
+            "nested"
+          ],
+          "text"
+        ]
+      }
+    },
+    {
+      "name": "confidence-endpoint-0",
+      "kind": "representation_check",
+      "accepted": true,
+      "patches": {
+        "decision_quality/confidence": 0
+      }
+    },
+    {
+      "name": "confidence-endpoint-1",
+      "kind": "representation_check",
+      "accepted": true,
+      "patches": {
+        "decision_quality/confidence": 1
+      }
+    },
+    {
+      "name": "unresolved-False-[]",
+      "kind": "revision_check",
+      "accepted": true,
+      "patches": {
+        "decision_quality/material_disputes_resolved": false,
+        "decision_quality/unresolved_claim_ids": []
+      }
+    },
+    {
+      "name": "unresolved-False-['clm-peer']",
+      "kind": "revision_check",
+      "accepted": true,
+      "patches": {
+        "decision_quality/material_disputes_resolved": false,
+        "decision_quality/unresolved_claim_ids": [
+          "clm-peer"
+        ]
+      }
+    },
+    {
+      "name": "unresolved-False-['clm-unknown']",
+      "kind": "revision_check",
+      "accepted": false,
+      "patches": {
+        "decision_quality/material_disputes_resolved": false,
+        "decision_quality/unresolved_claim_ids": [
+          "clm-unknown"
+        ]
+      }
+    },
+    {
+      "name": "unresolved-False-['clm-peer', 'clm-peer']",
+      "kind": "revision_check",
+      "accepted": false,
+      "patches": {
+        "decision_quality/material_disputes_resolved": false,
+        "decision_quality/unresolved_claim_ids": [
+          "clm-peer",
+          "clm-peer"
+        ]
+      }
+    },
+    {
+      "name": "unresolved-False-[3]",
+      "kind": "revision_check",
+      "accepted": false,
+      "patches": {
+        "decision_quality/material_disputes_resolved": false,
+        "decision_quality/unresolved_claim_ids": [
+          3
+        ]
+      }
+    },
+    {
+      "name": "unresolved-True-[]",
+      "kind": "revision_check",
+      "accepted": true,
+      "patches": {
+        "decision_quality/material_disputes_resolved": true,
+        "decision_quality/unresolved_claim_ids": []
+      }
+    },
+    {
+      "name": "unresolved-True-['clm-peer']",
+      "kind": "revision_check",
+      "accepted": false,
+      "patches": {
+        "decision_quality/material_disputes_resolved": true,
+        "decision_quality/unresolved_claim_ids": [
+          "clm-peer"
+        ]
+      }
+    },
+    {
+      "name": "unresolved-True-['clm-unknown']",
+      "kind": "revision_check",
+      "accepted": false,
+      "patches": {
+        "decision_quality/material_disputes_resolved": true,
+        "decision_quality/unresolved_claim_ids": [
+          "clm-unknown"
+        ]
+      }
+    },
+    {
+      "name": "unresolved-True-['clm-peer', 'clm-peer']",
+      "kind": "revision_check",
+      "accepted": false,
+      "patches": {
+        "decision_quality/material_disputes_resolved": true,
+        "decision_quality/unresolved_claim_ids": [
+          "clm-peer",
+          "clm-peer"
+        ]
+      }
+    },
+    {
+      "name": "unresolved-True-[3]",
+      "kind": "revision_check",
+      "accepted": false,
+      "patches": {
+        "decision_quality/material_disputes_resolved": true,
+        "decision_quality/unresolved_claim_ids": [
+          3
+        ]
+      }
+    },
+    {
+      "name": "permissive-corrections-False",
+      "kind": "revision_check",
+      "accepted": true,
+      "patches": {
+        "accurate": false,
+        "corrections": [
+          null,
+          false,
+          1,
+          {},
+          [
+            "nested"
+          ],
+          "text"
+        ]
+      }
+    },
+    {
+      "name": "permissive-corrections-True",
+      "kind": "revision_check",
+      "accepted": true,
+      "patches": {
+        "accurate": true,
+        "corrections": [
+          null,
+          false,
+          1,
+          {},
+          [
+            "nested"
+          ],
+          "text"
+        ]
+      }
+    },
+    {
+      "name": "confidence-endpoint-0",
+      "kind": "revision_check",
+      "accepted": true,
+      "patches": {
+        "decision_quality/confidence": 0
+      }
+    },
+    {
+      "name": "confidence-endpoint-1",
+      "kind": "revision_check",
+      "accepted": true,
+      "patches": {
+        "decision_quality/confidence": 1
+      }
+    },
+    {
+      "name": "unconstrained-lists",
+      "kind": "synthesis",
+      "accepted": true,
+      "patches": {
+        "disagreements": [
+          null,
+          false,
+          1,
+          {},
+          []
+        ],
+        "rejected_alternatives": [
+          null,
+          false,
+          1,
+          {},
+          []
+        ],
+        "evidence_gaps": [
+          null,
+          false,
+          1,
+          {},
+          []
+        ],
+        "user_decisions": [
+          null,
+          false,
+          1,
+          {},
+          []
+        ]
+      }
+    },
+    {
+      "name": "unconstrained-lists",
+      "kind": "synthesis_revision",
+      "accepted": true,
+      "patches": {
+        "disagreements": [
+          null,
+          false,
+          1,
+          {},
+          []
+        ],
+        "rejected_alternatives": [
+          null,
+          false,
+          1,
+          {},
+          []
+        ],
+        "evidence_gaps": [
+          null,
+          false,
+          1,
+          {},
+          []
+        ],
+        "user_decisions": [
+          null,
+          false,
+          1,
+          {},
+          []
+        ]
+      }
+    }
+  ]
+}

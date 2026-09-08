@@ -44,6 +44,8 @@ finding; the invariant itself is claimed only for the current broker.
 |---|---|
 | Relay envelope preamble and kind allow-list are byte-identical across the broker and both relay implementations | `test_parity.py` (release-blocking) |
 | Tool/submit-kind/enum/bound parity across broker, MCP schemas, TypeScript, and prose | `test_parity.py` |
+| Seven-kind accepted/rejected payloads, all 280 concession combinations with persisted priors, advertised contracts and dynamic copy isolation, 16383/16384/16385 UTF-8 bytes and 3999/4000/4001 synthesis characters | `test_parity.py` literal fixture suite |
+| Both synthesis request builders carry the six literal required field names through a complete triad dialogue | `test_council.py` |
 | Corrupt (unparseable) manifest/outbox records cost that record — quarantined, surfaced in health, never the broker; audit-integrity conflicts stay fail-loud | `test_council.py` containment tests |
 | Crash-boundary convergence for deletion, recovery, and retention — with the full artifact oracle asserted after every injected crash | `test_deletion_crash.py` (release-blocking) |
 | Crash-at-every-durable-seam convergence across all six transaction classes (96 self-enumerating rows) | `test_crash_matrix.py` (release-blocking; mutant gate pending) |

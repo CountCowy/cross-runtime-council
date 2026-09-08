@@ -26,11 +26,19 @@ wake-router tools, nullable status argument and peer-selection schema remain
 intentional differences. Independent literal fixtures exercise argument
 acceptance and actual adapter forwarding, separately from generated-output parity.
 
-Shared payload-schema generation remains the next gated continuation. Before
-extracting the broker's advertised payload schemas, the maintainer must establish
-independent accepted/rejected fixtures for all seven submission kinds, concession
-transitions, dynamic ledger overlays and byte-versus-character bounds. Existing
-broker behavior and tests remain authoritative until that gate is met.
+Independent payload fixtures now cover all seven submission kinds, the 280-case
+concession matrix, dynamic ledger overlays and copy isolation, and exact UTF-8
+byte versus character bounds. The fixtures in `scripts/fixtures/payloads.json`
+and `payload_contracts.json` contain literal expectations independent of production
+definitions. They preserve advertised-schema versus broker-validation differences,
+including arbitrary correction-list items and nullable `duplicate_of`.
+
+The six synthesis-required field names share the immutable Python
+`SYNTHESIS_REQUIRED_FIELDS` tuple; the advertised contract and both synthesis
+request builders return list copies. Broader payload-schema extraction remains
+gated on a demonstrated maintenance benefit. Generic adapter payload interfaces
+and dynamic broker validation remain unchanged; no unused TypeScript payload
+export is generated.
 
 ## Offline release preparation
 

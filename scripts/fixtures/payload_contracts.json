@@ -1,0 +1,484 @@
+{
+  "proposal": {
+    "contract_version": 1,
+    "submit_kind": "proposal",
+    "round_number": 1,
+    "max_payload_utf8_bytes": 16384,
+    "payload_schema": {
+      "type": "object",
+      "required": [
+        "recommendation",
+        "material_claims"
+      ],
+      "properties": {
+        "recommendation": {
+          "type": "string",
+          "minLength": 1
+        },
+        "premises": {
+          "type": "array"
+        },
+        "material_claims": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "claim_id",
+              "claim",
+              "importance",
+              "decision_consequence",
+              "evidence",
+              "falsifier"
+            ],
+            "properties": {
+              "claim_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "claim": {
+                "type": "string",
+                "minLength": 1
+              },
+              "importance": {
+                "type": "string",
+                "enum": [
+                  "high",
+                  "medium",
+                  "low"
+                ]
+              },
+              "decision_consequence": {
+                "type": "string",
+                "minLength": 1
+              },
+              "evidence": {
+                "type": "array"
+              },
+              "falsifier": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "minItems": 1,
+          "maxItems": 8
+        }
+      }
+    },
+    "rules": [
+      "Submit an independent blind proposal; do not inspect or request another proposal.",
+      "Use stable local claim IDs and include only decision-material claims."
+    ]
+  },
+  "exchange": {
+    "contract_version": 1,
+    "submit_kind": "exchange",
+    "round_number": 1,
+    "max_payload_utf8_bytes": 16384,
+    "payload_schema": {
+      "type": "object",
+      "required": [
+        "recommendation",
+        "changed_position",
+        "evidence",
+        "remaining_disagreements",
+        "falsifiable_tests",
+        "material_delta",
+        "claim_assessments",
+        "strongest_opposing_point",
+        "convergence_candidate"
+      ],
+      "properties": {
+        "recommendation": {
+          "type": "string",
+          "minLength": 1
+        },
+        "changed_position": {
+          "type": "array"
+        },
+        "evidence": {
+          "type": "array"
+        },
+        "remaining_disagreements": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "claim_id",
+              "decision_consequence",
+              "confidence",
+              "falsifier",
+              "resolution_cost",
+              "new_evidence"
+            ],
+            "properties": {
+              "claim_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "decision_consequence": {
+                "type": "string",
+                "minLength": 1
+              },
+              "confidence": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "falsifier": {
+                "type": "string",
+                "minLength": 1
+              },
+              "resolution_cost": {
+                "type": "string",
+                "enum": [
+                  "low",
+                  "medium",
+                  "high"
+                ]
+              },
+              "new_evidence": {
+                "type": "array"
+              }
+            }
+          }
+        },
+        "falsifiable_tests": {
+          "type": "array"
+        },
+        "material_delta": {
+          "type": "boolean"
+        },
+        "claim_assessments": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "claim_id",
+              "position",
+              "concession_basis",
+              "concession_reason",
+              "evidence"
+            ],
+            "properties": {
+              "claim_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "position": {
+                "type": "string",
+                "enum": [
+                  "accept",
+                  "reject",
+                  "uncertain",
+                  "nonmaterial"
+                ]
+              },
+              "concession_basis": {
+                "type": "string",
+                "enum": [
+                  "initial_assessment",
+                  "unchanged",
+                  "new_evidence",
+                  "counterexample",
+                  "corrected_fact",
+                  "binding_constraint",
+                  "superior_tradeoff"
+                ]
+              },
+              "concession_reason": {
+                "type": "string",
+                "minLength": 1
+              },
+              "evidence": {
+                "type": "array"
+              },
+              "duplicate_of": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        "strongest_opposing_point": {
+          "type": "object",
+          "required": [
+            "claim_id",
+            "rationale",
+            "unresolved_risk"
+          ],
+          "properties": {
+            "claim_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "rationale": {
+              "type": "string",
+              "minLength": 1
+            },
+            "unresolved_risk": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "convergence_candidate": {
+          "type": "boolean"
+        }
+      }
+    },
+    "rules": [
+      "Assess every active_claim_id exactly once.",
+      "Use initial_assessment only when no prior exchange assessment exists.",
+      "For a later unchanged position use unchanged; for a changed position use new_evidence, counterexample, corrected_fact, binding_constraint, or superior_tradeoff.",
+      "new_evidence, counterexample, and corrected_fact require supporting evidence.",
+      "duplicate_of is optional and valid only with position nonmaterial.",
+      "convergence_candidate true requires material_delta false and no remaining_disagreements."
+    ]
+  },
+  "convergence_challenge": {
+    "contract_version": 1,
+    "submit_kind": "convergence_challenge",
+    "round_number": 1,
+    "max_payload_utf8_bytes": 16384,
+    "payload_schema": {
+      "type": "object",
+      "required": [
+        "strongest_failure_mode",
+        "counterexample",
+        "premortem",
+        "material_issue_found",
+        "reopen_claim_ids",
+        "evidence",
+        "falsifiable_tests"
+      ],
+      "properties": {
+        "strongest_failure_mode": {
+          "type": "string",
+          "minLength": 1
+        },
+        "counterexample": {
+          "type": "string",
+          "minLength": 1
+        },
+        "premortem": {
+          "type": "string",
+          "minLength": 1
+        },
+        "material_issue_found": {
+          "type": "boolean"
+        },
+        "reopen_claim_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "evidence": {
+          "type": "array"
+        },
+        "falsifiable_tests": {
+          "type": "array"
+        }
+      }
+    },
+    "rules": [
+      "A material issue must reopen at least one active claim; a nonmaterial result must reopen none.",
+      "Attack the tentative merged plan rather than defending a prior position."
+    ]
+  },
+  "synthesis": {
+    "contract_version": 1,
+    "submit_kind": "synthesis",
+    "round_number": 1,
+    "max_payload_utf8_bytes": 16384,
+    "payload_schema": {
+      "type": "object",
+      "required": [
+        "executive_summary",
+        "recommendation",
+        "disagreements",
+        "rejected_alternatives",
+        "evidence_gaps",
+        "user_decisions"
+      ],
+      "properties": {
+        "executive_summary": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4000
+        },
+        "recommendation": {
+          "type": "string",
+          "minLength": 1
+        },
+        "disagreements": {
+          "type": "array"
+        },
+        "rejected_alternatives": {
+          "type": "array"
+        },
+        "evidence_gaps": {
+          "type": "array"
+        },
+        "user_decisions": {
+          "type": "array"
+        }
+      }
+    },
+    "rules": [
+      "Surface unresolved decision-material disagreements and every decision still assigned to the user."
+    ]
+  },
+  "representation_check": {
+    "contract_version": 1,
+    "submit_kind": "representation_check",
+    "round_number": 1,
+    "max_payload_utf8_bytes": 16384,
+    "payload_schema": {
+      "type": "object",
+      "required": [
+        "accurate",
+        "corrections",
+        "decision_quality"
+      ],
+      "properties": {
+        "accurate": {
+          "type": "boolean"
+        },
+        "corrections": {
+          "type": "array"
+        },
+        "decision_quality": {
+          "type": "object",
+          "required": [
+            "material_disputes_resolved",
+            "unresolved_claim_ids",
+            "hidden_assumptions",
+            "confidence"
+          ],
+          "properties": {
+            "material_disputes_resolved": {
+              "type": "boolean"
+            },
+            "unresolved_claim_ids": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "hidden_assumptions": {
+              "type": "array"
+            },
+            "confidence": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            }
+          }
+        }
+      }
+    },
+    "rules": [
+      "Audit representation accuracy only; do not introduce a new argument.",
+      "If material_disputes_resolved is true, unresolved_claim_ids must be empty."
+    ]
+  },
+  "synthesis_revision": {
+    "contract_version": 1,
+    "submit_kind": "synthesis_revision",
+    "round_number": 1,
+    "max_payload_utf8_bytes": 16384,
+    "payload_schema": {
+      "type": "object",
+      "required": [
+        "executive_summary",
+        "recommendation",
+        "disagreements",
+        "rejected_alternatives",
+        "evidence_gaps",
+        "user_decisions"
+      ],
+      "properties": {
+        "executive_summary": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4000
+        },
+        "recommendation": {
+          "type": "string",
+          "minLength": 1
+        },
+        "disagreements": {
+          "type": "array"
+        },
+        "rejected_alternatives": {
+          "type": "array"
+        },
+        "evidence_gaps": {
+          "type": "array"
+        },
+        "user_decisions": {
+          "type": "array"
+        }
+      }
+    },
+    "rules": [
+      "Correct recorded material representation errors once and introduce no new argument."
+    ]
+  },
+  "revision_check": {
+    "contract_version": 1,
+    "submit_kind": "revision_check",
+    "round_number": 1,
+    "max_payload_utf8_bytes": 16384,
+    "payload_schema": {
+      "type": "object",
+      "required": [
+        "accurate",
+        "corrections",
+        "decision_quality"
+      ],
+      "properties": {
+        "accurate": {
+          "type": "boolean"
+        },
+        "corrections": {
+          "type": "array"
+        },
+        "decision_quality": {
+          "type": "object",
+          "required": [
+            "material_disputes_resolved",
+            "unresolved_claim_ids",
+            "hidden_assumptions",
+            "confidence"
+          ],
+          "properties": {
+            "material_disputes_resolved": {
+              "type": "boolean"
+            },
+            "unresolved_claim_ids": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "hidden_assumptions": {
+              "type": "array"
+            },
+            "confidence": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            }
+          }
+        }
+      }
+    },
+    "rules": [
+      "Audit representation accuracy only; do not introduce a new argument.",
+      "If material_disputes_resolved is true, unresolved_claim_ids must be empty."
+    ]
+  }
+}
