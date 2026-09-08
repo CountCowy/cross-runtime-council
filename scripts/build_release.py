@@ -7,6 +7,7 @@ Git selects tracked inputs; Python 3.9 standard-library code does all generation
 
 import argparse
 import hashlib
+import importlib.util
 import json
 from pathlib import Path
 import re
@@ -115,6 +116,16 @@ def main():
             manifest_path = ROOT / MANIFEST
             if manifest_path.is_symlink() or (manifest_path.exists() and not manifest_path.is_file()):
                 raise ValueError("release manifest must be a regular file, not a symlink")
+            # Fixed-width stamps can leave timestamp/size bytecode caches valid.
+            # Clear caches before any source writes, including optimized variants.
+            for name in RUNTIME_FILES:
+                path = ROOT / name
+                if path.suffix == ".py":
+                    cache_dirs = {path.parent / "__pycache__",
+                                  Path(importlib.util.cache_from_source(str(path))).parent}
+                    for directory in cache_dirs:
+                        for cache in directory.glob(path.stem + ".*.pyc"):
+                            cache.unlink(missing_ok=True)
             for name in RUNTIME_FILES:
                 (ROOT / name).write_bytes(stamped[name])
             manifest_path.write_bytes(manifest)

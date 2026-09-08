@@ -4,6 +4,8 @@
 import hashlib
 import importlib.util
 import json
+import os
+import py_compile
 from pathlib import Path
 import shutil
 import subprocess
@@ -12,7 +14,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from build_release import ROOT, RUNTIME_FILES, release, tracked_inputs
+from build_release import ROOT, RUNTIME_FILES, main as build_main, release, tracked_inputs
 
 
 class ReleaseTests(unittest.TestCase):
@@ -113,6 +115,44 @@ class ReleaseTests(unittest.TestCase):
             module = importlib.util.module_from_spec(spec)
             with self.assertRaisesRegex(RuntimeError, "cohort mismatch"):
                 spec.loader.exec_module(module)
+
+    def test_stamping_invalidates_same_second_runtime_bytecode(self):
+        source = self.source.resolve()
+        python_sources = [source / name for name in RUNTIME_FILES if name.endswith(".py")]
+        timestamp = 1_700_000_000
+        write_bytes = Path.write_bytes
+
+        def same_second_write(path, data):
+            result = write_bytes(path, data)
+            if path in python_sources:
+                os.utime(path, (timestamp, timestamp))
+            return result
+
+        for prefix in (None, str(self.base.resolve() / "python-cache")):
+            with self.subTest(cache_prefix=prefix), mock.patch.object(sys, "pycache_prefix", prefix):
+                broker = source / "scripts/council.py"
+                broker.write_bytes(broker.read_bytes() + b"\n# runtime generation fixture\n")
+                for path in python_sources:
+                    os.utime(path, (timestamp, timestamp))
+                    for optimization in (0, 1, 2):
+                        py_compile.compile(str(path), doraise=True, optimize=optimization)
+                sizes = {path: path.stat().st_size for path in python_sources}
+                # Model a coarse filesystem clock without depending on wall-clock timing.
+                with mock.patch("build_release.ROOT", source), \
+                        mock.patch.object(sys, "argv", ["build_release.py", "--write"]), \
+                        mock.patch.object(Path, "write_bytes", same_second_write):
+                    build_main()
+                self.assertEqual(sizes, {path: path.stat().st_size for path in python_sources})
+                self.assertTrue(all(int(path.stat().st_mtime) == timestamp for path in python_sources))
+                manifest = json.loads((source / "release_manifest.json").read_text())
+                script = ("import sys; sys.pycache_prefix = " + repr(prefix) + "; "
+                          "import council_protocol, council, council_mcp, council_opencode; "
+                          "assert all(module.RUNTIME_COHORT == " + repr(manifest["runtime_cohort"]) +
+                          " for module in (council_protocol, council, council_mcp, council_opencode))")
+                for optimization in ([], ["-O"], ["-OO"]):
+                    result = subprocess.run([sys.executable, *optimization, "-c", script],
+                                            cwd=source / "scripts", capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_stale_definition_stamp_or_manifest_fails_readonly_check(self):
         self.run_builder("--write")
