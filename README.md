@@ -114,9 +114,11 @@ The Node suite needs Node 22+ on `PATH` (get it from <https://nodejs.org>;
 runtime. Without Node, the Python suite alone covers the broker; the Node
 suite covers the OpenCode delivery registry.
 
-CI runs exactly these deterministic suites plus lint and secret scanning. The
-live recovery matrix (real signed runtimes, real sockets, real recovery paths)
-cannot run in CI and is executed by the maintainer for each release.
+The [CI workflow](.github/workflows/ci.yml) is the current inventory of deterministic
+suites, generation/provenance checks, type checking, lint and secret scanning.
+The maintainer runs the [live recovery rehearsal](docs/live-rehearsal.md) for each
+release and records its exact tested tuple, observations, controls and limitations.
+Passing CI or copying the unexecuted run-record template does not satisfy G1–G5.
 
 ## Support
 

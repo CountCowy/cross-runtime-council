@@ -53,11 +53,14 @@ finding; the invariant itself is claimed only for the current broker.
 
 These are observable only with live sessions on real transports; no CI job
 claims them, and per the ratified plan the exact-tree live recovery matrix is
-a **blocking** release-checklist row from v0.20 onward.
+a **blocking** release-checklist row from v0.20 onward. The
+[live rehearsal contract](live-rehearsal.md) defines the preconditions, observation
+windows, controls, evidence requirements and non-passing outcomes. Its template
+is unexecuted scaffolding. Passing CI does not discharge these rows.
 
 | ID | Observation | Matrix row |
 |---|---|---|
-| L1 | Exactly-once EXTERNAL delivery of a durably delivered, unanswered envelope across a broker crash — relay dedup state is memory-only, so no artifact can witness this | G3 |
+| L1 | External arrival count for a durably delivered, unanswered envelope across broker recovery, scoped to the declared receiving session and surviving relay generation; replacement-session delivery is a separate case. Relay dedup state is memory-only, so no broker artifact alone can witness this | G3 |
 | L2 | Router wake delivery to an idle Codex task | G1 |
 | L3 | Broker-restart barrier recovery with live seats | G2 |
 | L4 | Acknowledgement recovery over live transports | G4 (artifact half: I9 exemption + reconciliation test) |

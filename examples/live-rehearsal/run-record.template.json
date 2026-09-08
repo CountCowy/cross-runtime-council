@@ -1,0 +1,179 @@
+{
+  "contract": "council-live-rehearsal/v1",
+  "record_kind": "template",
+  "run_id": null,
+  "operator_ref": null,
+  "created_utc": null,
+  "completed_utc": null,
+  "tier": null,
+  "claim": null,
+  "overall_result": "unobserved",
+  "limitations": [
+    "Unexecuted template; no release or compatibility claim."
+  ],
+  "authorization": {
+    "user_ref": null,
+    "scope_ref": null,
+    "allowed_interventions": []
+  },
+  "isolation": {
+    "kind": null,
+    "account_ref": null,
+    "host_inventory_ref": null,
+    "evidence_refs": []
+  },
+  "tested_tuple": {
+    "source_commit": null,
+    "source_tree": null,
+    "dirty": null,
+    "captured_diff_ref": null,
+    "release_manifest_sha256": null,
+    "package_id": null,
+    "runtime_cohort": null,
+    "artifact_identity_evidence_refs": [],
+    "os": {
+      "version": null,
+      "build": null,
+      "architecture": null
+    },
+    "python": {
+      "version": null,
+      "configuration_ref": null
+    },
+    "hosts": [
+      {
+        "host_ref": null,
+        "runtime": null,
+        "version": null,
+        "build": null,
+        "transport": null,
+        "sdk_version": null,
+        "executable_pin_ref": null,
+        "seat_refs": []
+      }
+    ],
+    "private_roster_ref": null
+  },
+  "preflight": {
+    "installed_compatibility": {
+      "result": "unobserved",
+      "evidence_refs": []
+    },
+    "loaded_component_identities": {
+      "result": "unobserved",
+      "evidence_refs": []
+    },
+    "exact_seat_readiness": [],
+    "aggregate_restoration_health": {
+      "result": "unobserved",
+      "evidence_refs": []
+    }
+  },
+  "declared_plan": {
+    "frozen_utc": null,
+    "required_cases": [],
+    "expected_counts_ref": null,
+    "windows_and_timers_ref": null,
+    "control_plan_ref": null
+  },
+  "gates": [
+    {
+      "gate_id": "G1",
+      "result": "unobserved",
+      "rationale": "Template only; no gate executed.",
+      "cases": []
+    },
+    {
+      "gate_id": "G2",
+      "result": "unobserved",
+      "rationale": "Template only; no gate executed.",
+      "cases": []
+    },
+    {
+      "gate_id": "G3",
+      "result": "unobserved",
+      "rationale": "Template only; no gate executed.",
+      "cases": []
+    },
+    {
+      "gate_id": "G4",
+      "result": "unobserved",
+      "rationale": "Template only; no gate executed.",
+      "cases": []
+    },
+    {
+      "gate_id": "G5",
+      "result": "unobserved",
+      "rationale": "Template only; no gate executed.",
+      "cases": []
+    }
+  ],
+  "case_template": {
+    "case_id": null,
+    "actor_ref": null,
+    "required": null,
+    "applicable": null,
+    "targets": {
+      "dialogue_ref": null,
+      "envelope_ref": null,
+      "seat_refs": [],
+      "session_refs": [],
+      "broker_generation_refs": [],
+      "relay_generation_refs": []
+    },
+    "precondition_evidence_refs": [],
+    "window": {
+      "start_utc": null,
+      "deadline_utc": null,
+      "quiet_until_utc": null,
+      "end_utc": null,
+      "timer_config_ref": null
+    },
+    "interventions": [],
+    "expected": null,
+    "observed": null,
+    "evidence_refs": [],
+    "observer": {
+      "contract_ref": null,
+      "validation_evidence_refs": [],
+      "completeness_result": "unobserved",
+      "limitations": []
+    },
+    "controls": [],
+    "result": "unobserved",
+    "rationale": "Template only; no case executed."
+  },
+  "evidence": [],
+  "evidence_item_template": {
+    "ref": null,
+    "sha256": null,
+    "bytes": null,
+    "collected_utc": null,
+    "classification": null
+  },
+  "private_evidence_index_ref": null,
+  "retention": {
+    "approved_by": null,
+    "redacted_record": {
+      "owner_ref": null,
+      "delete_after_utc": null
+    },
+    "private_captures": {
+      "owner_ref": null,
+      "delete_after_utc": null
+    }
+  },
+  "cleanup": {
+    "owner_ref": null,
+    "exports_verified_utc": null,
+    "export_evidence_refs": [],
+    "dialogue_deletion": {
+      "result": "unobserved",
+      "evidence_refs": []
+    },
+    "detached_capture_deletion": {
+      "result": "unobserved",
+      "evidence_refs": []
+    }
+  }
+}

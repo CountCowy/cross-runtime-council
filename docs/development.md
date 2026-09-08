@@ -104,3 +104,8 @@ suite covers independent final hashes, repeatability, docs-only changes, loaded
 source replacement, mixed helper generations, the actual external directory
 layout, and non-destructive refusal cases. These offline fixtures do not satisfy
 the signed-runtime live recovery gates.
+
+The [live rehearsal contract](live-rehearsal.md) specifies the separate G1–G5
+release observations and links an unexecuted run-record template. The maintainer
+records real recipient evidence before making a live compatibility claim; the
+assisted runner and complete-source capture adapters remain subsequent work.
