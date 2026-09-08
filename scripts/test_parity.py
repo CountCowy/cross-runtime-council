@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Import-based definition parity, plus independently authored semantic fixtures."""
 
+from copy import deepcopy
 import json
 from pathlib import Path
 import subprocess
@@ -24,6 +25,13 @@ EXPECTED_TOOLS = ["council_ping", "council_bind", "council_unbind", "council_sta
 
 
 class DefinitionTests(unittest.TestCase):
+    def test_shared_synthesis_fields_are_immutable_and_literal(self):
+        self.assertIsInstance(protocol.SYNTHESIS_REQUIRED_FIELDS, tuple)
+        self.assertEqual(protocol.SYNTHESIS_REQUIRED_FIELDS, (
+            "executive_summary", "recommendation", "disagreements",
+            "rejected_alternatives", "evidence_gaps", "user_decisions",
+        ))
+
     def test_typescript_exports_equal_python_values(self):
         command = ('import * as p from "./scripts/council_protocol.ts"; '
                    'console.log(JSON.stringify(p))')
@@ -137,6 +145,217 @@ class DefinitionTests(unittest.TestCase):
                 args.update(overrides)
                 with self.subTest(overrides=overrides), self.assertRaises(council.CouncilError):
                     broker.start(**args)
+
+
+PAYLOAD_FIXTURES = json.loads((ROOT / "scripts/fixtures/payloads.json").read_text())
+ADVERTISED_CONTRACTS = json.loads((ROOT / "scripts/fixtures/payload_contracts.json").read_text())
+
+
+class PayloadContractTests(unittest.TestCase):
+    """Literal fixtures are independent of production enums and schemas."""
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.broker = council.CouncilBroker(Path(self.directory.name))
+        self.manifest = {
+            "dialogue_id": "dlg-fixture",
+            "claim_ledger": [{"claim_id": "clm-peer", "origin_participant": "beta"}],
+            "submissions": {"exchange": {}},
+        }
+
+    def payload(self, kind):
+        return deepcopy(PAYLOAD_FIXTURES["payloads"][kind])
+
+    def validate(self, kind, payload, manifest=None):
+        manifest = self.manifest if manifest is None else manifest
+        self.broker._validate_submission(kind, payload)
+        if kind == "exchange":
+            self.broker._validate_exchange_against_ledger(manifest, "alpha", payload)
+        elif kind == "convergence_challenge":
+            self.broker._validate_challenge_against_ledger(manifest, payload)
+        elif kind in ("representation_check", "revision_check"):
+            self.broker._validate_quality_against_ledger(manifest, payload)
+
+    @staticmethod
+    def parent_at(payload, path):
+        parts = path.split("/")
+        for part in parts[:-1]:
+            payload = payload[int(part)] if isinstance(payload, list) else payload[part]
+        return payload, parts[-1]
+
+    def test_literal_accepted_and_rejected_payloads(self):
+        self.assertEqual(set(PAYLOAD_FIXTURES["payloads"]), set(EXPECTED_SUBMITS))
+        for kind in EXPECTED_SUBMITS:
+            with self.subTest(kind=kind, case="base"):
+                self.validate(kind, self.payload(kind))
+            for scalar in (None, False, 1, "payload", []):
+                with self.subTest(kind=kind, scalar=scalar), self.assertRaises(council.CouncilError):
+                    self.validate(kind, scalar)
+        for case in PAYLOAD_FIXTURES["cases"]:
+            with self.subTest(kind=case["kind"], case=case["name"]):
+                payload = self.payload(case["kind"])
+                for path, value in case["patches"].items():
+                    parent, field = self.parent_at(payload, path)
+                    parent[field] = deepcopy(value)
+                manifest = deepcopy(self.manifest)
+                if "ledger" in case:
+                    manifest["claim_ledger"] = deepcopy(case["ledger"])
+                if case["accepted"]:
+                    self.validate(case["kind"], payload, manifest)
+                else:
+                    with self.assertRaises(council.CouncilError):
+                        self.validate(case["kind"], payload, manifest)
+
+    def test_required_fields_and_literal_wrong_types(self):
+        for kind, paths in PAYLOAD_FIXTURES["required_fields"].items():
+            for path, values in paths.items():
+                with self.subTest(kind=kind, missing=path):
+                    payload = self.payload(kind)
+                    parent, field = self.parent_at(payload, path)
+                    del parent[field]
+                    with self.assertRaises(council.CouncilError):
+                        self.validate(kind, payload)
+                for value in values:
+                    with self.subTest(kind=kind, field=path, value=value):
+                        payload = self.payload(kind)
+                        parent, field = self.parent_at(payload, path)
+                        parent[field] = deepcopy(value)
+                        # Existing ledger set construction rejects unhashable IDs
+                        # before safe_name can turn them into CouncilError. Pin rejection,
+                        # allowing a future improvement to the public error type.
+                        error = ((council.CouncilError, TypeError)
+                                 if path == "claim_assessments/0/claim_id"
+                                 and isinstance(value, (list, dict)) else council.CouncilError)
+                        with self.assertRaises(error):
+                            self.validate(kind, payload)
+
+    def persist_positions(self, relative, positions):
+        path = self.broker._dialogue_dir("dlg-fixture") / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"payload": {"claim_assessments": [
+            {"claim_id": claim_id, "position": position}
+            for claim_id, position in positions.items()
+        ]}}))
+
+    def test_all_280_concession_combinations_use_persisted_prior(self):
+        total = accepted = 0
+        for prior in (None, "accept", "reject", "uncertain", "nonmaterial"):
+            manifest = deepcopy(self.manifest)
+            if prior is not None:
+                self.persist_positions("submissions/previous.json", {"clm-peer": prior})
+                manifest["submissions"]["exchange"] = {"1": {"alpha": "submissions/previous.json"}}
+            for current in ("accept", "reject", "uncertain", "nonmaterial"):
+                for basis in ("initial_assessment", "unchanged", "new_evidence", "counterexample",
+                              "corrected_fact", "binding_constraint", "superior_tradeoff"):
+                    for evidence in ([], ["A reproducible observation."]):
+                        # Independent decision table, not production enum membership.
+                        if prior is None:
+                            allowed = basis == "initial_assessment"
+                        elif prior == current:
+                            allowed = basis == "unchanged"
+                        else:
+                            allowed = basis in ("binding_constraint", "superior_tradeoff") or (
+                                basis in ("new_evidence", "counterexample", "corrected_fact") and bool(evidence))
+                        total += 1
+                        accepted += int(allowed)
+                        with self.subTest(prior=prior, current=current, basis=basis, evidence=evidence):
+                            payload = self.payload("exchange")
+                            payload["claim_assessments"][0].update(
+                                position=current, concession_basis=basis, evidence=evidence)
+                            if allowed:
+                                self.validate("exchange", payload, manifest)
+                            else:
+                                with self.assertRaises(council.CouncilError):
+                                    self.validate("exchange", payload, manifest)
+        self.assertEqual((total, accepted, total - accepted), (280, 100, 180))
+
+    def test_persisted_prior_uses_latest_numeric_round_for_participant(self):
+        self.persist_positions("submissions/old.json", {"clm-peer": "reject"})
+        self.persist_positions("submissions/latest.json", {"clm-peer": "accept"})
+        self.manifest["submissions"]["exchange"] = {
+            "2": {"alpha": "submissions/old.json"},
+            "10": {"alpha": "submissions/latest.json"},
+            "11": {"beta": "submissions/old.json"},
+        }
+        self.assertEqual(self.broker._previous_claim_positions(self.manifest, "alpha"), {"clm-peer": "accept"})
+        payload = self.payload("exchange")
+        payload["claim_assessments"][0]["concession_basis"] = "unchanged"
+        self.validate("exchange", payload)
+        payload["claim_assessments"][0]["concession_basis"] = "initial_assessment"
+        with self.assertRaises(council.CouncilError):
+            self.validate("exchange", payload)
+        self.assertEqual(self.broker._previous_claim_positions(self.manifest, "gamma"), {})
+
+    def test_exact_advertised_contracts_and_dynamic_overlays(self):
+        self.assertEqual(set(ADVERTISED_CONTRACTS), set(EXPECTED_SUBMITS))
+        for kind in EXPECTED_SUBMITS:
+            for round_number in (0, 1, 2, 7):
+                for supplied in (False, True):
+                    source = {"claim_ledger": [{"claim_id": "clm-peer"}, None, "ignored", {},
+                                               {"claim_id": 3}, {"claim_id": "clm-other"}],
+                              "claim_ids": ["clm-challenge", "clm-second"]} if supplied else {}
+                    expected = deepcopy(ADVERTISED_CONTRACTS[kind])
+                    expected["round_number"] = round_number
+                    if kind in ("exchange", "representation_check", "revision_check"):
+                        expected["active_claim_ids"] = ["clm-peer", "clm-other"] if supplied else []
+                    elif kind == "convergence_challenge":
+                        expected["active_claim_ids"] = ["clm-challenge", "clm-second"] if supplied else []
+                    if kind == "exchange":
+                        expected["prior_assessment_exists"] = round_number > 1
+                    with self.subTest(kind=kind, round=round_number, supplied=supplied):
+                        first = council.response_contract_for(kind + "_request", round_number, source)
+                        second = council.response_contract_for(kind + "_request", round_number, source)
+                        self.assertEqual(first, expected)
+                        self.assertEqual(second, expected)
+                        source.get("claim_ledger", []).clear()
+                        source.get("claim_ids", []).clear()
+                        self.assertEqual(first, expected)
+                        first["payload_schema"]["required"].append("mutant")
+                        first["payload_schema"]["properties"].clear()
+                        first["rules"].append("mutant")
+                        if "active_claim_ids" in first:
+                            first["active_claim_ids"].append("clm-mutant")
+                        self.assertEqual(second, expected)
+                        # A fresh return is isolated, too; no intra-contract alias promise.
+                        fresh = council.response_contract_for(kind + "_request", round_number)
+                        self.assertEqual(fresh["payload_schema"], ADVERTISED_CONTRACTS[kind]["payload_schema"])
+        for unknown in ("unknown", "dialogue_complete", "cancelled"):
+            self.assertIsNone(council.response_contract_for(unknown, 1))
+
+    def test_every_kind_exact_serialized_utf8_boundary(self):
+        for kind in EXPECTED_SUBMITS:
+            for size in (16383, 16384, 16385):
+                with self.subTest(kind=kind, bytes=size):
+                    payload = self.payload(kind)
+                    # Escaping, default separators, multibyte and non-BMP bytes all
+                    # contribute to the serialized gate, not just text lengths.
+                    payload["padding"] = 'é😀"\\\n'
+                    initial = len(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+                    payload["padding"] += "x" * (size - initial)
+                    serialized = json.dumps(payload, ensure_ascii=False)
+                    self.assertEqual(len(serialized.encode("utf-8")), size)
+                    self.assertLess(len(serialized), size)
+                    if size <= 16384:
+                        self.validate(kind, payload)
+                    else:
+                        with self.assertRaisesRegex(council.CouncilError, "payload exceeds 16384 bytes"):
+                            self.validate(kind, payload)
+
+    def test_both_synthesis_character_boundaries_independent_of_bytes(self):
+        for kind in ("synthesis", "synthesis_revision"):
+            for character in ("x", "é", "😀"):
+                for size in (3999, 4000, 4001):
+                    with self.subTest(kind=kind, character=character, characters=size):
+                        payload = self.payload(kind)
+                        payload["executive_summary"] = character * size
+                        self.assertEqual(len(payload["executive_summary"]), size)
+                        self.assertLess(len(json.dumps(payload, ensure_ascii=False).encode("utf-8")), 16384)
+                        if size <= 4000:
+                            self.validate(kind, payload)
+                        else:
+                            with self.assertRaisesRegex(council.CouncilError, "executive_summary exceeds 4000 characters"):
+                                self.validate(kind, payload)
 
 
 if __name__ == "__main__":
