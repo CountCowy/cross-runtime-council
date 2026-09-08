@@ -14,6 +14,7 @@ import tempfile
 import threading
 import time
 import unittest
+import council
 from pathlib import Path
 from unittest import mock
 
@@ -272,6 +273,27 @@ class FakeClaudeInbox:
         self.server.close()
 
 
+def restart_broker(fixture):
+    fixture.broker.close()
+    fixture.broker = CouncilBroker(fixture.root)
+    fixture.addCleanup(fixture.broker.close)
+    return fixture.broker
+
+
+def rebind_codex_fixture_routes(broker):
+    """The test actors reauthenticate their known exact routes after restart."""
+    for participant, capability in (("alpha", CAP_ALPHA), ("beta", CAP_BETA), ("gamma", CAP_GAMMA)):
+        route = broker.registrations.get(participant)
+        if route and route["runtime"] == "codex":
+            broker.bind("codex", participant, route["label"], route["project"],
+                        target_thread_id=route["target_thread_id"], binding_capability=capability)
+
+
+def current_request(request):
+    # Simulate the current adapter's private transport metadata in direct tests.
+    return dict(request, runtime_cohort=council.RUNTIME_COHORT)
+
+
 class CouncilBrokerTests(unittest.TestCase):
     def setUp(self):
         BINDING_CAPABILITIES.clear()
@@ -287,6 +309,7 @@ class CouncilBrokerTests(unittest.TestCase):
         )
         self.claim_id_salt_patch.start()
         self.broker = CouncilBroker(self.root)
+        self.addCleanup(self.broker.close)
         self.cdhash_patch = mock.patch(
             "council._codesign_cdhash", return_value="c" * 40
         )
@@ -775,7 +798,7 @@ class CouncilBrokerTests(unittest.TestCase):
             relay = ClaudeSessionRelay("beta", inbox.path)
         try:
             self.broker.bind(
-                "codex", "alpha", "Alpha", "test", target_thread_id="thread-alpha"
+                "codex", "alpha", "Alpha", "test", target_thread_id="thread-alpha", binding_capability=CAP_ALPHA
             )
             self.broker.bind(
                 "claude",
@@ -789,7 +812,8 @@ class CouncilBrokerTests(unittest.TestCase):
                 binding_capability=CAP_BETA,
             )
 
-            restarted = CouncilBroker(self.root)
+            restarted = restart_broker(self)
+            rebind_codex_fixture_routes(restarted)
             self.assertEqual(len(restarted.registration_restore_errors), 1)
             self.assertIn("alpha", restarted.registrations)
             self.assertIn("beta", restarted.registrations)
@@ -844,7 +868,7 @@ class CouncilBrokerTests(unittest.TestCase):
                 relay_pid=os.getpid(),
                 binding_capability=CAP_BETA,
             )
-            restarted = CouncilBroker(self.root)
+            restarted = restart_broker(self)
             self.assertEqual(len(restarted.registration_restore_errors), 1)
 
             result = restarted.unbind("beta")
@@ -874,7 +898,7 @@ class CouncilBrokerTests(unittest.TestCase):
                 relay_pid=os.getpid(),
                 binding_capability=CAP_BETA,
             )
-            restarted = CouncilBroker(self.root)
+            restarted = restart_broker(self)
             self.assertEqual(len(restarted.registration_restore_errors), 1)
             restarted.registrations["beta"]["lease_expires_epoch"] = epoch_now() - 1
 
@@ -963,7 +987,7 @@ class CouncilBrokerTests(unittest.TestCase):
             )["dialogue_id"]
             first_relay.close()
 
-            restarted = CouncilBroker(self.root)
+            restarted = restart_broker(self)
             self.assertIn("beta", restarted.registrations)
             self.assertEqual(restarted.status(dialogue)["phase"], "collecting_proposals")
             with self.assertRaisesRegex(CouncilError, "exact authenticated session"):
@@ -1602,7 +1626,7 @@ class CouncilBrokerTests(unittest.TestCase):
             read_json(self.root / "dialogues" / dialogue / "manifest.json")["phase"],
             "complete",
         )
-        CouncilBroker(self.root)
+        restart_broker(self)
         completion_records = [
             read_json(path)
             for path in self.root.glob("outbox/*/*.json")
@@ -2491,7 +2515,8 @@ class CouncilBrokerTests(unittest.TestCase):
         self.assertEqual(len(completion_paths), 1)
         self.assertEqual(read_json(completion_paths[0])["status"], "staged")
 
-        restarted = CouncilBroker(self.root)
+        restarted = restart_broker(self)
+        rebind_codex_fixture_routes(restarted)
         self.assertEqual(read_json(completion_paths[0])["status"], "pending")
         duplicate = restarted.submit(
             dialogue, "beta", "representation_check", 1, check
@@ -2623,7 +2648,7 @@ class CouncilBrokerTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "simulated crash"):
                 self.broker.extend(dialogue, "alpha", 1)
 
-        restarted = CouncilBroker(self.root)
+        restarted = restart_broker(self)
         manifest = restarted.status(dialogue)
         self.assertEqual(
             (manifest["phase"], manifest["current_round"]), ("collecting_exchange", 2)
@@ -2693,7 +2718,7 @@ class CouncilBrokerTests(unittest.TestCase):
 
             def request(self, action, **arguments):
                 result = broker.handle(
-                    {"action": action, "arguments": arguments}
+                    current_request({"action": action, "arguments": arguments})
                 )
                 if action == "extend" and self.lose_response:
                     self.lose_response = False
@@ -2743,7 +2768,7 @@ class CouncilBrokerTests(unittest.TestCase):
         class RejectingClient:
             def request(self, action, **arguments):
                 try:
-                    return broker.handle({"action": action, "arguments": arguments})
+                    return broker.handle(current_request({"action": action, "arguments": arguments}))
                 except CouncilError as error:
                     raise CouncilRequestRejected(str(error), reason=error.reason)
 
@@ -3181,7 +3206,7 @@ class CouncilBrokerTests(unittest.TestCase):
         path = self.broker._outbox_path("beta", claimed["message_id"])
         self.assertEqual(read_json(path)["status"], "claimed")
 
-        CouncilBroker(self.root)
+        restart_broker(self)
 
         recovered = read_json(path)
         self.assertEqual(recovered["status"], "acknowledged")
@@ -3218,7 +3243,7 @@ class CouncilBrokerTests(unittest.TestCase):
         legacy_intent["details"]["reason"] = "participant_operation"
         self.broker._save_manifest(legacy_manifest)
 
-        restarted = CouncilBroker(self.root)
+        restarted = restart_broker(self)
         recovered = read_json(path)
         self.assertEqual(recovered["status"], "acknowledged")
         self.assertEqual(
@@ -3255,7 +3280,8 @@ class CouncilBrokerTests(unittest.TestCase):
         dialogue = self.start_dialogue()
         self.broker.submit(dialogue, "alpha", "proposal", 0, proposal("alpha"))
 
-        restarted = CouncilBroker(self.root)
+        restarted = restart_broker(self)
+        rebind_codex_fixture_routes(restarted)
         self.assertEqual(restarted.registration_restore_errors, [])
         self.assertEqual(
             restarted.registrations["beta"]["target_thread_id"], "thread-beta"
@@ -3277,7 +3303,8 @@ class CouncilBrokerTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "simulated crash"):
                 self.broker.submit(dialogue, "beta", "proposal", 0, proposal("beta"))
 
-        restarted = CouncilBroker(self.root)
+        restarted = restart_broker(self)
+        rebind_codex_fixture_routes(restarted)
         manifest = restarted.status(dialogue)
         self.assertEqual(manifest["phase"], "collecting_proposals")
         staged_exchange = [
@@ -3306,7 +3333,8 @@ class CouncilBrokerTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "simulated crash"):
                 self.broker.submit(dialogue, "beta", "proposal", 0, proposal("beta"))
 
-        restarted = CouncilBroker(self.root)
+        restarted = restart_broker(self)
+        rebind_codex_fixture_routes(restarted)
         self.assertEqual(restarted.status(dialogue)["phase"], "collecting_exchange")
         claimed = restarted.wait("alpha", 0)
         self.assertEqual(claimed["message"]["kind"], "exchange_request")
@@ -3339,7 +3367,8 @@ class CouncilBrokerTests(unittest.TestCase):
 
         self.assertEqual(extended["authorized_rounds"], 2)
         self.assertEqual({read_json(path)["status"] for path in staged}, {"pending"})
-        restarted = CouncilBroker(self.root)
+        restarted = restart_broker(self)
+        rebind_codex_fixture_routes(restarted)
         self.assertEqual(
             restarted.wait("alpha", 0)["message"]["kind"], "exchange_request"
         )
@@ -3365,8 +3394,8 @@ class CouncilBrokerTests(unittest.TestCase):
                     dialogue, "beta", "proposal", 0, proposal("beta")
                 )
 
-        CouncilBroker(self.root)
-        CouncilBroker(self.root)
+        restart_broker(self)
+        restart_broker(self)
         recovered = [
             json.loads(line)
             for line in (self.root / "dialogues" / dialogue / "audit.jsonl")
@@ -3395,8 +3424,8 @@ class CouncilBrokerTests(unittest.TestCase):
                 )
         dialogue = next(self.root.glob("dialogues/dlg-*/manifest.json")).parent.name
 
-        CouncilBroker(self.root)
-        CouncilBroker(self.root)
+        restart_broker(self)
+        restart_broker(self)
         recovered = [
             json.loads(line)
             for line in (self.root / "dialogues" / dialogue / "audit.jsonl")
@@ -3424,7 +3453,7 @@ class CouncilBrokerTests(unittest.TestCase):
             handle.flush()
             os.fsync(handle.fileno())
 
-        CouncilBroker(self.root)
+        restart_broker(self)
         recovered_manifest = read_json(
             self.root / "dialogues" / dialogue / "manifest.json"
         )
@@ -3443,7 +3472,7 @@ class CouncilBrokerTests(unittest.TestCase):
         ]
         self.assertEqual(len(recovered), 1)
 
-        CouncilBroker(self.root)
+        restart_broker(self)
         events_after_second_restart = [
             json.loads(line)
             for line in audit_path.read_text(encoding="utf-8").splitlines()
@@ -3476,7 +3505,7 @@ class CouncilBrokerTests(unittest.TestCase):
             handle.flush()
             os.fsync(handle.fileno())
         with self.assertRaisesRegex(CouncilError, "JSONL record .* is invalid"):
-            CouncilBroker(self.root)
+            restart_broker(self)
         still_pending = read_json(
             self.root / "dialogues" / dialogue / "manifest.json"
         )
@@ -3525,8 +3554,8 @@ class CouncilBrokerTests(unittest.TestCase):
             "complete",
         )
 
-        CouncilBroker(self.root)
-        CouncilBroker(self.root)
+        restart_broker(self)
+        restart_broker(self)
         events = [
             json.loads(line)
             for line in (self.root / "dialogues" / dialogue / "audit.jsonl")
@@ -3575,7 +3604,7 @@ class CouncilBrokerTests(unittest.TestCase):
         )
 
         with self.assertRaisesRegex(CouncilError, "conflicts with durable intent"):
-            CouncilBroker(self.root)
+            restart_broker(self)
 
     def test_restart_recovers_committed_pending_record_after_activation_crash(self):
         inbox = FakeClaudeInbox(self.temporary.name)
@@ -3630,7 +3659,7 @@ class CouncilBrokerTests(unittest.TestCase):
             )
             self.assertEqual(read_json(exchange_path)["status"], "pending")
 
-            restarted = CouncilBroker(self.root)
+            restarted = restart_broker(self)
             restarted.bind(
                 "claude",
                 "alpha",
@@ -3668,7 +3697,7 @@ class CouncilBrokerTests(unittest.TestCase):
         self.assertEqual(read_json(record_path)["status"], "claimed")
         shutil.rmtree(self.root / "dialogues" / dialogue)
 
-        restarted = CouncilBroker(self.root)
+        restarted = restart_broker(self)
 
         self.assertIsInstance(restarted, CouncilBroker)
         record = read_json(record_path)
@@ -3753,7 +3782,7 @@ class CouncilBrokerTests(unittest.TestCase):
                 "capability_hash": capability_hash(CAP_BETA),
             },
         )
-        restarted = CouncilBroker(self.root)
+        restarted = restart_broker(self)
         result = restarted.ping()
         self.assertNotIn("different-name", restarted.registrations)
         self.assertEqual(result["registration_restore_error_count"], 1)
@@ -3876,12 +3905,12 @@ class CouncilBrokerTests(unittest.TestCase):
         )
         request = {"action": "wait", "arguments": {"participant": "alpha", "timeout_seconds": 0}}
         with self.assertRaisesRegex(CouncilError, "not authorized"):
-            self.broker.handle(request)
+            self.broker.handle(current_request(request))
         request["arguments"]["_auth_capability"] = "attacker-" + "a" * 40
         with self.assertRaisesRegex(CouncilError, "not authorized"):
-            self.broker.handle(request)
+            self.broker.handle(current_request(request))
         request["arguments"]["_auth_capability"] = CAP_ALPHA
-        self.assertEqual(self.broker.handle(request), {"message": None})
+        self.assertEqual(self.broker.handle(current_request(request)), {"message": None})
 
     def test_authorization_and_participant_dispatch_share_one_generation_lock(self):
         self.broker.bind(
@@ -3909,7 +3938,7 @@ class CouncilBrokerTests(unittest.TestCase):
             },
         }
         with mock.patch.object(self.broker, "status", side_effect=paused_status):
-            operation = threading.Thread(target=lambda: self.broker.handle(request))
+            operation = threading.Thread(target=lambda: self.broker.handle(current_request(request)))
             operation.start()
             self.assertTrue(entered.wait(timeout=1))
 
@@ -3938,10 +3967,10 @@ class CouncilBrokerTests(unittest.TestCase):
             },
         }
         with self.assertRaisesRegex(CouncilError, "signed-runtime MCP"):
-            self.broker.handle(request)
+            self.broker.handle(current_request(request))
         with self.assertRaisesRegex(CouncilError, "signed-runtime MCP"):
-            self.broker.handle(request, trusted_mcp_runtime="claude")
-        result = self.broker.handle(request, trusted_mcp_runtime="codex")
+            self.broker.handle(current_request(request), trusted_mcp_runtime="claude")
+        result = self.broker.handle(current_request(request), trusted_mcp_runtime="codex")
         self.assertEqual(result["runtime"], "codex")
 
     def test_process_evidence_classifies_codex_and_claude_mcp_children(self):
@@ -3992,12 +4021,12 @@ class CouncilBrokerTests(unittest.TestCase):
     def test_configure_opencode_missing_executable_is_a_clean_error(self):
         missing = Path(self.temporary.name) / "no-such-opencode"
         with self.assertRaisesRegex(CouncilError, "not found"):
-            configure_opencode_runtime(self.root, missing)
+            configure_opencode_runtime(self.root, missing, lease=self.broker._lease)
 
     def test_pinned_opencode_parent_is_authenticated_and_session_is_redacted(self):
         executable = Path(self.temporary.name) / "opencode"
         executable.write_bytes(b"pinned-opencode-test-binary")
-        configured = configure_opencode_runtime(self.root, executable)
+        configured = configure_opencode_runtime(self.root, executable, lease=self.broker._lease)
         self.assertEqual(configured["runtime"], "opencode")
         with mock.patch("council._unix_peer_pid", return_value=777), mock.patch(
             "council._process_parent_pid", return_value=888
@@ -4030,7 +4059,7 @@ class CouncilBrokerTests(unittest.TestCase):
                     "binding_capability": CAP_GAMMA,
                 },
             }
-            result = self.broker.handle(request, trusted_mcp_runtime=runtime)
+            result = self.broker.handle(current_request(request), trusted_mcp_runtime=runtime)
             self.assertEqual(result["runtime"], "opencode")
             self.assertEqual(result["transport"], "opencode_plugin_relay")
             self.assertNotIn("target_session_id", result)
@@ -4056,9 +4085,9 @@ class CouncilBrokerTests(unittest.TestCase):
     def test_opencode_pin_rejects_process_started_before_latest_pin(self):
         executable = Path(self.temporary.name) / "opencode-generation"
         executable.write_bytes(b"version-a")
-        configure_opencode_runtime(self.root, executable)
+        configure_opencode_runtime(self.root, executable, lease=self.broker._lease)
         executable.write_bytes(b"version-b")
-        configure_opencode_runtime(self.root, executable)
+        configure_opencode_runtime(self.root, executable, lease=self.broker._lease)
         pin_epoch = read_json(self.root / "opencode-runtime.json")[
             "configured_at_epoch"
         ]
@@ -4078,7 +4107,7 @@ class CouncilBrokerTests(unittest.TestCase):
     def test_opencode_pin_rejects_mismatched_live_code_identity(self):
         executable = Path(self.temporary.name) / "opencode-cdhash"
         executable.write_bytes(b"pinned-version")
-        configure_opencode_runtime(self.root, executable)
+        configure_opencode_runtime(self.root, executable, lease=self.broker._lease)
         pin_epoch = read_json(self.root / "opencode-runtime.json")[
             "configured_at_epoch"
         ]
@@ -4126,7 +4155,7 @@ class CouncilBrokerTests(unittest.TestCase):
         )
         executable = Path(self.temporary.name) / "opencode"
         executable.write_bytes(b"doctor-opencode-test-binary")
-        configure_opencode_runtime(self.root, executable)
+        configure_opencode_runtime(self.root, executable, lease=self.broker._lease)
         atomic_json(
             self.root / "router.json",
             {
@@ -4150,7 +4179,8 @@ class CouncilBrokerTests(unittest.TestCase):
             )
         self.assertTrue(result["source"]["tracked"])
         self.assertTrue(result["release_snapshot_ready"])
-        self.assertTrue(result["local_runtime_ready"])
+        self.assertFalse(result["local_runtime_ready"])
+        self.assertEqual(result["broker"]["authenticated_readiness"], "unobserved")
         self.assertEqual(result["router"], {"configured": True, "bound": False})
         self.assertEqual(result["opencode"]["supported_transport"], "cli")
         self.assertFalse(result["opencode"]["desktop_supported"])
@@ -4220,7 +4250,7 @@ class CouncilBrokerTests(unittest.TestCase):
                 "binding_capability": "boundary-" + "b" * 40,
             },
         }
-        result = self.broker.handle(request, trusted_mcp_runtime=runtime_origin)
+        result = self.broker.handle(current_request(request), trusted_mcp_runtime=runtime_origin)
         self.assertEqual(result["runtime"], "codex")
         self.assertEqual(
             self.broker.registrations["runtime-origin-boundary"]["target_thread_id"],
@@ -4270,14 +4300,14 @@ class CouncilBrokerTests(unittest.TestCase):
             started.set()
             try:
                 outcome["result"] = self.broker.handle(
-                    {
+                    current_request({
                         "action": "wait",
                         "arguments": {
                             "participant": "alpha",
                             "timeout_seconds": 3,
                             "_auth_capability": CAP_ALPHA,
                         },
-                    }
+                    })
                 )
             except CouncilError as error:
                 outcome["error"] = str(error)
@@ -4309,14 +4339,14 @@ class CouncilBrokerTests(unittest.TestCase):
         self.broker.submit(dialogue, "alpha", "proposal", 0, proposal("alpha"))
         self.broker.submit(dialogue, "beta", "proposal", 0, proposal("beta"))
         claimed = self.broker.handle(
-            {
+            current_request({
                 "action": "wait",
                 "arguments": {
                     "participant": "alpha",
                     "timeout_seconds": 0,
                     "_auth_capability": replacement_capability,
                 },
-            }
+            })
         )
         self.assertEqual(claimed["message"]["kind"], "exchange_request")
 
@@ -4337,7 +4367,7 @@ class CouncilBrokerTests(unittest.TestCase):
         for action, arguments in cases.items():
             with self.subTest(action=action):
                 with self.assertRaisesRegex(CouncilError, "not authorized"):
-                    self.broker.handle({"action": action, "arguments": arguments})
+                    self.broker.handle(current_request({"action": action, "arguments": arguments}))
 
     def test_unrelated_mcp_task_cannot_impersonate_a_bound_codex_participant(self):
         broker = self.broker
@@ -4346,7 +4376,7 @@ class CouncilBrokerTests(unittest.TestCase):
             def request(self, action, **arguments):
                 runtime = arguments.get("runtime") if action == "bind" else None
                 return broker.handle(
-                    {"action": action, "arguments": arguments},
+                    current_request({"action": action, "arguments": arguments}),
                     trusted_mcp_runtime=runtime,
                 )
 
@@ -4376,7 +4406,7 @@ class CouncilBrokerTests(unittest.TestCase):
 
             def request(self, action, **arguments):
                 result = broker.handle(
-                    {"action": action, "arguments": arguments},
+                    current_request({"action": action, "arguments": arguments}),
                     trusted_mcp_runtime=arguments.get("runtime")
                     if action == "bind"
                     else None,
@@ -4405,6 +4435,11 @@ class CouncilBrokerTests(unittest.TestCase):
             self.assertEqual(
                 persisted["capability_hash"], capability_hash(pending_capability)
             )
+            for reason in ("version_mismatch", "maintenance_required", "not_authorized", "binding_expired", "unknown"):
+                with mock.patch.object(client, "request", side_effect=CouncilRequestRejected("retry rejected", reason=reason)):
+                    with self.assertRaises(CouncilRequestRejected):
+                        call_tool("council_bind", arguments, request_meta=metadata)
+                self.assertEqual(PENDING_BINDING_ROTATIONS[identity]["binding_capability"], pending_capability)
             result = call_tool("council_bind", arguments, request_meta=metadata)
             payload = json.loads(result["content"][0]["text"])
             self.assertTrue(payload["duplicate"])
@@ -4521,27 +4556,27 @@ class CouncilBrokerTests(unittest.TestCase):
         self.broker.configure_router("router-task")
         router_cap = "router-capability-" + "r" * 40
         self.broker.handle(
-            {
+            current_request({
                 "action": "router_bind",
                 "arguments": {
                     "target_thread_id": "router-task",
                     "router_capability": router_cap,
                 },
-            },
+            }),
             trusted_mcp_runtime="codex",
         )
         with self.assertRaisesRegex(CouncilError, "not authorized"):
             self.broker.handle(
-                {
+                current_request({
                     "action": "pending_wakes",
                     "arguments": {"limit": 20, "_router_capability": "wrong-" + "w" * 40},
-                }
+                })
             )
         result = self.broker.handle(
-            {
+            current_request({
                 "action": "pending_wakes",
                 "arguments": {"limit": 20, "_router_capability": router_cap},
-            }
+            })
         )
         self.assertEqual(result, {"notifications": []})
 
@@ -4554,7 +4589,7 @@ class CouncilBrokerTests(unittest.TestCase):
 
             def request(self, action, **arguments):
                 result = broker.handle(
-                    {"action": action, "arguments": arguments},
+                    current_request({"action": action, "arguments": arguments}),
                     trusted_mcp_runtime="codex" if action == "router_bind" else None,
                 )
                 if action == "router_bind" and self.lose_response:
@@ -4574,6 +4609,11 @@ class CouncilBrokerTests(unittest.TestCase):
             self.assertEqual(
                 config["capability_hash"], capability_hash(pending_capability)
             )
+            for reason in ("version_mismatch", "maintenance_required", "not_authorized", "unknown"):
+                with mock.patch.object(client, "request", side_effect=CouncilRequestRejected("retry rejected", reason=reason)):
+                    with self.assertRaises(CouncilRequestRejected):
+                        call_tool("council_pending_wakes", {"limit": 20}, metadata)
+                self.assertEqual(PENDING_ROUTER_ROTATIONS["router-task"]["router_capability"], pending_capability)
             result = call_tool("council_pending_wakes", {"limit": 20}, metadata)
         payload = json.loads(result["content"][0]["text"])
         self.assertEqual(payload, {"notifications": []})
@@ -4591,8 +4631,8 @@ class CouncilBrokerTests(unittest.TestCase):
                 "router_capability": original,
             },
         }
-        self.broker.handle(initial, trusted_mcp_runtime="codex")
-        duplicate = self.broker.handle(initial, trusted_mcp_runtime="codex")
+        self.broker.handle(current_request(initial), trusted_mcp_runtime="codex")
+        duplicate = self.broker.handle(current_request(initial), trusted_mcp_runtime="codex")
         self.assertTrue(duplicate["duplicate"])
 
         takeover = {
@@ -4603,34 +4643,34 @@ class CouncilBrokerTests(unittest.TestCase):
             },
         }
         with self.assertRaisesRegex(CouncilError, "matching signed-runtime MCP"):
-            self.broker.handle(takeover)
+            self.broker.handle(current_request(takeover))
         with self.assertRaisesRegex(CouncilError, "prior capability"):
-            self.broker.handle(takeover, trusted_mcp_runtime="codex")
+            self.broker.handle(current_request(takeover), trusted_mcp_runtime="codex")
         self.assertEqual(
             self.broker.handle(
-                {
+                current_request({
                     "action": "pending_wakes",
                     "arguments": {"limit": 20, "_router_capability": original},
-                }
+                })
             ),
             {"notifications": []},
         )
 
         takeover["arguments"]["previous_router_capability"] = original
-        self.broker.handle(takeover, trusted_mcp_runtime="codex")
+        self.broker.handle(current_request(takeover), trusted_mcp_runtime="codex")
         with self.assertRaisesRegex(CouncilError, "not authorized"):
             self.broker.handle(
-                {
+                current_request({
                     "action": "pending_wakes",
                     "arguments": {"limit": 20, "_router_capability": original},
-                }
+                })
             )
         self.assertEqual(
             self.broker.handle(
-                {
+                current_request({
                     "action": "pending_wakes",
                     "arguments": {"limit": 20, "_router_capability": replacement},
-                }
+                })
             ),
             {"notifications": []},
         )
@@ -4642,7 +4682,7 @@ class CouncilBrokerTests(unittest.TestCase):
         class LocalClient:
             def request(self, action, **arguments):
                 return broker.handle(
-                    {"action": action, "arguments": arguments},
+                    current_request({"action": action, "arguments": arguments}),
                     trusted_mcp_runtime="codex" if action == "router_bind" else None,
                 )
 
@@ -5013,7 +5053,7 @@ class CouncilBrokerTests(unittest.TestCase):
 
             def request(self, action, **arguments):
                 try:
-                    result = broker.handle({"action": action, "arguments": arguments})
+                    result = broker.handle(current_request({"action": action, "arguments": arguments}))
                 except CouncilError as error:
                     raise CouncilRequestRejected(str(error), reason=error.reason)
                 if action == "extend" and self.lose_response:
@@ -5065,6 +5105,7 @@ class CouncilBrokerTests(unittest.TestCase):
         self.assertNotIn(pending_key, PENDING_EXTENSION_OPERATIONS)
 
     def _broker_wire_response(self, broker, request):
+        request = current_request(request)
         handler = BrokerRequestHandler.__new__(BrokerRequestHandler)
         handler.request = mock.Mock()
         handler.rfile = io.BytesIO(json.dumps(request).encode() + b"\n")
@@ -5281,7 +5322,7 @@ class CouncilBrokerTests(unittest.TestCase):
                 client.request.side_effect = transported
                 output = io.StringIO()
                 with mock.patch("council_opencode.CouncilClient", return_value=client), mock.patch(
-                    "council_opencode.sys.stdin", mock.Mock(buffer=io.BytesIO(b'{"action":"extend","arguments":{}}\n'))
+                    "council_opencode.sys.stdin", mock.Mock(buffer=io.BytesIO(json.dumps(current_request({"action": "extend", "arguments": {}})).encode() + b"\n"))
                 ), contextlib.redirect_stdout(output):
                     self.assertEqual(council_opencode.main(), 2)
                 bridge = json.loads(output.getvalue())
@@ -5405,7 +5446,7 @@ class CouncilBrokerTests(unittest.TestCase):
         fcntl.flock(lock_descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         try:
             with mock.patch("council.trusted_broker_runtime", return_value="codex"):
-                with self.assertRaisesRegex(CouncilError, "lifetime lock"):
+                with self.assertRaisesRegex(council.AdmissionError, "lifetime lock"):
                     run_daemon(state)
             self.assertTrue(socket_path.exists())
         finally:
@@ -5496,7 +5537,8 @@ class CouncilBrokerTests(unittest.TestCase):
 
     def test_daemon_rejects_raw_router_bootstrap_client(self):
         state = Path(self.temporary.name) / "daemon-router-state"
-        CouncilBroker(state).configure_router("router-task")
+        with CouncilBroker(state) as offline:
+            offline.configure_router("router-task")
         script = Path(__file__).with_name("council.py")
         process = subprocess.Popen(
             [sys.executable, str(script), "daemon", "--state-root", str(state)],
@@ -5583,6 +5625,8 @@ class CouncilBrokerTests(unittest.TestCase):
             relay_pid=os.getpid(),
             binding_capability=CAP_BETA,
         )
+
+        seed.close()
 
         def start_daemon():
             daemon = subprocess.Popen(
@@ -5687,6 +5731,7 @@ class TerminalDialogueFixture(unittest.TestCase):
         )
         self.claim_id_salt_patch.start()
         self.broker = CouncilBroker(self.root)
+        self.addCleanup(self.broker.close)
         self.cdhash_patch = mock.patch(
             "council._codesign_cdhash", return_value="c" * 40
         )
@@ -5866,7 +5911,7 @@ class TerminalDialogueDeletionTests(TerminalDialogueFixture):
                 "outbox_records_superseded": [],
             },
         )
-        CouncilBroker(self.root)
+        restart_broker(self)
         self.assertFalse((self.root / "dialogues" / dialogue).exists())
         self.assertEqual(self.dialogue_records(dialogue), [])
         for participant_dir in sorted((self.root / "outbox").iterdir()):
@@ -5941,7 +5986,7 @@ class TerminalDialogueDeletionTests(TerminalDialogueFixture):
 
 
 class BindFailureRelayCleanupTests(TerminalDialogueFixture):
-    def test_definitively_rejected_claude_bind_closes_the_created_relay(self):
+    def test_rejected_claude_bind_retains_potentially_committed_relay(self):
         inbox_dir = Path(self.temporary.name) / "claude-inbox"
         inbox_dir.mkdir()
         inbox = FakeClaudeInbox(inbox_dir)
@@ -5970,12 +6015,9 @@ class BindFailureRelayCleanupTests(TerminalDialogueFixture):
                 ):
                     with self.assertRaises(CouncilRequestRejected):
                         call_tool("council_bind", arguments)
-                self.assertNotIn("quickfail", RELAYS)
-                relays_dir = state / "relays"
-                if relays_dir.exists():
-                    self.assertEqual(list(relays_dir.iterdir()), [])
-                # A relay that predates the bind is never touched by the
-                # rejection cleanup: only the relay this call created is.
+                self.assertIn("quickfail", RELAYS)
+                self.assertTrue(RELAYS["quickfail"].path.exists())
+                # Failed retries preserve the exact pending relay and capability.
                 existing = get_claude_relay("quickfail")
                 with mock.patch(
                     "council_mcp.CouncilClient", return_value=RejectingClient()
@@ -6037,7 +6079,7 @@ class RetentionSweepTests(TerminalDialogueFixture):
         dialogue = self.cancelled_dialogue()
         self.age_dialogue(dialogue)
         self.configure_days(30)
-        CouncilBroker(self.root)
+        restart_broker(self)
         self.assertFalse((self.root / "dialogues" / dialogue).exists())
         self.assertEqual(self.dialogue_records(dialogue), [])
         tombstone = read_json(self.tombstone_path(dialogue))
@@ -6046,7 +6088,7 @@ class RetentionSweepTests(TerminalDialogueFixture):
     def test_retention_sweep_keeps_recent_terminal_dialogues(self):
         dialogue = self.cancelled_dialogue()
         self.configure_days(30)
-        CouncilBroker(self.root)
+        restart_broker(self)
         self.assertTrue(
             (self.root / "dialogues" / dialogue / "manifest.json").exists()
         )
@@ -6066,14 +6108,14 @@ class RetentionSweepTests(TerminalDialogueFixture):
         manifest["updated_at"] = "2020-01-01T00:00:00+00:00"
         atomic_json(manifest_path, manifest)
         self.configure_days(30)
-        CouncilBroker(self.root)
+        restart_broker(self)
         self.assertTrue(manifest_path.exists())
         self.assertFalse(self.tombstone_path(dialogue).exists())
 
     def test_retention_off_without_configuration(self):
         dialogue = self.cancelled_dialogue()
         self.age_dialogue(dialogue)
-        CouncilBroker(self.root)
+        restart_broker(self)
         self.assertTrue(
             (self.root / "dialogues" / dialogue / "manifest.json").exists()
         )
@@ -6083,7 +6125,7 @@ class RetentionSweepTests(TerminalDialogueFixture):
         self.configure_days(30)
         for stamp in ("not-a-date", "2020-01-01T00:00:00", None):
             self.age_dialogue(dialogue, stamp=stamp)
-            CouncilBroker(self.root)
+            restart_broker(self)
             self.assertTrue(
                 (self.root / "dialogues" / dialogue / "manifest.json").exists(),
                 "dialogue deleted despite uncertain timestamp %r" % (stamp,),
@@ -6095,7 +6137,7 @@ class RetentionSweepTests(TerminalDialogueFixture):
         for config in (["broken"], {"days": "thirty"}, {"days": 0}, {"days": True}):
             atomic_json(self.root / "retention.json", config)
             with self.assertRaises(CouncilError):
-                CouncilBroker(self.root)
+                restart_broker(self)
 
     def run_retention_cli(self, *arguments):
         stdout, stderr = io.StringIO(), io.StringIO()
@@ -6105,6 +6147,7 @@ class RetentionSweepTests(TerminalDialogueFixture):
             )
 
     def test_cli_configures_and_disables_retention(self):
+        self.broker.close()
         self.assertEqual(self.run_retention_cli("--days", "30"), 0)
         self.assertEqual(read_json(self.root / "retention.json")["days"], 30)
         self.assertEqual(self.run_retention_cli("--disable"), 0)

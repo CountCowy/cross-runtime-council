@@ -6,8 +6,8 @@ These descriptions do not replace broker authorization or dialogue validation.
 
 from copy import deepcopy
 
-PACKAGE_ID = "4873bbfab7e79c82e81c9c123bade7b7011ee22ba5b5ec3488eb26725e624d54"
-RUNTIME_COHORT = "e5eed435bb8e236e619eb86e6834789f5bc3e055526219263d72c095c43139b0"
+PACKAGE_ID = "24e1b0902fe95d929f365cb57a156e454236e7f82b57dcb68b146ba12bb5ba47"
+RUNTIME_COHORT = "9401f1780d0d666764923aef9755778135399b0c6f17ed33aea21686d2715328"
 
 SCHEMA_VERSION = 1
 
@@ -99,7 +99,6 @@ ERROR_REASONS = (
     "request_timeout",
     "internal",
     "version_mismatch",
-    "maintenance_required",
     "broker_unavailable",
     "transport_lost",
     "malformed_response",

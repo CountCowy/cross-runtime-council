@@ -8,6 +8,8 @@ it never persists or prints a capability outside its JSON response channel.
 
 import json
 import sys
+sys.dont_write_bytecode = True
+# ruff: noqa: E402 -- custom imports must follow bytecode-write suppression.
 from typing import Any, Dict
 
 import council
@@ -19,8 +21,8 @@ from council import (
     CouncilRequestRejected,
 )
 
-PACKAGE_ID = "24e1b0902fe95d929f365cb57a156e454236e7f82b57dcb68b146ba12bb5ba47"
-RUNTIME_COHORT = "9401f1780d0d666764923aef9755778135399b0c6f17ed33aea21686d2715328"
+PACKAGE_ID = "4873bbfab7e79c82e81c9c123bade7b7011ee22ba5b5ec3488eb26725e624d54"
+RUNTIME_COHORT = "e5eed435bb8e236e619eb86e6834789f5bc3e055526219263d72c095c43139b0"
 if RUNTIME_COHORT != council.RUNTIME_COHORT:
     raise RuntimeError("Council bridge/helper cohort mismatch; refresh the complete runtime set")
 
@@ -43,7 +45,10 @@ def main() -> int:
         arguments = request.get("arguments") or {}
         if not isinstance(action, str) or not isinstance(arguments, dict):
             raise CouncilError("bridge action or arguments are invalid")
-        result = CouncilClient().request(action, **arguments)
+        origin = request.get("runtime_cohort")
+        if origin != RUNTIME_COHORT:
+            raise CouncilError("Council plugin/bridge cohort mismatch", reason="version_mismatch")
+        result = CouncilClient(origin_cohort=origin).request(action, **arguments)
         response: Dict[str, Any] = {"ok": True, "result": result}
     except CouncilRequestRejected as error:
         response = {

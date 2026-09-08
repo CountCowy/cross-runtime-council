@@ -117,3 +117,5 @@ The [live rehearsal contract](live-rehearsal.md) specifies the separate G1–G5
 release observations and links an unexecuted run-record template. The maintainer
 records real recipient evidence before making a live compatibility claim; the
 assisted runner and complete-source capture adapters remain subsequent work.
+
+Maintenance source preparation, writer lifetime, exact frozen readers and the C1/C2 boundary are documented in [maintenance admission](maintenance-admission.md). The developer runs `python3 scripts/test_admission.py` and `python3 scripts/test_predecessors.py` with the existing CI suites.

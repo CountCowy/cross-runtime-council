@@ -53,3 +53,5 @@ Runtime authentication is version-sensitive on purpose. Vendor updates
 (runtime apps, OpenCode CLI binaries, macOS signing behavior) can invalidate
 trust anchors, and Council then **fails closed** until re-pinned or updated.
 That refusal is the design working, not a bug.
+
+C1 introduces a coordinated loaded-cohort/lease contract and read-only [maintenance inspection](maintenance-admission.md). Both frozen pre-C1 readers remain unsupported managed writers; a passing state-reader tuple cannot authorize a managed rollback.

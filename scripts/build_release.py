@@ -21,6 +21,7 @@ from generate_protocol import normalized_stamps, render
 ROOT = Path(__file__).resolve().parent.parent
 MANIFEST = "release_manifest.json"
 RUNTIME_FILES = (
+    "scripts/council_admission.py", "scripts/council_inspect.py",
     "scripts/council_protocol.py", "scripts/council_protocol.ts",
     "scripts/council.py", "scripts/council_mcp.py", "scripts/council_opencode.py",
     "scripts/opencode_council_plugin.ts", "scripts/opencode_delivery_registry.ts",

@@ -34,8 +34,8 @@ type BridgeResponse = {
   reason?: unknown
 }
 
-const PACKAGE_ID = "24e1b0902fe95d929f365cb57a156e454236e7f82b57dcb68b146ba12bb5ba47"
-const RUNTIME_COHORT = "9401f1780d0d666764923aef9755778135399b0c6f17ed33aea21686d2715328"
+const PACKAGE_ID = "4873bbfab7e79c82e81c9c123bade7b7011ee22ba5b5ec3488eb26725e624d54"
+const RUNTIME_COHORT = "e5eed435bb8e236e619eb86e6834789f5bc3e055526219263d72c095c43139b0"
 if (RUNTIME_COHORT !== PROTOCOL_COHORT || RUNTIME_COHORT !== REGISTRY_COHORT) {
   throw new Error("Council plugin/helper cohort mismatch; refresh the complete runtime set")
 }
@@ -104,7 +104,7 @@ async function rawBridge(action: string, args: Record<string, unknown>) {
     stdout: "pipe",
     stderr: "pipe",
   })
-  child.stdin.write(JSON.stringify({ action, arguments: args }) + "\n")
+  child.stdin.write(JSON.stringify({ action, arguments: args, runtime_cohort: RUNTIME_COHORT }) + "\n")
   child.stdin.end()
   const [stdout, stderr, exitCode] = await Promise.all([
     new Response(child.stdout).text(),
@@ -142,7 +142,9 @@ async function ensureBroker() {
   try {
     await rawBridge("ping", {})
     return
-  } catch {}
+  } catch (error) {
+    if (!(error instanceof BridgeError) || !["broker_unavailable", "transport_lost"].includes(error.reason)) throw error
+  }
   if (!brokerStartup) {
     brokerStartup = (async () => {
       Bun.spawn(
@@ -156,6 +158,7 @@ async function ensureBroker() {
           await rawBridge("ping", {})
           return
         } catch (error) {
+          if (!(error instanceof BridgeError) || !["broker_unavailable", "transport_lost"].includes(error.reason)) throw error
           lastError = error
         }
       }
@@ -331,7 +334,7 @@ export const CouncilPlugin: Plugin = async ({ client }) => {
           )
         ) {
           bindings.delete(identity)
-          pendingRotations.delete(identity)
+          // Expiry does not disprove an earlier pending rotation commit.
           deliveryRegistry.clear(sessionID, participant)
         }
       }
@@ -361,7 +364,6 @@ export const CouncilPlugin: Plugin = async ({ client }) => {
         args: toolArgs.council_bind,
         async execute(args, context) {
           const identity = key(context.sessionID, args.participant)
-          const hadBinding = bindings.has(identity)
           let pending = pendingRotations.get(identity)
           if (!pending) {
             pending = {
@@ -414,12 +416,7 @@ export const CouncilPlugin: Plugin = async ({ client }) => {
             pendingRotations.delete(identity)
             return safeResult(result)
           } catch (error) {
-            if (error instanceof BridgeError && error.kind === "rejected") {
-              pendingRotations.delete(identity)
-              if (!hadBinding) {
-                deliveryRegistry.clear(context.sessionID, args.participant)
-              }
-            }
+            // Retain potentially committed rotations across every failed retry.
             throw error
           }
         },

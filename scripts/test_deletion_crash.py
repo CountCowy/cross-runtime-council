@@ -169,9 +169,10 @@ class DeletionCrashMatrixTests(unittest.TestCase):
         control = cancelled_dialogue("Control plan that must survive")
         # Settle every reconciliation write, then verify the fixture is
         # restart-stable so later restarts mutate nothing on their own.
-        CouncilBroker(root)
+        broker.close()
+        CouncilBroker(root).close()
         settled = state_inventory(root)
-        CouncilBroker(root)
+        CouncilBroker(root).close()
         if state_inventory(root) != settled:
             raise AssertionError("fixture is not restart-stable")
         if not dialogue_records(root, target):
@@ -195,12 +196,13 @@ class DeletionCrashMatrixTests(unittest.TestCase):
                 crashed = False
             except InjectedCrash:
                 crashed = True
+        broker.close()
         return injector.operations, crashed
 
     def run_crashing_recovery(self, root, crash_at, wrap_atomic_json=False):
         with CrashInjector(crash_at, wrap_atomic_json=wrap_atomic_json) as injector:
             try:
-                CouncilBroker(root)
+                CouncilBroker(root).close()
                 crashed = False
             except InjectedCrash:
                 crashed = True
@@ -208,6 +210,7 @@ class DeletionCrashMatrixTests(unittest.TestCase):
 
     def assert_bimodal_invariant(self, root):
         broker = CouncilBroker(root)
+        self.addCleanup(broker.close)
         # Every documented artifact invariant must hold after recovery,
         # not just the deletion-specific bimodal one.
         self.assertEqual(recovery_invariants.check_state_root(root), [])
@@ -312,7 +315,7 @@ class DeletionCrashMatrixTests(unittest.TestCase):
         # A clean restart re-applies retention deterministically, so the only
         # legal steady state after any crash is fully swept: tombstoned with
         # zero content, zero references, and the control dialogue untouched.
-        CouncilBroker(root)
+        CouncilBroker(root).close()
         self.assertEqual(recovery_invariants.check_state_root(root), [])
         tombstone = root / "tombstones" / ("%s.json" % self.target_id)
         self.assertTrue(tombstone.exists())

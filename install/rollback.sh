@@ -9,6 +9,17 @@ STATE="${HOME}/.claude/peer-consults"
 
 fail() { printf 'rollback: %s\n' "$1" >&2; exit 1; }
 
+# C1 is only a fence. The complete managed engine/recoverer is C2's job.
+python3 -I -B -c 'import os,sys
+from pathlib import Path
+try:
+    marker = Path(sys.argv[1]) / ".council-lifecycle"
+    try: marker.lstat()
+    except FileNotFoundError: pass
+    else: raise SystemExit(1)
+except OSError: raise SystemExit(1)
+' "${HOME}/.claude/peer-consults" || fail "managed Council namespace present or guard failed; the operator must use the compatible lifecycle tool/recoverer (legacy replacement is refused)"
+
 check_broker_socket() {
   sock="${STATE}/broker.sock"
   [ -S "$sock" ] || return 0

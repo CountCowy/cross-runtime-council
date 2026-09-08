@@ -123,3 +123,80 @@ test("real plugin and wrapper preserve every policy value and provided flag", as
     rmSync(directory, { recursive: true, force: true })
   }
 })
+
+test("loaded plugin origin, bounded mismatch startup and pending operation conservation", async () => {
+  const directory = mkdtempSync("/tmp/cpa-")
+  const homedir = mock.method(os, "homedir", () => directory)
+  syncBuiltinESMExports()
+  const globals = globalThis as unknown as Record<string | symbol, unknown>
+  const priorBun = globals.Bun
+  type Request = { action: string; runtime_cohort: string; arguments: Record<string, unknown> }
+  const requests: Request[] = []
+  let failAction = "bind"
+  let reason = "transport_lost"
+  let daemonSpawns = 0
+  globals.Bun = {
+    spawn: (command: string[]) => {
+      if (command.includes("daemon")) { daemonSpawns += 1; throw new Error("unexpected daemon spawn") }
+      let request: Request
+      return {
+        stdin: { write: (line: string) => { request = JSON.parse(line); requests.push(request) }, end: () => {} },
+        get stdout() {
+          const response = request.action === failAction
+            ? { ok: false, error: "fixture failure", error_kind: "rejected", reason }
+            : { ok: true, result: request.action === "extend"
+                ? { dialogue_id: "dlg-pending", phase: "collecting_exchange", authorized_rounds: 2, current_round: 1, duplicate: true }
+                : {} }
+          return new Blob([JSON.stringify(response)]).stream()
+        },
+        get stderr() { return new Blob([]).stream() },
+        exited: Promise.resolve(0),
+      }
+    },
+  }
+  let hooks: Awaited<ReturnType<typeof import("./opencode_council_plugin.ts").CouncilPlugin>> | undefined
+  try {
+    const { CouncilPlugin } = await import(new URL("./opencode_council_plugin.ts?admission-fixture", import.meta.url).href)
+    hooks = await CouncilPlugin({ client: {} } as never)
+    const context = { sessionID: "pending-session" } as never
+    const binding = { participant: "alpha", label: "Alpha", project: "test" }
+    for (const failure of ["transport_lost", "version_mismatch", "maintenance_required", "not_authorized", "unknown"]) {
+      reason = failure
+      await assert.rejects(wrapper.bind.execute(binding, context), /fixture failure/)
+    }
+    const rotations = requests.filter((request) => request.action === "bind")
+    assert.equal(new Set(rotations.map((request) => request.arguments.binding_capability)).size, 1)
+    assert.equal(new Set(rotations.map((request) => request.arguments.relay_capability)).size, 1)
+    failAction = ""
+    await wrapper.bind.execute(binding, context)
+    assert.equal(requests.filter((request) => request.action === "bind").at(-1)!.arguments.binding_capability, rotations[0].arguments.binding_capability)
+    failAction = "extend"
+    const extension = { participant: "alpha", dialogue_id: "dlg-pending", additional_rounds: 1 }
+    for (const failure of ["transport_lost", "version_mismatch", "maintenance_required", "not_authorized", "unknown", "binding_expired"]) {
+      reason = failure
+      await assert.rejects(wrapper.extend.execute(extension, context), /fixture failure/)
+    }
+    const ids = requests.filter((request) => request.action === "extend").map((request) => request.arguments.extension_id)
+    assert.equal(new Set(ids).size, 1)
+    failAction = ""
+    await wrapper.bind.execute(binding, context)
+    await assert.rejects(wrapper.extend.execute({ ...extension, additional_rounds: 2 }, context), /original round count/)
+    await wrapper.extend.execute(extension, context)
+    assert.equal(requests.filter((request) => request.action === "extend").at(-1)!.arguments.extension_id, ids[0])
+    for (const request of requests) assert.equal(request.runtime_cohort, RUNTIME_COHORT)
+    failAction = "ping"
+    reason = "version_mismatch"
+    const before = requests.length
+    await assert.rejects(wrapper.ping.execute({}, context), /fixture failure/)
+    assert.equal(requests.length, before + 1)
+    assert.equal(daemonSpawns, 0)
+  } finally {
+    await hooks?.dispose?.()
+    delete globals[TOOL_REGISTRY_KEY]
+    if (priorBun === undefined) delete globals.Bun
+    else globals.Bun = priorBun
+    homedir.mock.restore()
+    syncBuiltinESMExports()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})

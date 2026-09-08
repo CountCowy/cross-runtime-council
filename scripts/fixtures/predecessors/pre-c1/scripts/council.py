@@ -8,6 +8,7 @@ Claude MCP child-relay paths. It has no network listener.
 
 import argparse
 import datetime as dt
+import fcntl
 import hashlib
 import hmac
 import html
@@ -29,11 +30,6 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-
-sys.dont_write_bytecode = True
-# ruff: noqa: E402 -- custom imports must follow bytecode-write suppression.
-import council_admission
-from council_admission import (AdmissionError, acquire_writer_lease, admit_runtime_writer, lease_methods)
 
 from council_protocol import (
     SCHEMA_VERSION as SCHEMA_VERSION,
@@ -82,9 +78,9 @@ from council_protocol import (
 )
 import council_protocol
 
-PACKAGE_ID = "4873bbfab7e79c82e81c9c123bade7b7011ee22ba5b5ec3488eb26725e624d54"
-RUNTIME_COHORT = "e5eed435bb8e236e619eb86e6834789f5bc3e055526219263d72c095c43139b0"
-if RUNTIME_COHORT != council_protocol.RUNTIME_COHORT or RUNTIME_COHORT != council_admission.RUNTIME_COHORT:
+PACKAGE_ID = "24e1b0902fe95d929f365cb57a156e454236e7f82b57dcb68b146ba12bb5ba47"
+RUNTIME_COHORT = "9401f1780d0d666764923aef9755778135399b0c6f17ed33aea21686d2715328"
+if RUNTIME_COHORT != council_protocol.RUNTIME_COHORT:
     raise RuntimeError("Council broker/helper cohort mismatch; refresh the complete runtime set")
 
 SECRET_PATTERNS = (
@@ -829,17 +825,7 @@ def opencode_runtime_config_path(state_root: Path) -> Path:
     return state_root.expanduser().resolve() / "opencode-runtime.json"
 
 
-def configure_opencode_runtime(state_root: Path, executable: Path, *, lease=None) -> Dict[str, Any]:
-    if lease is None:
-        with acquire_writer_lease(state_root) as owned:
-            return configure_opencode_runtime(state_root, executable, lease=owned)
-    lease.validate(state_root)
-    admit_runtime_writer(lease, RUNTIME_COHORT)
-    with lease.operation():
-        return _configure_opencode_runtime(state_root, executable)
-
-
-def _configure_opencode_runtime(state_root: Path, executable: Path) -> Dict[str, Any]:
+def configure_opencode_runtime(state_root: Path, executable: Path) -> Dict[str, Any]:
     try:
         executable = executable.expanduser().resolve(strict=True)
     except OSError:
@@ -1218,62 +1204,8 @@ def post_to_relay(
         raise CouncilError(response.get("error") or "Claude child relay rejected delivery")
 
 
-@lease_methods
 class CouncilBroker:
-    """An owning context/close API, or an explicit borrowed writer lease.
-
-    Call close before restarting the same root. Borrowed close never releases
-    the caller's lease. Raw filesystem helpers are internal, not writer APIs.
-    """
-    def __init__(self, state_root: Path, *, lease=None):
-        self._closed = False
-        self._closing = False
-        self._calls = threading.Condition()
-        self._call_counts = {}
-        self._owns_lease = lease is None
-        self._lease = lease if lease is not None else acquire_writer_lease(state_root)
-        try:
-            self._lease.validate(state_root)
-            admit_runtime_writer(self._lease, RUNTIME_COHORT)
-            with self._lease.operation():
-                self._initialize(state_root)
-        except BaseException:
-            if self._owns_lease:
-                self._lease.close()
-            self._closed = True
-            raise
-
-    def close(self):
-        if self._lease.pid != os.getpid():
-            # A child must not touch mutexes inherited from vanished threads.
-            if self._owns_lease:
-                self._lease.close()
-            self._closed = True
-            return
-        # Drain this broker even when its lease is borrowed. Do not hold the
-        # broker RLock while handlers/long polls finish their active calls.
-        with self._calls:
-            if self._closed:
-                return
-            if self._call_counts.get(threading.get_ident()):
-                raise AdmissionError("cannot close a broker from its active operation")
-            self._closing = True
-            while self._call_counts:
-                self._calls.wait()
-            if self._owns_lease:
-                self._lease.close()
-            self._closed = True
-
-    def __enter__(self):
-        self._lease.validate()
-        if self._closed:
-            raise AdmissionError("broker is closed")
-        return self
-
-    def __exit__(self, *_):
-        self.close()
-
-    def _initialize(self, state_root):
+    def __init__(self, state_root: Path):
         self.root = state_root.expanduser().resolve()
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         os.chmod(self.root, 0o700)
@@ -1284,7 +1216,6 @@ class CouncilBroker:
         self.dialogues.mkdir(exist_ok=True, mode=0o700)
         self.outbox.mkdir(exist_ok=True, mode=0o700)
         self.registration_routes.mkdir(exist_ok=True, mode=0o700)
-        self._router_admitted = False
         self.registrations: Dict[str, Dict[str, Any]] = {}
         self.registration_restore_errors: List[str] = []
         self.corrupt_file_errors: List[str] = []
@@ -1524,7 +1455,6 @@ class CouncilBroker:
                 "relay_process_start_epoch",
                 "capability_hash",
                 "binding_generation",
-                "runtime_cohort",
             )
             if key in registration
         }
@@ -1587,8 +1517,6 @@ class CouncilBroker:
             "lease_expires_epoch": float(lease_expires_epoch),
             "capability_hash": persisted_capability_hash,
             "binding_generation": binding_generation,
-            "runtime_cohort": route.get("runtime_cohort"),
-            "_admitted": False,
         }
         if runtime in ("claude", "opencode"):
             expected_transport = (
@@ -1675,7 +1603,7 @@ class CouncilBroker:
             except (CouncilError, OSError, ValueError, TypeError, json.JSONDecodeError) as error:
                 self.registration_restore_errors.append("%s: %s" % (path.name, error))
 
-    def _registration(self, participant: str, *, mutate=True, require_admitted=True) -> Dict[str, Any]:
+    def _registration(self, participant: str) -> Dict[str, Any]:
         participant = safe_name(participant, "participant")
         with self.changed:
             registration = self.registrations.get(participant)
@@ -1684,30 +1612,17 @@ class CouncilBroker:
                     "participant is not bound: %s" % participant, reason="not_bound"
                 )
             if registration["lease_expires_epoch"] <= epoch_now():
-                if mutate:
-                    self.registrations.pop(participant, None)
-                    self._remove_persisted_registration(participant)
-                    self._clear_registration_restore_error(participant)
+                self.registrations.pop(participant, None)
+                self._remove_persisted_registration(participant)
+                self._clear_registration_restore_error(participant)
                 raise CouncilError(
                     "participant binding expired: %s" % participant,
                     reason="binding_expired",
                 )
-            if require_admitted:
-                self._require_route_cohort(registration)
             return registration
 
-    @staticmethod
-    def _require_cohort(cohort):
-        if not isinstance(cohort, str) or cohort != RUNTIME_COHORT:
-            raise CouncilError("Council runtime cohort mismatch; refresh the complete runtime set", reason="version_mismatch")
-
-    def _require_route_cohort(self, registration):
-        if not registration.get("_admitted"):
-            raise CouncilError("restored participant requires authenticated same-scope rebind", reason="version_mismatch")
-        self._require_cohort(registration.get("runtime_cohort"))
-
     def _authorize_participant(self, participant: str, capability: Any) -> str:
-        registration = self._registration(participant, mutate=False, require_admitted=False)
+        registration = self._registration(participant)
         if not isinstance(capability, str):
             raise CouncilError(
                 "this exact session is not authorized for participant %s" % participant,
@@ -1753,7 +1668,6 @@ class CouncilBroker:
         target_thread_id: str,
         router_capability: str,
         previous_router_capability: Optional[str] = None,
-        _request_cohort=RUNTIME_COHORT,
     ) -> Dict[str, Any]:
         target_thread_id = safe_name(target_thread_id, "router target_thread_id")
         with self.lock:
@@ -1763,10 +1677,6 @@ class CouncilBroker:
             current_hash = config.get("capability_hash")
             desired_hash = capability_hash(router_capability)
             if current_hash and hmac.compare_digest(current_hash, desired_hash):
-                self._require_cohort(_request_cohort)
-                config["runtime_cohort"] = _request_cohort
-                atomic_json(self.router_config_path, config)
-                self._router_admitted = True
                 return {"bound": True, "duplicate": True}
             if current_hash and (
                 not isinstance(previous_router_capability, str)
@@ -1777,10 +1687,7 @@ class CouncilBroker:
                 raise CouncilError(
                     "Council router capability rotation requires its prior capability"
                 )
-            self._require_cohort(_request_cohort)
-            config["runtime_cohort"] = _request_cohort
             config["capability_hash"] = desired_hash
-            self._router_admitted = True
             config["bound_at"] = utc_now()
             atomic_json(self.router_config_path, config)
         return {"bound": True, "duplicate": False}
@@ -1834,7 +1741,6 @@ class CouncilBroker:
         target_session_id: Optional[str] = None,
         binding_capability: Optional[str] = None,
         previous_capability: Optional[str] = None,
-        _request_cohort=RUNTIME_COHORT,
     ) -> Dict[str, Any]:
         runtime = ensure_text(runtime, "runtime").lower()
         if runtime not in ("claude", "codex", "opencode"):
@@ -1858,8 +1764,6 @@ class CouncilBroker:
                 binding_capability or secrets.token_urlsafe(32)
             ),
             "binding_generation": "gen-" + uuid.uuid4().hex,
-            "runtime_cohort": _request_cohort,
-            "_admitted": True,
         }
         if runtime in ("claude", "opencode"):
             if (
@@ -1943,16 +1847,12 @@ class CouncilBroker:
                             raise CouncilError(
                                 "idempotent OpenCode bind does not match its exact session"
                             )
-                        self._require_cohort(_request_cohort)
                         current["relay_path"] = registration["relay_path"]
                         current["transport"] = registration["transport"]
                         current["transport_ready"] = True
                         current["_relay_capability"] = registration[
                             "_relay_capability"
                         ]
-                    self._require_cohort(_request_cohort)
-                    current["runtime_cohort"] = _request_cohort
-                    current["_admitted"] = True
                     self._persist_registration(current)
                     self._clear_registration_restore_error(participant)
                     retry = self.retry(participant)
@@ -2038,7 +1938,6 @@ class CouncilBroker:
                             "Claude session is already bound as participant %s"
                             % existing_participant
                         )
-            self._require_cohort(_request_cohort)
             self.registrations[participant] = registration
             self._persist_registration(registration)
             self._clear_registration_restore_error(participant)
@@ -2593,8 +2492,6 @@ class CouncilBroker:
         recipient = record["envelope"]["recipient"]
         registration = self.registrations.get(recipient)
         if not registration or registration["lease_expires_epoch"] <= epoch_now():
-            return
-        if not registration.get("_admitted") or registration.get("runtime_cohort") != RUNTIME_COHORT:
             return
         if not self._record_matches_registration(record, registration):
             record["last_error"] = (
@@ -4901,9 +4798,7 @@ class CouncilBroker:
                     continue
                 participant = participant_dir.name
                 registration = self.registrations.get(participant)
-                if (not registration or registration.get("runtime") != "codex"
-                        or not registration.get("_admitted")
-                        or registration.get("runtime_cohort") != RUNTIME_COHORT):
+                if not registration or registration.get("runtime") != "codex":
                     continue
                 target_thread_id = registration.get("target_thread_id")
                 if not target_thread_id:
@@ -5003,8 +4898,6 @@ class CouncilBroker:
             if record["envelope"]["recipient"] != participant:
                 raise CouncilError("message recipient mismatch")
             registration = self.registrations.get(participant)
-            if registration:
-                self._require_route_cohort(registration)
             if not registration or not self._record_matches_registration(
                 record, registration
             ):
@@ -5137,9 +5030,6 @@ class CouncilBroker:
         if not isinstance(arguments, dict):
             raise CouncilError("arguments must be an object")
         arguments = dict(arguments)
-        # Transport metadata cannot be supplied as model-visible arguments.
-        arguments.pop("_request_cohort", None)
-        cohort = request.get("runtime_cohort")
         participant_fields = {
             "unbind": "participant",
             "start": "initiator",
@@ -5180,26 +5070,17 @@ class CouncilBroker:
                 )
             binding_capability = arguments.get("binding_capability")
             capability_hash(binding_capability)
-            arguments["_request_cohort"] = cohort
         elif action in participant_fields:
             with self.changed:
                 participant = arguments.get(participant_fields[action])
                 binding_generation = self._authorize_participant(
                     participant, arguments.pop("_auth_capability", None)
                 )
-                self._require_cohort(cohort)
-                self._require_route_cohort(self.registrations[participant])
                 if action == "wait":
                     arguments["_authorized_binding_generation"] = binding_generation
                 return method(**arguments)
         elif action in ("pending_wakes", "wake_ack"):
-            with self.changed:
-                self._authorize_router(arguments.pop("_router_capability", None))
-                self._require_cohort(cohort)
-                if not self._router_admitted:
-                    raise CouncilError("restored router requires authenticated rebind", reason="version_mismatch")
-                self._require_cohort(self._router_config().get("runtime_cohort"))
-                return method(**arguments)
+            self._authorize_router(arguments.pop("_router_capability", None))
         elif action == "router_bind":
             if trusted_mcp_runtime != "codex":
                 raise CouncilError(
@@ -5207,9 +5088,6 @@ class CouncilBroker:
                 )
             router_capability = arguments.get("router_capability")
             capability_hash(router_capability)
-            arguments["_request_cohort"] = cohort
-        else:
-            self._require_cohort(cohort)
         return method(**arguments)
 
 
@@ -5249,7 +5127,7 @@ class BrokerRequestHandler(socketserver.StreamRequestHandler):
                     "ok": False,
                     "error": str(error),
                     "error_kind": "rejected",
-                    "reason": error.reason if isinstance(error, (CouncilError, AdmissionError)) else "invalid_request",
+                    "reason": error.reason if isinstance(error, CouncilError) else "invalid_request",
                 }
             except Exception as error:
                 response = {
@@ -5262,8 +5140,7 @@ class BrokerRequestHandler(socketserver.StreamRequestHandler):
 
 
 class ThreadingUnixServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
-    daemon_threads = False
-    block_on_close = True
+    daemon_threads = True
     allow_reuse_address = True
 
     def __init__(self, *args: Any, **kwargs: Any):
@@ -5316,13 +5193,17 @@ def run_daemon(state_root: Path) -> None:
     launcher_start_epoch = _process_start_epoch(launcher_pid)
     if launcher_start_epoch is None:
         raise CouncilError("broker launcher process generation could not be established")
-    lease = acquire_writer_lease(state_root)
+    state_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(state_root, 0o700)
+    lock_path = state_root / "broker.lock"
+    lock_descriptor = os.open(
+        str(lock_path), os.O_RDWR | os.O_CREAT, 0o600
+    )
     try:
-        admit_runtime_writer(lease, RUNTIME_COHORT)
-    except BaseException:
-        lease.close()
-        raise
-    lock_descriptor = lease.fd
+        fcntl.flock(lock_descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except (BlockingIOError, OSError):
+        os.close(lock_descriptor)
+        raise CouncilError("broker lifetime lock is already held")
 
     path = broker_socket_path(state_root)
     server: Optional[ThreadingUnixServer] = None
@@ -5375,7 +5256,7 @@ def run_daemon(state_root: Path) -> None:
         os.write(lock_descriptor, lock_record)
         os.fsync(lock_descriptor)
 
-        broker = CouncilBroker(state_root, lease=lease)
+        broker = CouncilBroker(state_root)
         server = ThreadingUnixServer(str(path), BrokerRequestHandler)
         server.broker = broker  # type: ignore[attr-defined]
         os.chmod(path, 0o600)
@@ -5409,18 +5290,17 @@ def run_daemon(state_root: Path) -> None:
                 path.unlink()
         except (FileNotFoundError, OSError):
             pass
-        lease.close()
+        fcntl.flock(lock_descriptor, fcntl.LOCK_UN)
+        os.close(lock_descriptor)
 
 
 class CouncilClient:
-    def __init__(self, state_root: Optional[Path] = None, autostart: bool = True, *, origin_cohort=RUNTIME_COHORT):
+    def __init__(self, state_root: Optional[Path] = None, autostart: bool = True):
         self.state_root = (state_root or default_state_root()).expanduser().resolve()
         self.socket_path = broker_socket_path(self.state_root)
         self.autostart = autostart
-        self._origin_cohort = origin_cohort
 
     def _send(self, request: Dict[str, Any]) -> Dict[str, Any]:
-        request = dict(request, runtime_cohort=self._origin_cohort)
         client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         client.settimeout(60)
         connected = False
@@ -5471,8 +5351,8 @@ class CouncilClient:
     def ensure_daemon(self) -> None:
         try:
             result = self._send({"action": "ping", "arguments": {}})
-        except CouncilError as error:
-            if not self.autostart or error.reason not in ("broker_unavailable", "transport_lost"):
+        except CouncilError:
+            if not self.autostart:
                 raise
         else:
             self._require_current_broker(result)
@@ -5497,8 +5377,6 @@ class CouncilClient:
             try:
                 result = self._send({"action": "ping", "arguments": {}})
             except CouncilError as error:
-                if error.reason not in ("broker_unavailable", "transport_lost"):
-                    raise
                 last_error = error
                 time.sleep(0.05)
             else:
@@ -5508,7 +5386,7 @@ class CouncilClient:
 
     def _require_current_broker(self, result: Any) -> None:
         version = result.get("broker_version") if isinstance(result, dict) else None
-        if version != BROKER_VERSION or result.get("runtime_cohort") != self._origin_cohort:
+        if version != BROKER_VERSION:
             raise CouncilError(
                 "Council adapter/broker version mismatch: adapter=%s broker=%s; "
                 "the owning runtime must stop the old broker and retry"
@@ -5519,10 +5397,7 @@ class CouncilClient:
     def request(self, action: str, **arguments: Any) -> Any:
         if action != "ping":
             self.ensure_daemon()
-        result = self._send({"action": action, "arguments": arguments})
-        if action == "ping":
-            self._require_current_broker(result)
-        return result
+        return self._send({"action": action, "arguments": arguments})
 
 
 def installation_doctor(
@@ -5538,14 +5413,26 @@ def installation_doctor(
         opencode_config_root or (Path.home() / ".config" / "opencode")
     ).expanduser().resolve()
 
-    from council_inspect import inspect_state, inspect_artifacts
-    inspection = inspect_state(state_root, payload_root=skill_root, opencode_root=opencode_config_root)
-    inspection["release_artifacts"] = inspect_artifacts(skill_root, opencode_config_root)
-    broker = {
-        "reachable": None, "version": None, "version_current": None,
-        "registration_restore_error_count": None, "corrupt_file_error_count": None,
-        "authenticated_readiness": "unobserved",
-    }
+    broker: Dict[str, Any]
+    try:
+        broker_ping = CouncilClient(state_root, autostart=False).request("ping")
+        broker = {
+            "reachable": True,
+            "version": broker_ping.get("broker_version"),
+            "version_current": broker_ping.get("broker_version") == BROKER_VERSION,
+            "registration_restore_error_count": broker_ping.get(
+                "registration_restore_error_count"
+            ),
+            "corrupt_file_error_count": broker_ping.get("corrupt_file_error_count"),
+        }
+    except CouncilError as error:
+        broker = {
+            "reachable": False,
+            "version": None,
+            "version_current": False,
+            "registration_restore_error_count": None,
+            "error": str(error),
+        }
 
     tracked = False
     try:
@@ -5687,13 +5574,16 @@ def installation_doctor(
     return {
         "broker_version": BROKER_VERSION,
         "broker": broker,
-        "inspection": inspection,
         "source": {"tracked": tracked},
         "router": router,
         "opencode": opencode,
         "deletion": deletion,
         "release_snapshot_ready": tracked,
-        "local_runtime_ready": None,  # Offline files cannot establish authenticated readiness.
+        "local_runtime_ready": bool(
+            broker["reachable"]
+            and broker["version_current"]
+            and broker.get("registration_restore_error_count") == 0
+        ),
     }
 
 
@@ -6206,52 +6096,68 @@ def run_cli(argv: Optional[List[str]] = None) -> int:
             result = info
         elif args.command == "delete":
             state_root = args.state_root.expanduser().resolve()
-            with CouncilBroker(state_root) as broker:
-                result = broker.delete_terminal_dialogue(args.dialogue_id, args.reason)
+            probe = CouncilClient(state_root, autostart=False)
+            try:
+                probe.request("ping")
+            except CouncilError:
+                pass
+            else:
+                raise CouncilError("stop the broker before deleting dialogue records")
+            result = CouncilBroker(state_root).delete_terminal_dialogue(
+                args.dialogue_id, args.reason
+            )
         elif args.command in (
             "configure-router",
             "configure-opencode",
             "configure-retention",
         ):
             state_root = args.state_root.expanduser().resolve()
-            with acquire_writer_lease(state_root) as lease:
-                admit_runtime_writer(lease, RUNTIME_COHORT)
-                if args.command == "configure-retention":
-                    if args.disable:
-                        remove_file(state_root / "retention.json")
-                        result = {"configured": False}
-                    else:
-                        if (
-                            not isinstance(args.days, int)
-                            or not 1 <= args.days <= RETENTION_MAX_DAYS
-                        ):
-                            raise CouncilError(
-                                "retention days must be an integer between 1 and %d"
-                                % RETENTION_MAX_DAYS
-                            )
-                        atomic_json(
-                            state_root / "retention.json",
-                            {"days": args.days, "configured_at": utc_now()},
-                        )
-                        result = {"configured": True, "days": args.days}
-                elif args.command == "configure-router":
-                    target_thread_id = safe_name(args.target_thread_id, "router target_thread_id")
-                    atomic_json(
-                        state_root / "router.json",
-                        {
-                            "target_thread_id": target_thread_id,
-                            "capability_hash": None,
-                            "configured_at": utc_now(),
-                        },
-                    )
-                    result = {"configured": True, "target_thread_id": target_thread_id}
+            probe = CouncilClient(state_root, autostart=False)
+            try:
+                probe.request("ping")
+            except CouncilError:
+                pass
+            else:
+                raise CouncilError(
+                    "stop the broker before changing its offline configuration"
+                )
+            state_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+            if args.command == "configure-retention":
+                if args.disable:
+                    remove_file(state_root / "retention.json")
+                    result = {"configured": False}
                 else:
-                    result = configure_opencode_runtime(state_root, args.executable, lease=lease)
+                    if (
+                        not isinstance(args.days, int)
+                        or not 1 <= args.days <= RETENTION_MAX_DAYS
+                    ):
+                        raise CouncilError(
+                            "retention days must be an integer between 1 and %d"
+                            % RETENTION_MAX_DAYS
+                        )
+                    atomic_json(
+                        state_root / "retention.json",
+                        {"days": args.days, "configured_at": utc_now()},
+                    )
+                    result = {"configured": True, "days": args.days}
+            elif args.command == "configure-router":
+                target_thread_id = safe_name(args.target_thread_id, "router target_thread_id")
+                atomic_json(
+                    state_root / "router.json",
+                    {
+                        "target_thread_id": target_thread_id,
+                        "capability_hash": None,
+                        "configured_at": utc_now(),
+                    },
+                )
+                result = {"configured": True, "target_thread_id": target_thread_id}
+            else:
+                result = configure_opencode_runtime(state_root, args.executable)
         else:
             raise CouncilError("unsupported command")
         print(json.dumps(result, indent=2, sort_keys=True, ensure_ascii=False))
         return 0
-    except (CouncilError, AdmissionError) as error:
+    except CouncilError as error:
         print("council: %s" % error, file=sys.stderr)
         return 2
 

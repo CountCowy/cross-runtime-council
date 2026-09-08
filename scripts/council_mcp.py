@@ -10,6 +10,8 @@ import secrets
 import socket
 import socketserver
 import sys
+sys.dont_write_bytecode = True
+# ruff: noqa: E402 -- custom imports must follow bytecode-write suppression.
 import threading
 from typing import Any, Dict, List, Optional
 
@@ -36,8 +38,8 @@ from council import (
     validate_extension_result,
 )
 
-PACKAGE_ID = "24e1b0902fe95d929f365cb57a156e454236e7f82b57dcb68b146ba12bb5ba47"
-RUNTIME_COHORT = "9401f1780d0d666764923aef9755778135399b0c6f17ed33aea21686d2715328"
+PACKAGE_ID = "4873bbfab7e79c82e81c9c123bade7b7011ee22ba5b5ec3488eb26725e624d54"
+RUNTIME_COHORT = "e5eed435bb8e236e619eb86e6834789f5bc3e055526219263d72c095c43139b0"
 if RUNTIME_COHORT != council.RUNTIME_COHORT:
     raise RuntimeError("Council MCP/helper cohort mismatch; refresh the complete runtime set")
 
@@ -262,18 +264,12 @@ def router_capability(client: CouncilClient, request_meta: Dict[str, Any]) -> st
             PENDING_ROUTER_ROTATIONS[target_thread_id] = pending
         capability = pending["router_capability"]
         previous = pending["previous_router_capability"] or None
-    try:
-        client.request(
-            "router_bind",
-            target_thread_id=target_thread_id,
-            router_capability=capability,
-            previous_router_capability=previous,
-        )
-    except CouncilRequestRejected:
-        with CAPABILITIES_LOCK:
-            if PENDING_ROUTER_ROTATIONS.get(target_thread_id) is pending:
-                PENDING_ROUTER_ROTATIONS.pop(target_thread_id, None)
-        raise
+    client.request(
+        "router_bind",
+        target_thread_id=target_thread_id,
+        router_capability=capability,
+        previous_router_capability=previous,
+    )
     with CAPABILITIES_LOCK:
         ROUTER_CAPABILITIES[target_thread_id] = capability
         if PENDING_ROUTER_ROTATIONS.get(target_thread_id) is pending:
@@ -368,10 +364,7 @@ def call_tool(
         result = client.request("ping")
     elif name == "council_bind":
         relay = None
-        relay_preexisting = None
         if arguments["runtime"] == "claude":
-            with RELAYS_LOCK:
-                relay_preexisting = RELAYS.get(arguments["participant"])
             relay = get_claude_relay(arguments["participant"])
         target_thread_id = (
             codex_thread_id(request_meta) if arguments["runtime"] == "codex" else None
@@ -406,19 +399,7 @@ def call_tool(
                 previous_capability=previous_capability,
             )
         except CouncilRequestRejected:
-            with CAPABILITIES_LOCK:
-                if PENDING_BINDING_ROTATIONS.get(identity) is pending:
-                    PENDING_BINDING_ROTATIONS.pop(identity, None)
-            if relay is not None and relay is not relay_preexisting:
-                # This bind created the relay; a definitive rejection must not
-                # leave a live delivery socket listening for a participant
-                # that never bound. Ambiguous failures keep it for idempotent
-                # retry, and a relay from an earlier successful bind of this
-                # participant is never touched.
-                with RELAYS_LOCK:
-                    if RELAYS.get(arguments["participant"]) is relay:
-                        RELAYS.pop(arguments["participant"], None)
-                relay.close()
+            # A rejection of this retry says nothing about an earlier commit.
             raise
         with CAPABILITIES_LOCK:
             BINDING_CAPABILITIES[identity] = binding_capability
