@@ -116,6 +116,45 @@ class ReleaseTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "cohort mismatch"):
                 spec.loader.exec_module(module)
 
+    def test_output_validates_current_canonical_bytes_despite_cached_definitions(self):
+        source = self.source.resolve()
+        protocol = source / "scripts/council_protocol.py"
+        original = protocol.read_bytes()
+        changed = original.replace(b"DEFAULT_ROUNDS = 2\n", b"DEFAULT_ROUNDS = 3\n")
+        self.assertNotEqual(original, changed)
+        self.assertEqual(len(original), len(changed))
+        timestamp = 1_700_000_000
+        os.utime(protocol, (timestamp, timestamp))
+        prefix = str(self.base.resolve() / "definition-cache")
+        with mock.patch.object(sys, "pycache_prefix", prefix):
+            py_compile.compile(str(protocol), doraise=True)
+        protocol.write_bytes(changed)
+        os.utime(protocol, (timestamp, timestamp))
+        env = dict(os.environ, PYTHONPYCACHEPREFIX=prefix)
+
+        def run(*args):
+            return subprocess.run([sys.executable, "-B", *args], cwd=source,
+                                  env=env, capture_output=True, text=True)
+
+        cached = run("-c", "import sys; sys.path.insert(0, 'scripts'); "
+                     "import council_protocol; print(council_protocol.DEFAULT_ROUNDS)")
+        self.assertEqual(cached.returncode, 0, cached.stderr)
+        self.assertEqual(cached.stdout.strip(), "2")
+        checked = run("scripts/generate_protocol.py", "--check")
+        self.assertNotEqual(checked.returncode, 0)
+        self.assertIn("TypeScript protocol is stale", checked.stderr)
+        output = self.base / "canonical-output"
+        rejected = run("scripts/build_release.py", "--output", str(output))
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertIn("TypeScript protocol is stale", rejected.stderr)
+        self.assertFalse(output.exists())
+        generated = run("scripts/generate_protocol.py")
+        self.assertEqual(generated.returncode, 0, generated.stderr)
+        exported = run("scripts/build_release.py", "--output", str(output))
+        self.assertEqual(exported.returncode, 0, exported.stderr)
+        self.assertIn(b"DEFAULT_ROUNDS = 3\n", (output / "payload/scripts/council_protocol.py").read_bytes())
+        self.assertIn("export const DEFAULT_ROUNDS = 3\n", (output / "opencode/council_protocol.ts").read_text())
+
     def test_stamping_invalidates_same_second_runtime_bytecode(self):
         source = self.source.resolve()
         python_sources = [source / name for name in RUNTIME_FILES if name.endswith(".py")]

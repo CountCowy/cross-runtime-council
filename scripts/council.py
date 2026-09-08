@@ -77,7 +77,7 @@ from council_protocol import (
 )
 import council_protocol
 
-PACKAGE_ID = "5084b61744d9c4b2885c0bfe81bbb81b57ee0ef2f1fffdc924998a4032e21ceb"
+PACKAGE_ID = "250c703fbe6e229aa76b87af8d8044a5293bb5e5670615a45bef02a5befffccf"
 RUNTIME_COHORT = "5f0deaae436f790f960a08f2ec51d6e112379f6b73b6d6084aa5928f2179950a"
 if RUNTIME_COHORT != council_protocol.RUNTIME_COHORT:
     raise RuntimeError("Council broker/helper cohort mismatch; refresh the complete runtime set")

@@ -63,7 +63,7 @@ def tracked_inputs(root):
 def release(root):
     inputs = tracked_inputs(root)
     generated = inputs["scripts/council_protocol.ts"].decode()
-    if normalized_stamps(generated) != render():
+    if normalized_stamps(generated) != render(inputs["scripts/council_protocol.py"]):
         raise ValueError("TypeScript protocol is stale; run python3 scripts/generate_protocol.py")
     normalized = dict(inputs)
     for name in RUNTIME_FILES:
