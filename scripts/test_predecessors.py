@@ -450,7 +450,7 @@ class PredecessorTests(unittest.TestCase):
                     self.assertEqual(len(broker.status()["dialogues"]), 1)
                     self.assertTrue(
                         all(
-                            not route.get("_admitted")
+                            route.get("runtime_cohort") != council.RUNTIME_COHORT
                             for route in broker.registrations.values()
                         )
                     )

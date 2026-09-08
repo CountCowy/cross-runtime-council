@@ -280,15 +280,6 @@ def restart_broker(fixture):
     return fixture.broker
 
 
-def rebind_codex_fixture_routes(broker):
-    """The test actors reauthenticate their known exact routes after restart."""
-    for participant, capability in (("alpha", CAP_ALPHA), ("beta", CAP_BETA), ("gamma", CAP_GAMMA)):
-        route = broker.registrations.get(participant)
-        if route and route["runtime"] == "codex":
-            broker.bind("codex", participant, route["label"], route["project"],
-                        target_thread_id=route["target_thread_id"], binding_capability=capability)
-
-
 def current_request(request):
     # Simulate the current adapter's private transport metadata in direct tests.
     return dict(request, runtime_cohort=council.RUNTIME_COHORT)
@@ -813,7 +804,6 @@ class CouncilBrokerTests(unittest.TestCase):
             )
 
             restarted = restart_broker(self)
-            rebind_codex_fixture_routes(restarted)
             self.assertEqual(len(restarted.registration_restore_errors), 1)
             self.assertIn("alpha", restarted.registrations)
             self.assertIn("beta", restarted.registrations)
@@ -2516,7 +2506,6 @@ class CouncilBrokerTests(unittest.TestCase):
         self.assertEqual(read_json(completion_paths[0])["status"], "staged")
 
         restarted = restart_broker(self)
-        rebind_codex_fixture_routes(restarted)
         self.assertEqual(read_json(completion_paths[0])["status"], "pending")
         duplicate = restarted.submit(
             dialogue, "beta", "representation_check", 1, check
@@ -3281,7 +3270,6 @@ class CouncilBrokerTests(unittest.TestCase):
         self.broker.submit(dialogue, "alpha", "proposal", 0, proposal("alpha"))
 
         restarted = restart_broker(self)
-        rebind_codex_fixture_routes(restarted)
         self.assertEqual(restarted.registration_restore_errors, [])
         self.assertEqual(
             restarted.registrations["beta"]["target_thread_id"], "thread-beta"
@@ -3304,7 +3292,6 @@ class CouncilBrokerTests(unittest.TestCase):
                 self.broker.submit(dialogue, "beta", "proposal", 0, proposal("beta"))
 
         restarted = restart_broker(self)
-        rebind_codex_fixture_routes(restarted)
         manifest = restarted.status(dialogue)
         self.assertEqual(manifest["phase"], "collecting_proposals")
         staged_exchange = [
@@ -3334,7 +3321,6 @@ class CouncilBrokerTests(unittest.TestCase):
                 self.broker.submit(dialogue, "beta", "proposal", 0, proposal("beta"))
 
         restarted = restart_broker(self)
-        rebind_codex_fixture_routes(restarted)
         self.assertEqual(restarted.status(dialogue)["phase"], "collecting_exchange")
         claimed = restarted.wait("alpha", 0)
         self.assertEqual(claimed["message"]["kind"], "exchange_request")
@@ -3368,7 +3354,6 @@ class CouncilBrokerTests(unittest.TestCase):
         self.assertEqual(extended["authorized_rounds"], 2)
         self.assertEqual({read_json(path)["status"] for path in staged}, {"pending"})
         restarted = restart_broker(self)
-        rebind_codex_fixture_routes(restarted)
         self.assertEqual(
             restarted.wait("alpha", 0)["message"]["kind"], "exchange_request"
         )

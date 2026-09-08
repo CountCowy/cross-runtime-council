@@ -85,10 +85,15 @@ Clients construct top-level `runtime_cohort` metadata privately. The broker
 checks existing signed-runtime/capability and exact-scope authority first, then
 checks request and admitted-route cohorts before dispatch. A matching cohort
 cannot grant authority. Rejected incompatible requests do not expire routes.
-Persisted routes are authorization tombstones after restart; even a matching
-stored cohort requires ordinary authenticated rebind. Automatic delivery/wakes
-skip unadmitted/incompatible recipients. Router claim/ack likewise requires
-current authenticated admission. Package-only changes remain compatible when
+Persisted matching-cohort routes retain their prior authorization after restart;
+participant operations still prove their retained capability and current request
+cohort. Authenticated router claim/ack checks its retained capability and both
+stored/request cohorts on every call, so a surviving router needs no bootstrap
+RPC after a compatible restart. Compatible idle Codex recipients remain wakeable.
+Legacy or incompatible route cohorts remain tombstones until ordinary
+authenticated bind/rebind. Restored Claude/OpenCode relay secrets and transport
+readiness remain absent until exact-session relay reauthentication; automatic
+delivery skips those transports and all incompatible recipients. Package-only changes remain compatible when
 the runtime cohort is unchanged.
 
 The OpenCode plugin puts its executed cohort in bridge stdin. A newly launched

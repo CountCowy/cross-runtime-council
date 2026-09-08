@@ -782,7 +782,7 @@ class CohortTests(unittest.TestCase):
         self.assertEqual(caught.exception.reason, "binding_expired")
         self.assertEqual(inventory(self.root), before)
 
-    def test_restored_current_and_legacy_routes_require_authenticated_rebind(self):
+    def test_same_cohort_restores_but_legacy_routes_require_authenticated_rebind(self):
         for legacy in (False, True):
             self.broker.close()
             if legacy:
@@ -796,9 +796,12 @@ class CohortTests(unittest.TestCase):
                 "runtime_cohort": council.RUNTIME_COHORT,
                 "arguments": {"participant": "alpha", "_auth_capability": CAP},
             }
-            with self.assertRaises(council.CouncilError) as caught:
-                self.broker.handle(request)
-            self.assertEqual(caught.exception.reason, "version_mismatch")
+            if legacy:
+                with self.assertRaises(council.CouncilError) as caught:
+                    self.broker.handle(request)
+                self.assertEqual(caught.exception.reason, "version_mismatch")
+            else:
+                self.assertEqual(self.broker.handle(request), {"message": None})
             args = dict(
                 runtime="codex",
                 participant="alpha",
@@ -837,6 +840,196 @@ class CohortTests(unittest.TestCase):
             )
             self.assertTrue(result["duplicate"])
             self.assertEqual(self.broker.handle(request), {"message": None})
+
+    def test_surviving_mcp_router_participants_and_idle_codex_wake_after_restart(self):
+        import council_mcp as mcp
+
+        self.broker.close()
+        self.root = Path(self.temp.name) / "mcp-state"
+        self.broker = council.CouncilBroker(self.root)
+        self.broker.configure_router("router-task")
+        owner = self
+        calls = []
+
+        class LocalClient:
+            def request(self, action, **arguments):
+                calls.append(action)
+                return owner.broker.handle(
+                    {
+                        "action": action,
+                        "runtime_cohort": council.RUNTIME_COHORT,
+                        "arguments": arguments,
+                    },
+                    trusted_mcp_runtime=arguments.get("runtime")
+                    if action == "bind"
+                    else "codex"
+                    if action == "router_bind"
+                    else None,
+                )
+
+        def tool(name, args, actor):
+            value = mcp.call_tool(name, args, {"threadId": actor})
+            return json.loads(value["content"][0]["text"])
+
+        with (
+            mock.patch.dict(mcp.ROUTER_CAPABILITIES, {}, clear=True),
+            mock.patch.dict(mcp.PENDING_ROUTER_ROTATIONS, {}, clear=True),
+            mock.patch.dict(mcp.BINDING_CAPABILITIES, {}, clear=True),
+            mock.patch.dict(mcp.PENDING_BINDING_ROTATIONS, {}, clear=True),
+            mock.patch("council_mcp.CouncilClient", return_value=LocalClient()),
+        ):
+            for actor in ("alpha", "beta"):
+                tool(
+                    "council_bind",
+                    {
+                        "runtime": "codex",
+                        "participant": actor,
+                        "label": actor,
+                        "project": "fixture",
+                    },
+                    "thread-" + actor,
+                )
+            calls.clear()
+            self.assertEqual(
+                tool("council_pending_wakes", {"limit": 20}, "router-task"),
+                {"notifications": []},
+            )
+            self.assertEqual(calls, ["router_bind", "pending_wakes"])
+            router_capability = mcp.ROUTER_CAPABILITIES["router-task"]
+            participant_capabilities = dict(mcp.BINDING_CAPABILITIES)
+            dialogue = tool(
+                "council_start",
+                {
+                    "initiator": "alpha",
+                    "peer": "beta",
+                    "topic": "Restart",
+                    "brief": "Wake the idle peer",
+                    "premises": [],
+                },
+                "thread-alpha",
+            )["dialogue_id"]
+            router_before = (self.root / "router.json").read_bytes()
+            routes_before = {
+                p.name: p.read_bytes() for p in (self.root / "registrations").iterdir()
+            }
+            self.broker.close()
+            self.broker = council.CouncilBroker(self.root)
+            calls.clear()
+            # Beta has sent no request since restart. The authenticated router
+            # can still wake its compatible, previously authorized exact task.
+            notifications = tool("council_pending_wakes", {"limit": 20}, "router-task")[
+                "notifications"
+            ]
+            self.assertEqual(calls, ["pending_wakes"])
+            self.assertEqual(len(notifications), 1)
+            self.assertEqual(notifications[0]["target_thread_id"], "thread-beta")
+            self.assertEqual(mcp.ROUTER_CAPABILITIES["router-task"], router_capability)
+            self.assertEqual(mcp.BINDING_CAPABILITIES, participant_capabilities)
+            self.assertEqual((self.root / "router.json").read_bytes(), router_before)
+            self.assertEqual(
+                {
+                    p.name: p.read_bytes()
+                    for p in (self.root / "registrations").iterdir()
+                },
+                routes_before,
+            )
+            notice = notifications[0]
+            tool(
+                "council_wake_ack",
+                {
+                    key: notice[key]
+                    for key in (
+                        "participant",
+                        "message_id",
+                        "notification_id",
+                        "notification_kind",
+                    )
+                }
+                | {"delivered": True},
+                "router-task",
+            )
+            message = tool(
+                "council_wait",
+                {"participant": "beta", "timeout_seconds": 0},
+                "thread-beta",
+            )["message"]
+            self.assertEqual(message["dialogue_id"], dialogue)
+            self.assertEqual(message["kind"], "proposal_request")
+            self.assertEqual(
+                len(
+                    tool("council_status", {"participant": "alpha"}, "thread-alpha")[
+                        "dialogues"
+                    ]
+                ),
+                1,
+            )
+            self.assertNotIn("router_bind", calls)
+
+    def test_authenticated_router_does_not_wake_legacy_or_incompatible_routes(self):
+        for cohort in (None, "0" * 64):
+            self.broker.close()
+            self.root = Path(self.temp.name) / (
+                "recipient-legacy" if cohort is None else "recipient-old"
+            )
+            self.broker = council.CouncilBroker(self.root)
+            bind(self.broker)
+            bind(
+                self.broker,
+                participant="beta",
+                target_thread_id="exact-beta",
+                binding_capability=OTHER,
+            )
+            self.broker.configure_router("router")
+            self.broker.router_bind("router", CAP)
+            self.broker.start(
+                "alpha",
+                "beta",
+                "Recipient cohort",
+                "Do not wake incompatible state",
+                [],
+            )
+            self.broker.close()
+            path = self.root / "registrations/beta.json"
+            route = json.loads(path.read_text())
+            if cohort is None:
+                route.pop("runtime_cohort")
+            else:
+                route["runtime_cohort"] = cohort
+            write(path, route)
+            self.broker = council.CouncilBroker(self.root)
+            before = inventory(self.root)
+            request = {
+                "action": "pending_wakes",
+                "runtime_cohort": council.RUNTIME_COHORT,
+                "arguments": {"_router_capability": CAP},
+            }
+            self.assertEqual(self.broker.handle(request), {"notifications": []})
+            self.assertEqual(inventory(self.root), before)
+            with self.assertRaises(council.CouncilError) as rejected:
+                self.broker.handle(
+                    {
+                        "action": "wait",
+                        "runtime_cohort": council.RUNTIME_COHORT,
+                        "arguments": {"participant": "beta", "_auth_capability": OTHER},
+                    }
+                )
+            self.assertEqual(rejected.exception.reason, "version_mismatch")
+            self.broker.handle(
+                {
+                    "action": "bind",
+                    "runtime_cohort": council.RUNTIME_COHORT,
+                    "arguments": {
+                        "runtime": "codex",
+                        "participant": "beta",
+                        "label": "Beta",
+                        "project": "fixture",
+                        "target_thread_id": "exact-beta",
+                        "binding_capability": OTHER,
+                    },
+                },
+                trusted_mcp_runtime="codex",
+            )
+            self.assertEqual(len(self.broker.handle(request)["notifications"]), 1)
 
     def test_router_authentication_restoration_and_rotation(self):
         self.broker.configure_router("router")

@@ -25,7 +25,6 @@ from recovery_invariants import MANIFEST_PHASES, check_state_root
 from test_council import restart_broker
 from test_council import (
     CAP_ALPHA,
-    CAP_BETA,
     TerminalDialogueFixture,
     convergence_challenge,
     exchange,
@@ -111,10 +110,6 @@ class CrashMatrixTests(TerminalDialogueFixture):
                 finally:
                     council.FAILPOINT_HOOK = None
                 recovered = restart_broker(self)
-                for actor, capability in (("alpha", CAP_ALPHA), ("beta", CAP_BETA), ("gamma", CAP_GAMMA), ("delta", CAP_DELTA)):
-                    route = recovered.registrations.get(actor)
-                    if route and route["runtime"] == "codex":
-                        recovered.bind("codex", actor, route["label"], route["project"], target_thread_id=route["target_thread_id"], binding_capability=capability)
                 self.assertEqual(check_state_root(self.root), [])
                 postcondition(recovered, context, crashed)
                 self.assertEqual(check_state_root(self.root), [])

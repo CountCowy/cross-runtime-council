@@ -82,8 +82,8 @@ from council_protocol import (
 )
 import council_protocol
 
-PACKAGE_ID = "801cb9edb7ad4fd37cb3060aa32264bb7d18f8a37607d18cc5336794b66eea73"
-RUNTIME_COHORT = "e5eed435bb8e236e619eb86e6834789f5bc3e055526219263d72c095c43139b0"
+PACKAGE_ID = "003cbb6ce7f17cf151a8080a7779620e64e977994490bcc0db6fac6b46f296ca"
+RUNTIME_COHORT = "d2a7edbc35ad87c89677773c90d815182afe3e4f31f5ce44c28e102b82a433df"
 if RUNTIME_COHORT != council_protocol.RUNTIME_COHORT or RUNTIME_COHORT != council_admission.RUNTIME_COHORT:
     raise RuntimeError("Council broker/helper cohort mismatch; refresh the complete runtime set")
 
@@ -1284,7 +1284,6 @@ class CouncilBroker:
         self.dialogues.mkdir(exist_ok=True, mode=0o700)
         self.outbox.mkdir(exist_ok=True, mode=0o700)
         self.registration_routes.mkdir(exist_ok=True, mode=0o700)
-        self._router_admitted = False
         self.registrations: Dict[str, Dict[str, Any]] = {}
         self.registration_restore_errors: List[str] = []
         self.corrupt_file_errors: List[str] = []
@@ -1588,7 +1587,6 @@ class CouncilBroker:
             "capability_hash": persisted_capability_hash,
             "binding_generation": binding_generation,
             "runtime_cohort": route.get("runtime_cohort"),
-            "_admitted": False,
         }
         if runtime in ("claude", "opencode"):
             expected_transport = (
@@ -1675,7 +1673,7 @@ class CouncilBroker:
             except (CouncilError, OSError, ValueError, TypeError, json.JSONDecodeError) as error:
                 self.registration_restore_errors.append("%s: %s" % (path.name, error))
 
-    def _registration(self, participant: str, *, mutate=True, require_admitted=True) -> Dict[str, Any]:
+    def _registration(self, participant: str, *, mutate=True, require_cohort=True) -> Dict[str, Any]:
         participant = safe_name(participant, "participant")
         with self.changed:
             registration = self.registrations.get(participant)
@@ -1692,7 +1690,7 @@ class CouncilBroker:
                     "participant binding expired: %s" % participant,
                     reason="binding_expired",
                 )
-            if require_admitted:
+            if require_cohort:
                 self._require_route_cohort(registration)
             return registration
 
@@ -1702,12 +1700,13 @@ class CouncilBroker:
             raise CouncilError("Council runtime cohort mismatch; refresh the complete runtime set", reason="version_mismatch")
 
     def _require_route_cohort(self, registration):
-        if not registration.get("_admitted"):
-            raise CouncilError("restored participant requires authenticated same-scope rebind", reason="version_mismatch")
-        self._require_cohort(registration.get("runtime_cohort"))
+        # Persisted current-cohort bindings retain their prior authorization.
+        # Each RPC still proves its capability before this compatibility check.
+        if registration.get("runtime_cohort") != RUNTIME_COHORT:
+            raise CouncilError("participant route requires authenticated same-scope rebind to the current cohort", reason="version_mismatch")
 
     def _authorize_participant(self, participant: str, capability: Any) -> str:
-        registration = self._registration(participant, mutate=False, require_admitted=False)
+        registration = self._registration(participant, mutate=False, require_cohort=False)
         if not isinstance(capability, str):
             raise CouncilError(
                 "this exact session is not authorized for participant %s" % participant,
@@ -1766,7 +1765,6 @@ class CouncilBroker:
                 self._require_cohort(_request_cohort)
                 config["runtime_cohort"] = _request_cohort
                 atomic_json(self.router_config_path, config)
-                self._router_admitted = True
                 return {"bound": True, "duplicate": True}
             if current_hash and (
                 not isinstance(previous_router_capability, str)
@@ -1780,12 +1778,11 @@ class CouncilBroker:
             self._require_cohort(_request_cohort)
             config["runtime_cohort"] = _request_cohort
             config["capability_hash"] = desired_hash
-            self._router_admitted = True
             config["bound_at"] = utc_now()
             atomic_json(self.router_config_path, config)
         return {"bound": True, "duplicate": False}
 
-    def _authorize_router(self, capability: Any) -> None:
+    def _authorize_router(self, capability: Any) -> Dict[str, Any]:
         config = self._router_config()
         expected = config.get("capability_hash")
         if not expected:
@@ -1794,6 +1791,7 @@ class CouncilBroker:
             raise CouncilError("this exact task is not authorized as the Council router")
         if not hmac.compare_digest(expected, capability_hash(capability)):
             raise CouncilError("this exact task is not authorized as the Council router")
+        return config
 
     def ping(self) -> Dict[str, Any]:
         with self.lock:
@@ -1859,7 +1857,6 @@ class CouncilBroker:
             ),
             "binding_generation": "gen-" + uuid.uuid4().hex,
             "runtime_cohort": _request_cohort,
-            "_admitted": True,
         }
         if runtime in ("claude", "opencode"):
             if (
@@ -1952,7 +1949,6 @@ class CouncilBroker:
                         ]
                     self._require_cohort(_request_cohort)
                     current["runtime_cohort"] = _request_cohort
-                    current["_admitted"] = True
                     self._persist_registration(current)
                     self._clear_registration_restore_error(participant)
                     retry = self.retry(participant)
@@ -2594,7 +2590,7 @@ class CouncilBroker:
         registration = self.registrations.get(recipient)
         if not registration or registration["lease_expires_epoch"] <= epoch_now():
             return
-        if not registration.get("_admitted") or registration.get("runtime_cohort") != RUNTIME_COHORT:
+        if registration.get("runtime_cohort") != RUNTIME_COHORT:
             return
         if not self._record_matches_registration(record, registration):
             record["last_error"] = (
@@ -2603,6 +2599,9 @@ class CouncilBroker:
             atomic_json(path, record)
             return
         if registration["runtime"] not in ("claude", "opencode"):
+            return
+        if not registration.get("transport_ready"):
+            # A compatible durable route does not resurrect its relay secret.
             return
         record["attempts"] += 1
         record["last_attempt_at"] = utc_now()
@@ -4902,7 +4901,6 @@ class CouncilBroker:
                 participant = participant_dir.name
                 registration = self.registrations.get(participant)
                 if (not registration or registration.get("runtime") != "codex"
-                        or not registration.get("_admitted")
                         or registration.get("runtime_cohort") != RUNTIME_COHORT):
                     continue
                 target_thread_id = registration.get("target_thread_id")
@@ -5194,11 +5192,9 @@ class CouncilBroker:
                 return method(**arguments)
         elif action in ("pending_wakes", "wake_ack"):
             with self.changed:
-                self._authorize_router(arguments.pop("_router_capability", None))
+                router = self._authorize_router(arguments.pop("_router_capability", None))
                 self._require_cohort(cohort)
-                if not self._router_admitted:
-                    raise CouncilError("restored router requires authenticated rebind", reason="version_mismatch")
-                self._require_cohort(self._router_config().get("runtime_cohort"))
+                self._require_cohort(router.get("runtime_cohort"))
                 return method(**arguments)
         elif action == "router_bind":
             if trusted_mcp_runtime != "codex":
