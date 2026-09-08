@@ -6,6 +6,7 @@ admission; no result of this harness authorizes managed binary rollback.
 """
 
 import copy
+from collections import Counter
 import hashlib
 import json
 from pathlib import Path
@@ -188,7 +189,7 @@ def validate_corpus(corpus):
         raise ValueError("incomplete actual submission corpus")
 
 
-def run_case(label, descriptor, corpus, name):
+def run_case(label, descriptor, corpus, name, after_reader=None):
     case = corpus["cases"][name]
     with tempfile.TemporaryDirectory(prefix="c1-reader-") as directory:
         base = Path(directory)
@@ -222,6 +223,8 @@ def run_case(label, descriptor, corpus, name):
         if response.returncode:
             raise AssertionError(response.stderr)
         result = json.loads(response.stdout)
+        if after_reader is not None:
+            after_reader(state)
         errors = []
         disposition = case["disposition"]
         if disposition == "constructor_refuses":
@@ -248,6 +251,14 @@ def run_case(label, descriptor, corpus, name):
                     or path
                     in ("router.json", "retention.json", "opencode-runtime.json")
                     or path.startswith(".council-lifecycle/")
+                    or (
+                        path.startswith("registrations/")
+                        and not (
+                            path == "registrations/alpha.json"
+                            and disposition
+                            in ("legacy_registration", "expired_registration")
+                        )
+                    )
                 )
                 if disposition == "delete" and path.startswith(
                     ("dialogues/", "outbox/")
@@ -261,6 +272,37 @@ def run_case(label, descriptor, corpus, name):
                     not target.is_file() or sha(target.read_bytes()) != digest
                 ):
                     errors.append("reader_sensitive_bytes_changed")
+                if disposition != "delete" and path.startswith("outbox/"):
+                    if not target.is_file():
+                        errors.append("outbox_record_lost")
+                    else:
+                        expected_record = json.loads(corpus["objects"][digest])
+                        observed_record = json.loads(target.read_text())
+                        for key in ("envelope", "transition_id"):
+                            if observed_record.get(key) != expected_record.get(key):
+                                errors.append("envelope_or_transition_changed")
+                if disposition != "delete" and path.endswith("audit.jsonl"):
+
+                    def events(text):
+                        values = []
+                        for line in text.splitlines():
+                            try:
+                                values.append(
+                                    json.dumps(json.loads(line), sort_keys=True)
+                                )
+                            except ValueError:
+                                continue  # Only the declared torn tail is discardable.
+                        return Counter(values)
+
+                    expected_events = events(corpus["objects"][digest])
+                    observed_events = (
+                        events(target.read_text()) if target.is_file() else Counter()
+                    )
+                    if any(
+                        observed_events[event] != count
+                        for event, count in expected_events.items()
+                    ):
+                        errors.append("audit_event_lost_changed_or_duplicated")
             # Constructor recovery may settle transport statuses/audits but never
             # changes participant scopes or creates a second logical submission.
             for path in (state / "dialogues").glob("dlg-*/manifest.json"):
@@ -268,15 +310,13 @@ def run_case(label, descriptor, corpus, name):
                     corpus["objects"][case["files"][str(path.relative_to(state))]]
                 )
                 current = json.loads(path.read_text())
-                for field in (
-                    "participant_scopes",
-                    "submissions",
-                    "extension_operations",
-                    "authorized_rounds",
-                    "dialogue_id",
-                ):
-                    if current.get(field) != previous.get(field):
-                        errors.append("logical_state_changed")
+                # Only audit-intent settlement and its modification timestamp
+                # may differ. Every other manifest field is reader-sensitive.
+                for value in (previous, current):
+                    value.pop("pending_audit_events", None)
+                    value.pop("updated_at", None)
+                if current != previous:
+                    errors.append("manifest_fields_changed")
             if (
                 disposition == "expired_registration"
                 and (state / "registrations/alpha.json").exists()
@@ -457,6 +497,33 @@ class PredecessorTests(unittest.TestCase):
         result = run_case("pre-c1", self.readers["pre-c1"], corpus, "triad-complete")
         self.assertIn("phase_changed", result["oracle_errors"])
         self.assertFalse(result["reader_supported"])
+
+    def test_reader_sensitive_field_loss_negative_controls(self):
+        def lose_manifest_field(state):
+            path = next((state / "dialogues").glob("dlg-*/manifest.json"))
+            value = json.loads(path.read_text())
+            value.pop("claim_ledger")
+            path.write_text(json.dumps(value))
+
+        def lose_envelope_payload(state):
+            path = next((state / "outbox").glob("*/*.json"))
+            value = json.loads(path.read_text())
+            value["envelope"].pop("payload")
+            path.write_text(json.dumps(value))
+
+        for mutation, error in (
+            (lose_manifest_field, "manifest_fields_changed"),
+            (lose_envelope_payload, "envelope_or_transition_changed"),
+        ):
+            result = run_case(
+                "pre-c1",
+                self.readers["pre-c1"],
+                self.corpus,
+                "triad-complete",
+                after_reader=mutation,
+            )
+            self.assertFalse(result["reader_supported"])
+            self.assertIn(error, result["oracle_errors"])
 
 
 if __name__ == "__main__":

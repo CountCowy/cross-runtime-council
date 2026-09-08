@@ -34,7 +34,7 @@ type BridgeResponse = {
   reason?: unknown
 }
 
-const PACKAGE_ID = "683fe8e084b075dc2b42e2bf276d6a97997b86d367d70b20a63d182deb51585e"
+const PACKAGE_ID = "801cb9edb7ad4fd37cb3060aa32264bb7d18f8a37607d18cc5336794b66eea73"
 const RUNTIME_COHORT = "e5eed435bb8e236e619eb86e6834789f5bc3e055526219263d72c095c43139b0"
 if (RUNTIME_COHORT !== PROTOCOL_COHORT || RUNTIME_COHORT !== REGISTRY_COHORT) {
   throw new Error("Council plugin/helper cohort mismatch; refresh the complete runtime set")
