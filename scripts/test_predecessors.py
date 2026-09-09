@@ -187,9 +187,33 @@ def validate_corpus(corpus):
         "revision_check",
     }:
         raise ValueError("incomplete actual submission corpus")
+    committed_case = corpus["cases"]["staged-after-commit"]
+    manifests = [
+        json.loads(corpus["objects"][digest])
+        for path, digest in committed_case["files"].items()
+        if path.endswith("manifest.json")
+    ]
+    staged = [
+        json.loads(corpus["objects"][digest])
+        for path, digest in committed_case["files"].items()
+        if path.startswith("outbox/")
+        and json.loads(corpus["objects"][digest]).get("status") == "staged"
+    ]
+    if (
+        len(manifests) != 1
+        or not isinstance(manifests[0].get("committed_transition_id"), str)
+        or not staged
+        or any(
+            record.get("transition_id") != manifests[0]["committed_transition_id"]
+            for record in staged
+        )
+    ):
+        raise ValueError("staged-after-commit is not a committed transition fixture")
 
 
-def run_case(label, descriptor, corpus, name, after_reader=None):
+def run_case(
+    label, descriptor, corpus, name, after_reader=None, worker_overrides=None
+):
     case = corpus["cases"][name]
     with tempfile.TemporaryDirectory(prefix="c1-reader-") as directory:
         base = Path(directory)
@@ -214,6 +238,7 @@ def run_case(label, descriptor, corpus, name, after_reader=None):
                     "reader": descriptor,
                     "clock_epoch": corpus["clock_epoch"],
                     "case": name,
+                    **(worker_overrides or {}),
                 }
             ),
             capture_output=True,
@@ -334,6 +359,21 @@ def run_case(label, descriptor, corpus, name, after_reader=None):
                 ]
                 if not any(record["status"] == "aborted" for record in records):
                     errors.append("uncommitted_stage_activated")
+            if name == "staged-after-commit":
+                manifest = json.loads(
+                    next((state / "dialogues").glob("dlg-*/manifest.json")).read_text()
+                )
+                committed = manifest["committed_transition_id"]
+                matching = [
+                    json.loads(path.read_text())
+                    for path in (state / "outbox").glob("*/*.json")
+                    if json.loads(path.read_text()).get("transition_id") == committed
+                ]
+                if not matching or any(
+                    record.get("status") in ("staged", "aborted")
+                    for record in matching
+                ):
+                    errors.append("committed_stage_not_activated")
             if name == "delivered-lost-ack":
                 records = [
                     json.loads(path.read_text())
@@ -524,6 +564,22 @@ class PredecessorTests(unittest.TestCase):
             )
             self.assertFalse(result["reader_supported"])
             self.assertIn(error, result["oracle_errors"])
+
+    def test_committed_stage_activation_and_suppression_control(self):
+        for label, descriptor in self.readers.items():
+            with self.subTest(reader=label):
+                result = run_case(
+                    label,
+                    descriptor,
+                    self.corpus,
+                    "staged-after-commit",
+                    worker_overrides={"suppress_transition_activation": True},
+                )
+                self.assertTrue(result["activation_suppressed"])
+                self.assertFalse(result["reader_supported"])
+                self.assertIn(
+                    "committed_stage_not_activated", result["oracle_errors"]
+                )
 
 
 if __name__ == "__main__":

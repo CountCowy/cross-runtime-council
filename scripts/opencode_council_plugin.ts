@@ -34,8 +34,16 @@ type BridgeResponse = {
   reason?: unknown
 }
 
-const PACKAGE_ID = "003cbb6ce7f17cf151a8080a7779620e64e977994490bcc0db6fac6b46f296ca"
-const RUNTIME_COHORT = "d2a7edbc35ad87c89677773c90d815182afe3e4f31f5ce44c28e102b82a433df"
+type DaemonStartupStatus = {
+  ok: boolean
+  reason: ErrorReason | null
+  retryable: boolean
+}
+
+const PACKAGE_ID = "2a69398b06344529865fa5f262b43cb12eeabaa4f39d2221272cbea89d752a29"
+const RUNTIME_COHORT = "5dd6570819f2f656374253e7385569f501a94338e00d5fb0eaf24b0960d84bf9"
+const DAEMON_STARTUP_TIMEOUT_MS = 3000
+const MAX_DAEMON_STARTUP_STATUS_BYTES = 1024
 if (RUNTIME_COHORT !== PROTOCOL_COHORT || RUNTIME_COHORT !== REGISTRY_COHORT) {
   throw new Error("Council plugin/helper cohort mismatch; refresh the complete runtime set")
 }
@@ -138,6 +146,92 @@ async function rawBridge(action: string, args: Record<string, unknown>) {
 
 let brokerStartup: Promise<void> | undefined
 
+async function readDaemonStartupStatus(
+  stream: ReadableStream<Uint8Array>,
+  deadline: number,
+): Promise<DaemonStartupStatus> {
+  const reader = stream.getReader()
+  let timedOut = false
+  let encoded = new Uint8Array()
+  const timeout = setTimeout(() => {
+    timedOut = true
+    void reader.cancel()
+  }, Math.max(0, deadline - performance.now()))
+  try {
+    while (encoded.byteLength <= MAX_DAEMON_STARTUP_STATUS_BYTES) {
+      const { value, done } = await reader.read()
+      if (done) break
+      if (value) {
+        const combined = new Uint8Array(encoded.byteLength + value.byteLength)
+        combined.set(encoded)
+        combined.set(value, encoded.byteLength)
+        encoded = combined
+      }
+      if (encoded.byteLength > MAX_DAEMON_STARTUP_STATUS_BYTES) {
+        throw new BridgeError("Council broker returned oversized startup status", "internal", "malformed_response")
+      }
+      const newline = encoded.indexOf(10)
+      if (newline >= 0) {
+        let status: unknown
+        try {
+          status = JSON.parse(new TextDecoder().decode(encoded.slice(0, newline)))
+        } catch {
+          throw new BridgeError("Council broker returned malformed startup status", "internal", "malformed_response")
+        }
+        if (
+          !status || typeof status !== "object" || Array.isArray(status)
+          || typeof (status as { ok?: unknown }).ok !== "boolean"
+          || typeof (status as { retryable?: unknown }).retryable !== "boolean"
+        ) {
+          throw new BridgeError("Council broker returned invalid startup status", "internal", "malformed_response")
+        }
+        const rawReason = (status as { reason?: unknown }).reason
+        if ((status as { ok: boolean }).ok && (rawReason !== null || (status as { retryable: boolean }).retryable)) {
+          throw new BridgeError("Council broker returned invalid startup status", "internal", "malformed_response")
+        }
+        if (!(status as { ok: boolean }).ok && (typeof rawReason !== "string" || normalizeErrorReason(rawReason) !== rawReason)) {
+          throw new BridgeError("Council broker returned invalid startup status", "internal", "malformed_response")
+        }
+        return {
+          ok: (status as { ok: boolean }).ok,
+          reason: rawReason === null ? null : normalizeErrorReason(rawReason),
+          retryable: (status as { retryable: boolean }).retryable,
+        }
+      }
+    }
+  } finally {
+    clearTimeout(timeout)
+    await reader.cancel().catch(() => {})
+    reader.releaseLock()
+  }
+  throw new BridgeError(
+    timedOut ? "Council broker startup status timed out" : "Council broker startup status ended early",
+    "internal",
+    "broker_unavailable",
+  )
+}
+
+async function waitForDaemonStartupExit(exited: Promise<number>, deadline: number): Promise<number> {
+  let timeout: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      exited,
+      new Promise<number>((_resolve, reject) => {
+        timeout = setTimeout(
+          () => reject(new BridgeError(
+            "Council broker startup child did not exit after refusal",
+            "internal",
+            "broker_unavailable",
+          )),
+          Math.max(0, deadline - performance.now()),
+        )
+      }),
+    ])
+  } finally {
+    if (timeout) clearTimeout(timeout)
+  }
+}
+
 async function ensureBroker() {
   try {
     await rawBridge("ping", {})
@@ -147,24 +241,60 @@ async function ensureBroker() {
   }
   if (!brokerStartup) {
     brokerStartup = (async () => {
-      Bun.spawn(
-        ["python3", brokerPath, "daemon", "--state-root", stateRoot],
-        { stdin: "ignore", stdout: "ignore", stderr: "ignore" },
+      const startupDeadline = performance.now() + DAEMON_STARTUP_TIMEOUT_MS
+      const daemon = Bun.spawn(
+        ["python3", brokerPath, "daemon", "--state-root", stateRoot, "--startup-report"],
+        { stdin: "ignore", stdout: "pipe", stderr: "ignore" },
       )
-      let lastError: unknown
-      for (let attempt = 0; attempt < 60; attempt += 1) {
-        await new Promise<void>((resolve) => setTimeout(resolve, 50))
-        try {
-          await rawBridge("ping", {})
-          return
-        } catch (error) {
-          if (!(error instanceof BridgeError) || !["broker_unavailable", "transport_lost"].includes(error.reason)) throw error
-          lastError = error
+      let status: DaemonStartupStatus
+      try {
+        status = await readDaemonStartupStatus(
+          daemon.stdout as ReadableStream<Uint8Array>,
+          startupDeadline,
+        )
+      } catch (error) {
+        if (error instanceof BridgeError && error.reason === "malformed_response") {
+          daemon.kill()
+          try {
+            await waitForDaemonStartupExit(daemon.exited, performance.now() + 1000)
+          } catch {
+            // The bounded startup error remains authoritative.
+          }
         }
+        throw error
       }
-      throw lastError instanceof Error
-        ? lastError
-        : new BridgeError("Council broker failed to start", "internal")
+      if (!status.ok) {
+        const exitCode = await waitForDaemonStartupExit(daemon.exited, startupDeadline)
+        if (exitCode === 0) {
+          throw new BridgeError(
+            "Council broker startup child reported refusal with a successful exit",
+            "internal",
+            "malformed_response",
+          )
+        }
+        if (!status.retryable) {
+          throw new BridgeError(
+            `Council broker startup failed: ${status.reason}`,
+            "rejected",
+            status.reason,
+          )
+        }
+        let lastError: unknown
+        while (performance.now() < startupDeadline) {
+          await new Promise<void>((resolve) => setTimeout(resolve, 50))
+          try {
+            await rawBridge("ping", {})
+            return
+          } catch (error) {
+            if (!(error instanceof BridgeError) || !["broker_unavailable", "transport_lost"].includes(error.reason)) throw error
+            lastError = error
+          }
+        }
+        throw lastError instanceof Error
+          ? lastError
+          : new BridgeError("Council broker startup race did not become ready", "internal", "broker_unavailable")
+      }
+      await rawBridge("ping", {})
     })().finally(() => {
       brokerStartup = undefined
     })

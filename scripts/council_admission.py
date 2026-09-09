@@ -15,17 +15,25 @@ import re
 import stat
 import threading
 
-PACKAGE_ID = "003cbb6ce7f17cf151a8080a7779620e64e977994490bcc0db6fac6b46f296ca"
-RUNTIME_COHORT = "d2a7edbc35ad87c89677773c90d815182afe3e4f31f5ce44c28e102b82a433df"
+import council_protocol as protocol
+
+PACKAGE_ID = "2a69398b06344529865fa5f262b43cb12eeabaa4f39d2221272cbea89d752a29"
+RUNTIME_COHORT = "5dd6570819f2f656374253e7385569f501a94338e00d5fb0eaf24b0960d84bf9"
 NAMESPACE = ".council-lifecycle"
 _LEASE_PROOF = object()
 MAX_METADATA_BYTES = 1024 * 1024
+RETENTION_MAX_DAYS = 3650
 ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,95}\Z")
 HASH_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
+NAME_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,79}\Z")
 
 
 class AdmissionError(ValueError):
     reason = "maintenance_required"
+
+    def __init__(self, *args, retryable=False):
+        super().__init__(*args)
+        self.retryable = retryable
 
 
 def identity(details):
@@ -41,6 +49,147 @@ def finite_number(value):
         return math.isfinite(value)
     except OverflowError:
         return False
+
+
+def validated_name(value, field):
+    if not isinstance(value, str) or not NAME_PATTERN.fullmatch(value):
+        raise AdmissionError(
+            "%s must match [A-Za-z0-9][A-Za-z0-9_.-]{0,79}" % field
+        )
+    return value
+
+
+def validated_text(value, field):
+    if (
+        not isinstance(value, str)
+        or not value.strip()
+        or len(value.encode("utf-8")) > protocol.MAX_TEXT_BYTES
+    ):
+        raise AdmissionError("%s must be nonempty bounded text" % field)
+    return value
+
+
+def validated_hash(value, field):
+    if not isinstance(value, str) or not HASH_PATTERN.fullmatch(value):
+        raise AdmissionError("%s must be a lowercase SHA-256 digest" % field)
+    return value
+
+
+def validate_retention_config(config):
+    if not isinstance(config, dict):
+        raise AdmissionError("retention configuration must be an object")
+    days = config.get("days")
+    if type(days) is not int or not 1 <= days <= RETENTION_MAX_DAYS:
+        raise AdmissionError(
+            "retention days must be an integer between 1 and %d"
+            % RETENTION_MAX_DAYS
+        )
+    return days
+
+
+def validate_router_config(config):
+    if not isinstance(config, dict):
+        raise AdmissionError("Council router configuration is invalid")
+    result = dict(config)
+    result["target_thread_id"] = validated_name(
+        config.get("target_thread_id"), "router target_thread_id"
+    )
+    capability = config.get("capability_hash")
+    if capability is not None:
+        validated_hash(capability, "Council router capability configuration")
+    return result
+
+
+def validate_opencode_config(config):
+    if not isinstance(config, dict):
+        raise AdmissionError("OpenCode configuration must be an object")
+    executable = validated_text(config.get("executable"), "OpenCode executable")
+    if not Path(executable).is_absolute():
+        raise AdmissionError("OpenCode executable must be an absolute path")
+    validated_hash(config.get("sha256"), "OpenCode executable hash")
+    cdhash = validated_text(config.get("cdhash"), "OpenCode executable cdhash")
+    if not re.fullmatch(r"[0-9a-f]+", cdhash):
+        raise AdmissionError("OpenCode executable cdhash must be lowercase hexadecimal")
+    if type(config.get("configured_at_epoch")) is not int:
+        raise AdmissionError("OpenCode configured_at_epoch must be an integer")
+    return dict(config)
+
+
+def validate_persisted_registration(route):
+    """Pure persisted-route validator shared by the broker and inspector."""
+    if not isinstance(route, dict):
+        raise AdmissionError("registration route must be an object")
+    runtime = validated_text(route.get("runtime"), "runtime").lower()
+    if runtime not in ("claude", "codex", "opencode"):
+        raise AdmissionError("runtime must be claude, codex, or opencode")
+    participant = validated_name(route.get("participant"), "participant")
+    lease_minutes = route.get("lease_minutes")
+    if (
+        type(lease_minutes) is not int
+        or not 1 <= lease_minutes <= protocol.MAX_LEASE_MINUTES
+    ):
+        raise AdmissionError("invalid persisted lease_minutes")
+    expiry = route.get("lease_expires_epoch")
+    if not finite_number(expiry):
+        raise AdmissionError("invalid persisted lease expiry")
+    generation = route.get("binding_generation")
+    if generation is not None:
+        generation = validated_name(generation, "persisted binding_generation")
+    cohort = route.get("runtime_cohort")
+    if cohort is not None:
+        validated_hash(cohort, "persisted runtime cohort")
+    registration = {
+        "runtime": runtime,
+        "participant": participant,
+        "label": validated_text(route.get("label"), "label"),
+        "project": validated_text(route.get("project"), "project"),
+        "bound_at": validated_text(route.get("bound_at"), "bound_at"),
+        "lease_minutes": lease_minutes,
+        "lease_expires_epoch": float(expiry),
+        "capability_hash": validated_hash(
+            route.get("capability_hash"), "persisted registration capability"
+        ),
+        "binding_generation": generation,
+        "runtime_cohort": cohort,
+    }
+    if runtime == "codex":
+        registration["target_thread_id"] = validated_name(
+            route.get("target_thread_id"), "target_thread_id"
+        )
+        return registration
+    expected_transport = (
+        "claude_mcp_child_relay"
+        if runtime == "claude"
+        else "opencode_plugin_relay"
+    )
+    if route.get("transport") != expected_transport:
+        raise AdmissionError("persisted session relay transport is invalid")
+    relay_path = Path(validated_text(route.get("relay_path"), "relay_path")).expanduser()
+    if not relay_path.is_absolute():
+        raise AdmissionError("persisted session relay path must be absolute")
+    relay_pid = route.get("relay_pid")
+    relay_start = route.get("relay_process_start_epoch")
+    if (
+        type(relay_pid) is not int
+        or relay_pid <= 1
+        or type(relay_start) is not int
+    ):
+        raise AdmissionError("persisted relay process identity is invalid")
+    registration.update(
+        transport=expected_transport,
+        relay_path=str(relay_path),
+        relay_pid=relay_pid,
+        relay_process_start_epoch=relay_start,
+    )
+    if runtime == "claude":
+        registration["relay_owner_hash"] = validated_hash(
+            route.get("relay_owner_hash"), "persisted Claude relay owner"
+        )
+    else:
+        registration["target_session_id"] = validated_name(
+            route.get("target_session_id"), "target_session_id"
+        )
+    return registration
 
 
 def no_duplicates(pairs):
@@ -286,8 +435,13 @@ class WriterLease:
             while self._active:
                 self._condition.wait()
             if not self.closed:
-                os.close(self.fd)
-                self.closed = True
+                try:
+                    # The owner's explicit unlock releases the shared open-file
+                    # description even when an unrelated fork inherited the fd.
+                    fcntl.flock(self.fd, fcntl.LOCK_UN)
+                finally:
+                    os.close(self.fd)
+                    self.closed = True
 
     def __enter__(self):
         return self.validate()
@@ -317,7 +471,8 @@ def acquire_writer_lease(state_root):
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError as error:
             raise AdmissionError(
-                "broker lifetime lock is already held or unavailable"
+                "broker lifetime lock is already held or unavailable",
+                retryable=True,
             ) from error
         lease = WriterLease(root, fd, _proof=_LEASE_PROOF)
         lease.validate()

@@ -5094,9 +5094,11 @@ class CouncilBrokerTests(unittest.TestCase):
         handler = BrokerRequestHandler.__new__(BrokerRequestHandler)
         handler.request = mock.Mock()
         handler.rfile = io.BytesIO(json.dumps(request).encode() + b"\n")
+        handler.request.recv.side_effect = handler.rfile.read
         handler.wfile = io.BytesIO()
         handler.server = mock.Mock()
         handler.server.broker = broker
+        handler.server.initial_frame_timeout_seconds = 5.0
         handler.handle()
         return handler.wfile.getvalue()
 
@@ -5325,7 +5327,9 @@ class CouncilBrokerTests(unittest.TestCase):
             handler = BrokerRequestHandler.__new__(BrokerRequestHandler)
             handler.request = mock.Mock()
             handler.rfile = io.BytesIO(raw)
+            handler.request.recv.side_effect = handler.rfile.read
             handler.wfile = io.BytesIO()
+            handler.server = mock.Mock(initial_frame_timeout_seconds=5.0)
             handler.handle()
             with self.assertRaises(CouncilError) as caught:
                 self._decode_wire_response(handler.wfile.getvalue())

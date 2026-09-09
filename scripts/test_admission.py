@@ -165,6 +165,70 @@ class InspectionTests(unittest.TestCase):
         self.assertTrue(report["artifacts"]["inventory_error"])
         self.assertEqual(inventory(self.root), before)
 
+    def test_inspector_uses_broker_route_and_configuration_validators(self):
+        route = {
+            "runtime": "claude",
+            "participant": "alpha",
+            "label": "Alpha",
+            "project": "fixture",
+            "bound_at": "fixture",
+            "lease_minutes": 5,
+            "lease_expires_epoch": 200,
+            "capability_hash": "a" * 64,
+            "binding_generation": "gen-alpha",
+            "runtime_cohort": council.RUNTIME_COHORT,
+            "transport": "claude_mcp_child_relay",
+            "relay_path": "/private/tmp/fixture.sock",
+            "relay_pid": 123,
+            "relay_process_start_epoch": 456,
+            "relay_owner_hash": "not-a-hash",
+        }
+        broker = council.CouncilBroker.__new__(council.CouncilBroker)
+        for runtime, exact in (
+            ("claude", {"relay_owner_hash": "not-a-hash"}),
+            (
+                "opencode",
+                {
+                    "transport": "opencode_plugin_relay",
+                    "target_session_id": "bad session",
+                },
+            ),
+        ):
+            candidate = dict(route, runtime=runtime, **exact)
+            record = ("alpha.json", None, None, candidate, None)
+            self.assertFalse(inspection._route_compatible(record))
+            with self.assertRaises(council.CouncilError):
+                broker._validated_persisted_registration(candidate)
+
+        write(self.root / "retention.json", {"days": "30"})
+        write(
+            self.root / "router.json",
+            {"target_thread_id": ["thread"], "capability_hash": None},
+        )
+        write(
+            self.root / "opencode-runtime.json",
+            {
+                "executable": "/fixture/opencode",
+                "sha256": "bad",
+                "cdhash": "b" * 40,
+                "configured_at_epoch": 1,
+            },
+        )
+        before = inventory(self.root)
+        report = inspection.inspect_state(self.root, now=100)
+        self.assertEqual(report["artifacts"]["malformed_count"], 3)
+        self.assertEqual(inventory(self.root), before)
+        with self.assertRaises(council.CouncilError):
+            council.load_retention_days(self.root)
+        broker.router_config_path = self.root / "router.json"
+        with self.assertRaises(council.CouncilError):
+            broker._router_config()
+        self.assertFalse(
+            council._pinned_opencode_parent(
+                "/fixture/opencode", self.root, os.getpid()
+            )
+        )
+
     def test_release_artifact_coverage_hashes_and_missing_provenance(self):
         from build_release import RUNTIME_FILES
 
@@ -538,6 +602,36 @@ class LeaseTests(unittest.TestCase):
             )
             self.assertNotEqual(result.returncode, 0)
             lease.validate()
+
+    def test_owner_unlocks_after_drain_while_forked_child_survives(self):
+        lease = admission.acquire_writer_lease(self.root)
+        ready_read, ready_write = os.pipe()
+        release_read, release_write = os.pipe()
+        pid = os.fork()
+        if pid == 0:
+            try:
+                os.close(ready_read)
+                os.close(release_write)
+                os.write(ready_write, b"ready")
+                os.close(ready_write)
+                os.read(release_read, 1)
+                os.close(release_read)
+                os._exit(0)
+            except BaseException:
+                os._exit(8)
+        os.close(ready_write)
+        os.close(release_read)
+        try:
+            self.assertEqual(os.read(ready_read, 5), b"ready")
+            lease.close()
+            with admission.acquire_writer_lease(self.root):
+                pass
+        finally:
+            os.close(ready_read)
+            os.write(release_write, b"x")
+            os.close(release_write)
+            _, status = os.waitpid(pid, 0)
+        self.assertEqual(os.waitstatus_to_exitcode(status), 0)
 
     def test_fork_inside_nested_operation_cannot_inherit_active_ownership(self):
         with admission.acquire_writer_lease(self.root) as lease:
@@ -1196,6 +1290,299 @@ class CohortTests(unittest.TestCase):
 
 
 class ProcessBarrierTests(unittest.TestCase):
+    def test_startup_status_channel_is_bounded_and_strict(self):
+        process = mock.Mock()
+        process.poll.return_value = None
+
+        def read_status(payload, timeout=0.2):
+            read_descriptor, write_descriptor = os.pipe()
+            stream = os.fdopen(read_descriptor, "rb", buffering=0)
+            try:
+                if payload is not None:
+                    os.write(write_descriptor, payload)
+                return council.read_daemon_startup_status(
+                    stream, process, time.monotonic() + timeout
+                )
+            finally:
+                stream.close()
+                os.close(write_descriptor)
+
+        self.assertEqual(
+            read_status(b'{"ok":true,"reason":null,"retryable":false}\n'),
+            {"ok": True, "reason": None, "retryable": False},
+        )
+        for payload in (b"not-json\n", b"x" * 1025):
+            with self.subTest(payload=payload[:20]):
+                with self.assertRaises(council.CouncilError) as caught:
+                    read_status(payload)
+                self.assertEqual(caught.exception.reason, "malformed_response")
+        with self.assertRaises(council.CouncilError) as caught:
+            read_status(None, timeout=0.03)
+        self.assertEqual(caught.exception.reason, "broker_unavailable")
+
+    def test_malformed_startup_status_terminates_and_reaps_owned_child(self):
+        with tempfile.TemporaryDirectory(
+            prefix="c1-startup-child-", dir="/private/tmp"
+        ) as directory:
+            root = Path(directory) / "state"
+            real_popen = subprocess.Popen
+            spawned = []
+
+            def malformed_child(*_args, **kwargs):
+                child = real_popen(
+                    [
+                        sys.executable,
+                        "-B",
+                        "-c",
+                        "import sys,time; print('not-json',flush=True); time.sleep(60)",
+                    ],
+                    stdin=kwargs["stdin"],
+                    stdout=kwargs["stdout"],
+                    stderr=kwargs["stderr"],
+                    start_new_session=kwargs["start_new_session"],
+                    close_fds=kwargs["close_fds"],
+                )
+                spawned.append(child)
+                return child
+
+            client = council.CouncilClient(root)
+            unavailable = council.CouncilError(
+                "fixture unavailable", reason="broker_unavailable"
+            )
+            with (
+                mock.patch.object(client, "_send", side_effect=unavailable),
+                mock.patch("council.subprocess.Popen", side_effect=malformed_child),
+                self.assertRaises(council.CouncilError) as caught,
+            ):
+                client.ensure_daemon()
+            self.assertEqual(caught.exception.reason, "malformed_response")
+            self.assertEqual(len(spawned), 1)
+            self.assertIsNotNone(spawned[0].poll())
+            self.assertTrue(spawned[0].stdout.closed)
+
+    def test_startup_timeout_preserves_valid_slow_child_for_later_call(self):
+        with tempfile.TemporaryDirectory(
+            prefix="c1-startup-slow-", dir="/private/tmp"
+        ) as directory:
+            root = Path(directory) / "state"
+            real_popen = subprocess.Popen
+            spawned = []
+
+            def delayed_child(command, **kwargs):
+                program = (
+                    "import os,sys,time; time.sleep(.25); "
+                    "os.execv(sys.argv[1],sys.argv[1:])"
+                )
+                child = real_popen(
+                    [sys.executable, "-B", "-c", program, *command], **kwargs
+                )
+                spawned.append(child)
+                return child
+
+            with (
+                mock.patch.dict(
+                    os.environ, {"COUNCIL_TEST_ALLOW_UNTRUSTED_DAEMON": "1"}
+                ),
+                mock.patch("council.DAEMON_STARTUP_TIMEOUT_SECONDS", 0.05),
+                mock.patch("council.subprocess.Popen", side_effect=delayed_child),
+                self.assertRaises(council.CouncilError) as caught,
+            ):
+                council.CouncilClient(root).ensure_daemon()
+            self.assertEqual(caught.exception.reason, "broker_unavailable")
+            self.assertEqual(len(spawned), 1)
+            self.assertIsNone(spawned[0].poll())
+            self.assertTrue(spawned[0].stdout.closed)
+            try:
+                deadline = time.monotonic() + 2
+                while True:
+                    try:
+                        result = council.CouncilClient(
+                            root, autostart=False
+                        ).request("ping")
+                        break
+                    except council.CouncilError as error:
+                        if (
+                            error.reason
+                            not in ("broker_unavailable", "transport_lost")
+                            or time.monotonic() >= deadline
+                        ):
+                            raise
+                        time.sleep(0.02)
+                self.assertEqual(result["runtime_cohort"], council.RUNTIME_COHORT)
+            finally:
+                spawned[0].terminate()
+                spawned[0].wait(timeout=3)
+            with admission.acquire_writer_lease(root):
+                pass
+
+    def test_slow_initial_frame_has_total_deadline_before_unlock(self):
+        with tempfile.TemporaryDirectory(
+            prefix="c1-frame-deadline-", dir="/private/tmp"
+        ) as directory:
+            root = Path(directory) / "state"
+            lease = admission.acquire_writer_lease(root)
+            server = council.ThreadingUnixServer(
+                str(root / "broker.sock"), council.BrokerRequestHandler
+            )
+            server.broker = mock.Mock(root=root)
+            server.initial_frame_timeout_seconds = 0.3
+            serving = threading.Thread(
+                target=server.serve_forever, kwargs={"poll_interval": 0.01}
+            )
+            serving.start()
+            client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            client.connect(str(root / "broker.sock"))
+            stop = threading.Event()
+
+            def drip():
+                while not stop.wait(0.02):
+                    try:
+                        client.sendall(b"x")
+                    except OSError:
+                        return
+
+            sender = threading.Thread(target=drip)
+            sender.start()
+            time.sleep(0.05)
+            server.shutdown()
+            serving.join(timeout=1)
+            closed = threading.Event()
+
+            def close_and_unlock():
+                server.server_close()
+                lease.close()
+                closed.set()
+
+            closer = threading.Thread(target=close_and_unlock)
+            closer.start()
+            bounded = closed.wait(1.0)
+            stop.set()
+            try:
+                client.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            client.close()
+            sender.join(timeout=1)
+            closer.join(timeout=6)
+            self.assertTrue(bounded)
+            with admission.acquire_writer_lease(root):
+                pass
+
+    def test_autostart_reports_maintenance_before_socket_creation(self):
+        with tempfile.TemporaryDirectory(
+            prefix="c1-startup-maintenance-", dir="/private/tmp"
+        ) as directory:
+            root = Path(directory) / "state"
+            (root / admission.NAMESPACE).mkdir(parents=True)
+            with mock.patch.dict(
+                os.environ, {"COUNCIL_TEST_ALLOW_UNTRUSTED_DAEMON": "1"}
+            ):
+                for _ in range(2):
+                    started = time.monotonic()
+                    with self.assertRaises(council.CouncilError) as caught:
+                        council.CouncilClient(root).ensure_daemon()
+                    self.assertEqual(caught.exception.reason, "maintenance_required")
+                    self.assertEqual(
+                        str(caught.exception),
+                        "Council broker startup failed: maintenance_required",
+                    )
+                    self.assertLess(time.monotonic() - started, 1.5)
+            self.assertFalse((root / "broker.sock").exists())
+
+    def test_two_clients_observe_winning_daemon_after_retryable_lock_race(self):
+        with tempfile.TemporaryDirectory(
+            prefix="c1-startup-race-", dir="/private/tmp"
+        ) as directory:
+            base = Path(directory)
+            copied = base / "scripts"
+            copied.mkdir()
+            for name in (
+                "council.py",
+                "council_admission.py",
+                "council_protocol.py",
+            ):
+                shutil.copy2(SCRIPTS / name, copied / name)
+            source = (copied / "council.py").read_text()
+            seam = """    try:\n        admit_runtime_writer(lease, RUNTIME_COHORT)\n    except BaseException:\n"""
+            replacement = """    try:\n        admit_runtime_writer(lease, RUNTIME_COHORT)\n        barrier = os.environ.get(\"COUNCIL_TEST_STARTUP_BARRIER\")\n        if barrier:\n            Path(barrier + \".entered\").touch()\n            while not Path(barrier + \".release\").exists():\n                time.sleep(0.01)\n    except BaseException:\n"""
+            self.assertIn(seam, source)
+            (copied / "council.py").write_text(source.replace(seam, replacement, 1))
+            state = base / "state"
+            barrier = base / "startup"
+            env = {
+                **os.environ,
+                "PYTHONPATH": str(copied),
+                "COUNCIL_STATE_ROOT": str(state),
+                "COUNCIL_TEST_ALLOW_UNTRUSTED_DAEMON": "1",
+                "COUNCIL_TEST_STARTUP_BARRIER": str(barrier),
+            }
+            waiting_client = (
+                "import council,sys; "
+                "council.CouncilClient().ensure_daemon(); "
+                "print('ready',flush=True); sys.stdin.read()"
+            )
+            one_shot_client = (
+                "import council; council.CouncilClient().ensure_daemon(); "
+                "print('ready',flush=True)"
+            )
+            winner = subprocess.Popen(
+                [sys.executable, "-B", "-c", waiting_client],
+                cwd=copied,
+                env=env,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            loser = None
+            try:
+                deadline = time.monotonic() + 2
+                while not Path(str(barrier) + ".entered").exists():
+                    if time.monotonic() >= deadline:
+                        self.fail("winning daemon did not enter startup barrier")
+                    time.sleep(0.01)
+                self.assertFalse((state / "broker.sock").exists())
+                with self.assertRaises(admission.AdmissionError):
+                    admission.acquire_writer_lease(state)
+                loser = subprocess.Popen(
+                    [sys.executable, "-B", "-c", one_shot_client],
+                    cwd=copied,
+                    env=env,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+                time.sleep(0.1)
+                Path(str(barrier) + ".release").touch()
+                self.assertEqual(winner.stdout.readline().strip(), "ready")
+                loser_stdout, loser_stderr = loser.communicate(timeout=4)
+                self.assertEqual(loser.returncode, 0, loser_stderr)
+                self.assertEqual(loser_stdout.strip(), "ready")
+            finally:
+                Path(str(barrier) + ".release").touch()
+                if winner.stdin:
+                    winner.stdin.close()
+                winner.wait(timeout=4)
+                if loser is not None and loser.poll() is None:
+                    loser.kill()
+                    loser.wait(timeout=2)
+            self.assertEqual(winner.returncode, 0, winner.stderr.read())
+            winner.stdout.close()
+            winner.stderr.close()
+            if loser is not None:
+                loser.stdout.close()
+                loser.stderr.close()
+            deadline = time.monotonic() + 3
+            released = False
+            while time.monotonic() < deadline:
+                try:
+                    with admission.acquire_writer_lease(state):
+                        released = True
+                        break
+                except admission.AdmissionError:
+                    time.sleep(0.05)
+            self.assertTrue(released, "winning daemon did not release its owned root")
+
     def test_real_process_acceptance_drain_for_status_wait_bind_and_retry(self):
         for action in ("status", "wait", "bind", "retry"):
             with (

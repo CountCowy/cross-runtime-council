@@ -109,10 +109,43 @@ def main():
                 "collecting_proposals",
                 tags=("claimed", "wake"),
             )
-            for name in names:
+            for name in names[:-1]:
                 broker.submit(dialogue, name, "proposal", 0, proposal(name))
                 if name == "beta":
                     broker.ack("beta", beta_claim["message_id"])
+            activation_error = RuntimeError("fixture activation suppressed")
+            try:
+                with mock.patch.object(
+                    broker, "_activate_transition", side_effect=activation_error
+                ):
+                    broker.submit(
+                        dialogue, names[-1], "proposal", 0, proposal(names[-1])
+                    )
+            except RuntimeError as error:
+                if error is not activation_error:
+                    raise
+            else:
+                raise AssertionError("commit-before-activation fixture did not stop")
+            committed = broker._load_manifest(dialogue)["committed_transition_id"]
+            staged = [
+                council.read_json(path)
+                for path in broker.outbox.glob("*/*.json")
+                if council.read_json(path).get("status") == "staged"
+            ]
+            if not staged or any(
+                record.get("transition_id") != committed for record in staged
+            ):
+                raise AssertionError(
+                    "commit-before-activation fixture is not bound to the committed transition"
+                )
+            capture(
+                "staged-after-commit",
+                "collecting_exchange",
+                disposition="recover",
+                tags=("outbox", "staged_after"),
+            )
+            with broker.changed:
+                broker._activate_transition(dialogue, committed)
             capture(
                 "triad-exchange",
                 "collecting_exchange",
@@ -412,10 +445,9 @@ def main():
                 "preserve",
                 ("configuration", "opencode_pin"),
             )
-        # Independent outbox recovery families: before/after an already committed
-        # transition; the runner observes the real old recovery, including refusal.
+        # Independent outbox recovery families derived from an activated transition.
+        # The commit-before-activation case above is captured at its real crash seam.
         for name, status in (
-            ("staged-after-commit", "staged"),
             ("delivered-lost-ack", "delivered"),
             ("attention", "needs_attention"),
         ):

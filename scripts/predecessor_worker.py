@@ -35,6 +35,8 @@ def run(frozen, state, descriptor):
     # The only injected production seams are a declared fixed clock and a
     # transport trap; validation, schemas and recovery stay authentic.
     module.epoch_now = lambda: descriptor["clock_epoch"]
+    if descriptor.get("suppress_transition_activation"):
+        module.CouncilBroker._activate_staged_record = lambda *_args, **_kwargs: None
 
     def no_transport(*_args, **_kwargs):
         raise AssertionError("frozen reader attempted transport")
@@ -49,6 +51,8 @@ def run(frozen, state, descriptor):
         "reader_errors": [],
         "relay_ready": False,
     }
+    if descriptor.get("suppress_transition_activation"):
+        result["activation_suppressed"] = True
     try:
         broker = module.CouncilBroker(state)
     except Exception as error:

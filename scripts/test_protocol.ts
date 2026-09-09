@@ -4,7 +4,7 @@ import { syncBuiltinESMExports } from "node:module"
 import os from "node:os"
 import test, { mock } from "node:test"
 import { tool } from "@opencode-ai/plugin"
-import { openCodeToolArgs, SUBMIT_KINDS, RUNTIME_COHORT } from "./council_protocol.ts"
+import { BROKER_VERSION, openCodeToolArgs, SUBMIT_KINDS, RUNTIME_COHORT } from "./council_protocol.ts"
 import { registeredTools, TOOL_REGISTRY_KEY } from "./opencode_delivery_registry.ts"
 import * as wrapper from "./tools/council.ts"
 
@@ -191,6 +191,109 @@ test("loaded plugin origin, bounded mismatch startup and pending operation conse
     assert.equal(requests.length, before + 1)
     assert.equal(daemonSpawns, 0)
   } finally {
+    await hooks?.dispose?.()
+    delete globals[TOOL_REGISTRY_KEY]
+    if (priorBun === undefined) delete globals.Bun
+    else globals.Bun = priorBun
+    homedir.mock.restore()
+    syncBuiltinESMExports()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test("OpenCode startup reports bounded failures and observes a competing winner", async () => {
+  const directory = mkdtempSync("/tmp/cps-")
+  const homedir = mock.method(os, "homedir", () => directory)
+  syncBuiltinESMExports()
+  const globals = globalThis as unknown as Record<string | symbol, unknown>
+  const priorBun = globals.Bun
+  type Mode = "maintenance" | "malformed" | "oversized" | "timeout" | "race"
+  const modes: Mode[] = ["maintenance", "malformed", "oversized", "timeout", "race"]
+  let brokerAvailable = false
+  let daemonSpawns = 0
+  let bridgeSpawns = 0
+  let killedStartupChildren = 0
+  globals.Bun = {
+    spawn: (command: string[]) => {
+      if (command.includes("daemon")) {
+        daemonSpawns += 1
+        const mode = modes.shift()!
+        if (mode === "race") setTimeout(() => { brokerAvailable = true }, 100)
+        const body = mode === "maintenance"
+          ? '{"ok":false,"reason":"maintenance_required","retryable":false}\n'
+          : mode === "malformed"
+            ? "not-json\n"
+            : mode === "oversized"
+              ? "x".repeat(1025)
+              : mode === "race"
+                ? '{"ok":false,"reason":"broker_unavailable","retryable":true}\n'
+                : null
+        return {
+          stdout: body === null
+            ? new ReadableStream<Uint8Array>({ start() {} })
+            : new Blob([body]).stream(),
+          exited: mode === "timeout"
+            ? new Promise<number>(() => {})
+            : Promise.resolve(2),
+          kill: () => { killedStartupChildren += 1 },
+        }
+      }
+      bridgeSpawns += 1
+      let request: { action: string }
+      return {
+        stdin: { write: (line: string) => { request = JSON.parse(line) }, end: () => {} },
+        get stdout() {
+          const response = request.action === "ping" && !brokerAvailable
+            ? { ok: false, error: "fixture unavailable", error_kind: "error", reason: "broker_unavailable" }
+            : { ok: true, result: request.action === "ping"
+                ? { broker_version: BROKER_VERSION, runtime_cohort: RUNTIME_COHORT }
+                : {} }
+          return new Blob([JSON.stringify(response)]).stream()
+        },
+        get stderr() { return new Blob(["raw daemon details must not propagate"]).stream() },
+        exited: Promise.resolve(brokerAvailable ? 0 : 2),
+      }
+    },
+  }
+  let hooks: Awaited<ReturnType<typeof import("./opencode_council_plugin.ts").CouncilPlugin>> | undefined
+  let wallClock: ReturnType<typeof mock.method> | undefined
+  try {
+    const { CouncilPlugin } = await import(new URL("./opencode_council_plugin.ts?startup-status", import.meta.url).href)
+    hooks = await CouncilPlugin({ client: {} } as never)
+    wallClock = mock.method(Date, "now", () => {
+      throw new Error("wall clock changed during monotonic startup deadline")
+    })
+    const registry = globals[TOOL_REGISTRY_KEY] as {
+      tools: Record<string, { execute: (args: unknown, context: unknown) => Promise<unknown> }>
+    }
+    const bind = () => registry.tools.council_bind.execute(
+      { participant: "alpha", label: "Alpha", project: "fixture" },
+      { sessionID: "startup-session" },
+    )
+    for (const expected of [
+      "maintenance_required",
+      "malformed_response",
+      "malformed_response",
+      "broker_unavailable",
+    ]) {
+      brokerAvailable = false
+      await assert.rejects(bind(), (error: unknown) => (
+        typeof error === "object" && error !== null
+        && "reason" in error && (error as { reason: unknown }).reason === expected
+        && !(error instanceof Error && error.message.includes("raw daemon details"))
+      ))
+    }
+    brokerAvailable = true
+    assert.equal(await bind(), "{}")
+    assert.equal(daemonSpawns, 4)
+    brokerAvailable = false
+    assert.equal(await bind(), "{}")
+    assert.equal(daemonSpawns, 5)
+    assert.equal(killedStartupChildren, 2)
+    assert.ok(bridgeSpawns < 15, `unexpected bridge startup probes: ${bridgeSpawns}`)
+    assert.equal(modes.length, 0)
+  } finally {
+    wallClock?.mock.restore()
     await hooks?.dispose?.()
     delete globals[TOOL_REGISTRY_KEY]
     if (priorBun === undefined) delete globals.Bun

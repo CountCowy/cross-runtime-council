@@ -6,7 +6,6 @@ import errno
 import hashlib
 import json
 import os
-import re
 from pathlib import Path
 import stat
 import subprocess
@@ -20,8 +19,8 @@ sys.dont_write_bytecode = True
 import council_admission as admission
 import council_protocol as protocol
 
-PACKAGE_ID = "003cbb6ce7f17cf151a8080a7779620e64e977994490bcc0db6fac6b46f296ca"
-RUNTIME_COHORT = "d2a7edbc35ad87c89677773c90d815182afe3e4f31f5ce44c28e102b82a433df"
+PACKAGE_ID = "2a69398b06344529865fa5f262b43cb12eeabaa4f39d2221272cbea89d752a29"
+RUNTIME_COHORT = "5dd6570819f2f656374253e7385569f501a94338e00d5fb0eaf24b0960d84bf9"
 if (
     RUNTIME_COHORT != admission.RUNTIME_COHORT
     or RUNTIME_COHORT != protocol.RUNTIME_COHORT
@@ -195,61 +194,11 @@ def _route_compatible(record):
     name, _, _, route, error = record
     if error or not isinstance(route, dict):
         return False
-    if (
-        route.get("runtime") not in ("codex", "claude", "opencode")
-        or name != str(route.get("participant")) + ".json"
-        or not all(
-            isinstance(route.get(key), str) and route[key]
-            for key in ("participant", "label", "project", "bound_at")
-        )
-        or not isinstance(route.get("capability_hash"), str)
-        or not admission.HASH_PATTERN.fullmatch(route["capability_hash"])
-        or type(route.get("lease_minutes")) is not int
-        or not 1 <= route["lease_minutes"] <= protocol.MAX_LEASE_MINUTES
-        or not admission.finite_number(route.get("lease_expires_epoch"))
-    ):
+    try:
+        registration = admission.validate_persisted_registration(route)
+    except admission.AdmissionError:
         return False
-    for key in ("participant", "binding_generation"):
-        if route.get(key) is not None and (
-            not isinstance(route[key], str)
-            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,79}", route[key])
-        ):
-            return False
-    generation = route.get("binding_generation")
-    cohort = route.get("runtime_cohort")
-    if generation is not None and (not isinstance(generation, str) or not generation):
-        return False
-    # A historical cohort remains readable tombstone data. It is not route
-    # admission; only the authenticated broker rebind can establish that.
-    if cohort is not None and (
-        not isinstance(cohort, str) or not admission.HASH_PATTERN.fullmatch(cohort)
-    ):
-        return False
-    if route["runtime"] == "codex":
-        return isinstance(route.get("target_thread_id"), str) and bool(
-            re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,79}", route["target_thread_id"])
-        )
-    return (
-        route.get("transport")
-        == (
-            "claude_mcp_child_relay"
-            if route["runtime"] == "claude"
-            else "opencode_plugin_relay"
-        )
-        and isinstance(route.get("relay_path"), str)
-        and Path(route["relay_path"]).is_absolute()
-        and type(route.get("relay_pid")) is int
-        and route["relay_pid"] > 1
-        and type(route.get("relay_process_start_epoch")) is int
-        and isinstance(
-            route.get(
-                "relay_owner_hash"
-                if route["runtime"] == "claude"
-                else "target_session_id"
-            ),
-            str,
-        )
-    )
+    return name == registration["participant"] + ".json"
 
 
 def registration_report(snapshot, now, probe=probe_process):
@@ -398,6 +347,12 @@ def inspect_state(
                 for value in values:
                     if not isinstance(value, dict):
                         raise ValueError("artifact object required")
+                    if path.name == "retention.json":
+                        admission.validate_retention_config(value)
+                    elif path.name == "router.json":
+                        admission.validate_router_config(value)
+                    elif path.name == "opencode-runtime.json":
+                        admission.validate_opencode_config(value)
                     for key, expected in (
                         ("schema_version", protocol.SCHEMA_VERSION),
                         ("dialogue_schema_version", protocol.DIALOGUE_SCHEMA_VERSION),
