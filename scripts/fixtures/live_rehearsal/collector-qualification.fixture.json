@@ -1,0 +1,144 @@
+{
+  "format": "collector-qualification/v1",
+  "collector_contract": {
+    "id": "fixture-collector",
+    "version": "1.0",
+    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "evidence_ref": "ev-contract"
+  },
+  "implementation_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "implementation_evidence_ref": "ev-implementation",
+  "runtime": {
+    "name": "fixture-runtime",
+    "version": "1.0",
+    "build": "fixture-build"
+  },
+  "source_format": {
+    "id": "fixture-source",
+    "version": "1.0"
+  },
+  "provenance": "fixture",
+  "reviewed": true,
+  "review_checkpoint_ref": "fixture-review",
+  "validation_evidence_refs": [
+    "fixture-validation"
+  ],
+  "event_definition_ref": "fixture-event-definition",
+  "enumeration_contract_ref": "fixture-enumeration-contract",
+  "properties": {
+    "source_universe": {
+      "result": "pass",
+      "evidence_refs": [
+        "fixture-source-universe"
+      ]
+    },
+    "interval_coverage": {
+      "result": "pass",
+      "evidence_refs": [
+        "fixture-interval-coverage"
+      ]
+    },
+    "event_semantics": {
+      "result": "pass",
+      "evidence_refs": [
+        "fixture-event-semantics"
+      ]
+    },
+    "target_and_transform_binding": {
+      "result": "pass",
+      "evidence_refs": [
+        "fixture-target-binding"
+      ]
+    },
+    "omission_validation": {
+      "result": "pass",
+      "evidence_refs": [
+        "fixture-omission-validation"
+      ]
+    }
+  },
+  "source_forms": [
+    {
+      "kind": "primary",
+      "applicable": true,
+      "applicability_evidence_refs": [
+        "fixture-primary-applicability"
+      ],
+      "omission_test": {
+        "result": "detected",
+        "evidence_refs": [
+          "fixture-primary-omission"
+        ]
+      }
+    },
+    {
+      "kind": "sibling",
+      "applicable": true,
+      "applicability_evidence_refs": [
+        "fixture-sibling-applicability"
+      ],
+      "omission_test": {
+        "result": "detected",
+        "evidence_refs": [
+          "fixture-sibling-omission"
+        ]
+      }
+    },
+    {
+      "kind": "sidechain",
+      "applicable": true,
+      "applicability_evidence_refs": [
+        "fixture-sidechain-applicability"
+      ],
+      "omission_test": {
+        "result": "detected",
+        "evidence_refs": [
+          "fixture-sidechain-omission"
+        ]
+      }
+    },
+    {
+      "kind": "queued",
+      "applicable": true,
+      "applicability_evidence_refs": [
+        "fixture-queued-applicability"
+      ],
+      "omission_test": {
+        "result": "detected",
+        "evidence_refs": [
+          "fixture-queued-omission"
+        ]
+      }
+    },
+    {
+      "kind": "paginated",
+      "applicable": true,
+      "applicability_evidence_refs": [
+        "fixture-paginated-applicability"
+      ],
+      "omission_test": {
+        "result": "detected",
+        "evidence_refs": [
+          "fixture-paginated-omission"
+        ]
+      }
+    },
+    {
+      "kind": "rotated",
+      "applicable": true,
+      "applicability_evidence_refs": [
+        "fixture-rotated-applicability"
+      ],
+      "omission_test": {
+        "result": "detected",
+        "evidence_refs": [
+          "fixture-rotated-omission"
+        ]
+      }
+    }
+  ],
+  "inventory_sha256": "de8e40df547585c4c46d1013b254c62fd7196908b67a2cbc357c35be027cd4f5",
+  "limitations": [
+    "Synthetic fixture only; categorically ineligible for a live claim."
+  ]
+}

@@ -1,0 +1,94 @@
+{
+  "format": "collector-result/v1",
+  "collector_contract": {
+    "id": "fixture-collector",
+    "version": "1.0",
+    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "evidence_ref": "ev-contract"
+  },
+  "implementation_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "implementation_evidence_ref": "ev-implementation",
+  "runtime": {
+    "name": "fixture-runtime",
+    "version": "1.0",
+    "build": "fixture-build"
+  },
+  "source_format": {
+    "id": "fixture-source",
+    "version": "1.0"
+  },
+  "target": {
+    "seat_ref": "seat-alpha",
+    "session_ref": "session-alpha",
+    "generation_ref": "generation-alpha"
+  },
+  "claim": {
+    "envelope_ref": "envelope-target",
+    "start_utc": "2026-09-08T20:00:00Z",
+    "end_utc": "2026-09-08T20:10:00+00:00",
+    "expected_count": 1,
+    "unit": "native_arrival",
+    "variant": "surviving_relay"
+  },
+  "source_refs": [
+    "ev-source-primary"
+  ],
+  "inventory_ref": "inventory-fixture",
+  "coverage_ref": "coverage-fixture",
+  "transform_ledger": [
+    {
+      "operation": "normalize",
+      "input_refs": [
+        "ev-source-primary"
+      ],
+      "output_refs": [
+        "event-native-one"
+      ],
+      "reason": "Fixture event normalization only."
+    }
+  ],
+  "events": [
+    {
+      "native_event_id": "native-one",
+      "projection_id": "projection-one",
+      "source_ref": "ev-source-primary",
+      "native_record_key": "record-one",
+      "byte_offset": 17,
+      "target": {
+        "seat_ref": "seat-alpha",
+        "session_ref": "session-alpha",
+        "generation_ref": "generation-alpha"
+      },
+      "event_type": "native_arrival",
+      "accepted": true,
+      "envelope_ref": "envelope-target",
+      "capture_refs": [
+        "ev-source-primary"
+      ],
+      "verification_refs": [
+        "verification-one"
+      ]
+    },
+    {
+      "native_event_id": "native-quote",
+      "projection_id": "projection-quote",
+      "source_ref": "ev-source-primary",
+      "native_record_key": "record-quote",
+      "byte_offset": 113,
+      "target": {
+        "seat_ref": "seat-alpha",
+        "session_ref": "session-alpha",
+        "generation_ref": "generation-alpha"
+      },
+      "event_type": "quote",
+      "accepted": false,
+      "envelope_ref": "envelope-target",
+      "capture_refs": [
+        "ev-source-primary"
+      ],
+      "verification_refs": [
+        "verification-quote"
+      ]
+    }
+  ]
+}
