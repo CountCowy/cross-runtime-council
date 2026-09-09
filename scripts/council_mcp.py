@@ -34,12 +34,13 @@ from council import (
     default_state_root,
     post_to_claude,
     validate_claude_socket,
+    validate_bind_arguments,
     validate_relay_envelope_content,
     validate_extension_result,
 )
 
-PACKAGE_ID = "2a69398b06344529865fa5f262b43cb12eeabaa4f39d2221272cbea89d752a29"
-RUNTIME_COHORT = "5dd6570819f2f656374253e7385569f501a94338e00d5fb0eaf24b0960d84bf9"
+PACKAGE_ID = "912d9ad9006a8e8e6e2e2547e0ae8b6cdec2d72f3ef11b8d053925e5ce60a632"
+RUNTIME_COHORT = "819a6413f50aa7fcfb7c8d51f73d73bfc5a4b522ec7431f407505c40535d4961"
 if RUNTIME_COHORT != council.RUNTIME_COHORT:
     raise RuntimeError("Council MCP/helper cohort mismatch; refresh the complete runtime set")
 
@@ -56,6 +57,7 @@ PENDING_ROUTER_ROTATIONS: Dict[str, Dict[str, str]] = {}
 CAPABILITIES_LOCK = threading.RLock()
 CLAUDE_RELAY_OWNER_ID = secrets.token_urlsafe(48)
 MAX_CONCURRENT_RELAY_HANDLERS = 32
+MAX_PENDING_BINDING_ROTATIONS = 32
 
 
 def extension_rejection_is_ambiguous(error: Exception) -> bool:
@@ -363,33 +365,53 @@ def call_tool(
     if name == "council_ping":
         result = client.request("ping")
     elif name == "council_bind":
-        relay = None
-        if arguments["runtime"] == "claude":
-            relay = get_claude_relay(arguments["participant"])
+        runtime, participant, label, project, lease_minutes = validate_bind_arguments(
+            arguments["runtime"],
+            arguments["participant"],
+            arguments["label"],
+            arguments["project"],
+            arguments.get("lease_minutes", DEFAULT_LEASE_MINUTES),
+        )
         target_thread_id = (
-            codex_thread_id(request_meta) if arguments["runtime"] == "codex" else None
+            codex_thread_id(request_meta) if runtime == "codex" else None
         )
         identity = participant_identity(
-            arguments["participant"], request_meta, runtime=arguments["runtime"]
+            participant, request_meta, runtime=runtime
         )
+        created_pending = False
         with CAPABILITIES_LOCK:
             pending = PENDING_BINDING_ROTATIONS.get(identity)
             if pending is None:
+                if len(PENDING_BINDING_ROTATIONS) >= MAX_PENDING_BINDING_ROTATIONS:
+                    raise CouncilError(
+                        "too many pending Council binding rotations; retry an existing identity"
+                    )
                 pending = {
                     "binding_capability": secrets.token_urlsafe(48),
                     "previous_capability": BINDING_CAPABILITIES.get(identity) or "",
                 }
                 PENDING_BINDING_ROTATIONS[identity] = pending
+                created_pending = True
             binding_capability = pending["binding_capability"]
             previous_capability = pending["previous_capability"] or None
+        relay = None
+        try:
+            if runtime == "claude":
+                relay = get_claude_relay(participant)
+        except BaseException:
+            if created_pending:
+                with CAPABILITIES_LOCK:
+                    if PENDING_BINDING_ROTATIONS.get(identity) is pending:
+                        PENDING_BINDING_ROTATIONS.pop(identity, None)
+            raise
         try:
             result = client.request(
                 "bind",
-                runtime=arguments["runtime"],
-                participant=arguments["participant"],
-                label=arguments["label"],
-                project=arguments["project"],
-                lease_minutes=arguments.get("lease_minutes", DEFAULT_LEASE_MINUTES),
+                runtime=runtime,
+                participant=participant,
+                label=label,
+                project=project,
+                lease_minutes=lease_minutes,
                 relay_path=str(relay.path) if relay else None,
                 relay_capability=relay.relay_capability if relay else None,
                 relay_owner_id=CLAUDE_RELAY_OWNER_ID if relay else None,

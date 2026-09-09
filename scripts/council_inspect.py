@@ -19,8 +19,8 @@ sys.dont_write_bytecode = True
 import council_admission as admission
 import council_protocol as protocol
 
-PACKAGE_ID = "2a69398b06344529865fa5f262b43cb12eeabaa4f39d2221272cbea89d752a29"
-RUNTIME_COHORT = "5dd6570819f2f656374253e7385569f501a94338e00d5fb0eaf24b0960d84bf9"
+PACKAGE_ID = "912d9ad9006a8e8e6e2e2547e0ae8b6cdec2d72f3ef11b8d053925e5ce60a632"
+RUNTIME_COHORT = "819a6413f50aa7fcfb7c8d51f73d73bfc5a4b522ec7431f407505c40535d4961"
 if (
     RUNTIME_COHORT != admission.RUNTIME_COHORT
     or RUNTIME_COHORT != protocol.RUNTIME_COHORT
@@ -137,7 +137,7 @@ def snapshot_registrations(state_root):
                         "registration_bytes_exceed_bound",
                     )
                 digest = hashlib.sha256(data).hexdigest()
-                route = json.loads(data, object_pairs_hook=admission.no_duplicates)
+                route = admission.parse_json(data)
                 if not isinstance(route, dict) or not name.endswith(".json"):
                     raise ValueError("invalid route")
             except (OSError, ValueError, UnicodeError):
@@ -282,6 +282,29 @@ def revalidate_under_lease(snapshot, lease, now, probe=probe_process):
         return result
 
 
+def artifact_schema_fields(relative, value):
+    """Return only schema fields owned by this artifact family."""
+    parts = relative.parts
+    if len(parts) == 3 and parts[0] == "outbox":
+        envelope = value.get("envelope")
+        if isinstance(envelope, dict):
+            return (("schema_version", protocol.SCHEMA_VERSION, envelope),)
+        return ()
+    if parts and parts[0] == "dialogues":
+        if len(parts) == 3 and parts[2] in ("manifest.json", "final.json"):
+            return (
+                ("schema_version", protocol.SCHEMA_VERSION, value),
+                (
+                    "dialogue_schema_version",
+                    protocol.DIALOGUE_SCHEMA_VERSION,
+                    value,
+                ),
+            )
+        if len(parts) == 4 and parts[2] == "submissions":
+            return (("schema_version", protocol.SCHEMA_VERSION, value),)
+    return ()
+
+
 def inspect_state(
     state_root, now=None, probe=probe_process, *, payload_root=None, opencode_root=None
 ):
@@ -312,6 +335,7 @@ def inspect_state(
         ]
         while queue:
             path = queue.pop()
+            relative = path.relative_to(root)
             visited += 1
             if visited > MAX_FILES:
                 raise admission.AdmissionError("artifact inventory exceeds bound")
@@ -332,32 +356,35 @@ def inspect_state(
                 artifacts["bytes"] += len(data)
                 if artifacts["bytes"] > MAX_TOTAL_BYTES:
                     raise admission.AdmissionError("artifact bytes exceed bound")
-                if path.name == "audit.jsonl":
+                if (
+                    len(relative.parts) == 3
+                    and relative.parts[0] == "dialogues"
+                    and relative.name == "audit.jsonl"
+                ):
                     if data and not data.endswith(b"\n"):
                         artifacts["torn_audit_count"] += 1
                     values = [
-                        json.loads(line, object_pairs_hook=admission.no_duplicates)
+                        admission.parse_json(line)
                         for line in data.splitlines()
                         if line
                     ]
                 else:
                     values = [
-                        json.loads(data, object_pairs_hook=admission.no_duplicates)
+                        admission.parse_json(data)
                     ]
                 for value in values:
                     if not isinstance(value, dict):
                         raise ValueError("artifact object required")
-                    if path.name == "retention.json":
+                    if relative == Path("retention.json"):
                         admission.validate_retention_config(value)
-                    elif path.name == "router.json":
+                    elif relative == Path("router.json"):
                         admission.validate_router_config(value)
-                    elif path.name == "opencode-runtime.json":
+                    elif relative == Path("opencode-runtime.json"):
                         admission.validate_opencode_config(value)
-                    for key, expected in (
-                        ("schema_version", protocol.SCHEMA_VERSION),
-                        ("dialogue_schema_version", protocol.DIALOGUE_SCHEMA_VERSION),
+                    for key, expected, subject in artifact_schema_fields(
+                        relative, value
                     ):
-                        schema = value.get(key)
+                        schema = subject.get(key)
                         if schema is not None and (
                             type(schema) is not int or schema != expected
                         ):

@@ -82,8 +82,8 @@ from council_protocol import (
 )
 import council_protocol
 
-PACKAGE_ID = "2a69398b06344529865fa5f262b43cb12eeabaa4f39d2221272cbea89d752a29"
-RUNTIME_COHORT = "5dd6570819f2f656374253e7385569f501a94338e00d5fb0eaf24b0960d84bf9"
+PACKAGE_ID = "912d9ad9006a8e8e6e2e2547e0ae8b6cdec2d72f3ef11b8d053925e5ce60a632"
+RUNTIME_COHORT = "819a6413f50aa7fcfb7c8d51f73d73bfc5a4b522ec7431f407505c40535d4961"
 if RUNTIME_COHORT != council_protocol.RUNTIME_COHORT or RUNTIME_COHORT != council_admission.RUNTIME_COHORT:
     raise RuntimeError("Council broker/helper cohort mismatch; refresh the complete runtime set")
 
@@ -529,6 +529,30 @@ def ensure_text(value: Any, field: str, allow_empty: bool = False) -> str:
     if len(value.encode("utf-8")) > MAX_TEXT_BYTES:
         raise CouncilError("%s exceeds %d bytes" % (field, MAX_TEXT_BYTES))
     return value
+
+
+def validate_bind_arguments(
+    runtime: Any,
+    participant: Any,
+    label: Any,
+    project: Any,
+    lease_minutes: Any,
+) -> Tuple[str, str, str, str, int]:
+    runtime = ensure_text(runtime, "runtime").lower()
+    if runtime not in ("claude", "codex", "opencode"):
+        raise CouncilError("runtime must be claude, codex, or opencode")
+    participant = safe_name(participant, "participant")
+    label = ensure_text(label, "label")
+    project = ensure_text(project, "project")
+    if (
+        not isinstance(lease_minutes, int)
+        or lease_minutes < 1
+        or lease_minutes > MAX_LEASE_MINUTES
+    ):
+        raise CouncilError(
+            "lease_minutes must be between 1 and %d" % MAX_LEASE_MINUTES
+        )
+    return runtime, participant, label, project, lease_minutes
 
 
 def ensure_bounded_text(value: Any, field: str, max_bytes: int) -> str:
@@ -1745,14 +1769,9 @@ class CouncilBroker:
         previous_capability: Optional[str] = None,
         _request_cohort=RUNTIME_COHORT,
     ) -> Dict[str, Any]:
-        runtime = ensure_text(runtime, "runtime").lower()
-        if runtime not in ("claude", "codex", "opencode"):
-            raise CouncilError("runtime must be claude, codex, or opencode")
-        participant = safe_name(participant, "participant")
-        label = ensure_text(label, "label")
-        project = ensure_text(project, "project")
-        if not isinstance(lease_minutes, int) or lease_minutes < 1 or lease_minutes > MAX_LEASE_MINUTES:
-            raise CouncilError("lease_minutes must be between 1 and %d" % MAX_LEASE_MINUTES)
+        runtime, participant, label, project, lease_minutes = validate_bind_arguments(
+            runtime, participant, label, project, lease_minutes
+        )
         if socket_path is not None or token is not None:
             raise CouncilError("direct Claude socket/token binding is disabled; use the MCP child relay")
         registration: Dict[str, Any] = {
@@ -4665,7 +4684,7 @@ class CouncilBroker:
         )
         if not isinstance(timeout_seconds, int) or timeout_seconds < 0 or timeout_seconds > MAX_WAIT_SECONDS:
             raise CouncilError("timeout_seconds must be between 0 and %d" % MAX_WAIT_SECONDS)
-        deadline = epoch_now() + timeout_seconds
+        deadline = time.monotonic() + timeout_seconds
         with self.changed:
             reconciled = False
             while True:
@@ -4698,7 +4717,7 @@ class CouncilBroker:
                             record["wake_lease_until_epoch"] = None
                             atomic_json(path, record)
                             return {"message": record["envelope"], "claim_seconds": CLAIM_SECONDS}
-                remaining = deadline - epoch_now()
+                remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     return {"message": None}
                 self.changed.wait(timeout=min(remaining, 1.0))

@@ -69,9 +69,11 @@ from council_mcp import (
     TOOLS,
     ClaudeSessionRelay,
     MAX_CONCURRENT_RELAY_HANDLERS,
+    MAX_PENDING_BINDING_ROTATIONS,
     RelayRequestHandler,
     RelayUnixServer,
     call_tool,
+    close_relays,
     codex_thread_id,
     get_claude_relay,
     handle as handle_mcp_message,
@@ -3118,6 +3120,48 @@ class CouncilBrokerTests(unittest.TestCase):
         self.assertTrue(acknowledged["acknowledged"])
         self.assertIsNone(self.broker.wait("beta", 0)["message"])
 
+    def test_wait_elapsed_deadline_is_monotonic_across_wall_clock_rollback(self):
+        class Clock:
+            wall = 10_000.0
+            elapsed = 0.0
+            rolled_back = False
+            waits = []
+
+            def epoch(self):
+                return self.wall
+
+            def monotonic(self):
+                return self.elapsed
+
+            def wait(self, timeout):
+                if not self.rolled_back:
+                    self.wall -= 3600
+                    self.rolled_back = True
+                self.wall += timeout
+                self.elapsed += timeout
+                self.waits.append(timeout)
+                return False
+
+        self.broker.bind(
+            "codex",
+            "clock",
+            "Clock",
+            "test",
+            target_thread_id="thread-clock",
+            binding_capability="clock-capability-" + "c" * 40,
+        )
+        clock = Clock()
+        with (
+            mock.patch("council.epoch_now", side_effect=clock.epoch),
+            mock.patch("council.time.monotonic", side_effect=clock.monotonic),
+            mock.patch.object(self.broker.changed, "wait", side_effect=clock.wait),
+        ):
+            result = self.broker.wait("clock", timeout_seconds=55)
+        self.assertIsNone(result["message"])
+        self.assertTrue(clock.rolled_back)
+        self.assertEqual(sum(clock.waits), 55)
+        self.assertEqual(len(clock.waits), 55)
+
     def test_authenticated_status_recovers_delivered_claude_message_after_response(self):
         inbox = FakeClaudeInbox(self.temporary.name)
         relay_state = Path(
@@ -5975,6 +6019,86 @@ class TerminalDialogueDeletionTests(TerminalDialogueFixture):
 
 
 class BindFailureRelayCleanupTests(TerminalDialogueFixture):
+    def test_bind_validation_precedes_relay_and_pending_rotations_are_bounded(self):
+        inbox_dir = Path(self.temporary.name) / "bounded-inbox"
+        inbox_dir.mkdir()
+        inbox = FakeClaudeInbox(inbox_dir)
+        state = Path(
+            tempfile.mkdtemp(prefix="council-bind-bound.", dir="/private/tmp")
+        )
+
+        class RejectingClient:
+            calls = 0
+
+            def request(self, action, **arguments):
+                self.calls += 1
+                raise CouncilRequestRejected("bind outcome is ambiguous")
+
+        client = RejectingClient()
+        environment = {
+            "CLAUDE_CODE_MESSAGING_SOCKET": inbox.path,
+            "COUNCIL_STATE_ROOT": str(state),
+        }
+        RELAYS.clear()
+        PENDING_BINDING_ROTATIONS.clear()
+        try:
+            with (
+                mock.patch.dict(os.environ, environment, clear=False),
+                mock.patch("council_mcp.CouncilClient", return_value=client),
+            ):
+                invalid = {
+                    "runtime": "claude",
+                    "participant": "x" * 81,
+                    "label": "Invalid",
+                    "project": "test",
+                }
+                for _ in range(100):
+                    with self.assertRaises(CouncilError):
+                        call_tool("council_bind", invalid)
+                self.assertEqual(RELAYS, {})
+                self.assertEqual(PENDING_BINDING_ROTATIONS, {})
+                self.assertEqual(client.calls, 0)
+
+                arguments = []
+                for index in range(MAX_PENDING_BINDING_ROTATIONS):
+                    item = {
+                        "runtime": "claude",
+                        "participant": "pending-%02d" % index,
+                        "label": "Pending %02d" % index,
+                        "project": "test",
+                    }
+                    arguments.append(item)
+                    with self.assertRaises(CouncilRequestRejected):
+                        call_tool("council_bind", item)
+                self.assertEqual(len(RELAYS), MAX_PENDING_BINDING_ROTATIONS)
+                self.assertEqual(
+                    len(PENDING_BINDING_ROTATIONS), MAX_PENDING_BINDING_ROTATIONS
+                )
+                first = RELAYS["pending-00"]
+                with self.assertRaises(CouncilRequestRejected):
+                    call_tool("council_bind", arguments[0])
+                self.assertIs(RELAYS["pending-00"], first)
+                with self.assertRaises(CouncilError):
+                    call_tool(
+                        "council_bind",
+                        {
+                            "runtime": "claude",
+                            "participant": "overflow",
+                            "label": "Overflow",
+                            "project": "test",
+                        },
+                    )
+                self.assertEqual(len(RELAYS), MAX_PENDING_BINDING_ROTATIONS)
+                self.assertEqual(client.calls, MAX_PENDING_BINDING_ROTATIONS + 1)
+                with self.assertRaises(CouncilError):
+                    call_tool("council_bind", {**arguments[0], "label": ""})
+                self.assertIs(RELAYS["pending-00"], first)
+        finally:
+            close_relays()
+            PENDING_BINDING_ROTATIONS.clear()
+            inbox.close()
+            shutil.rmtree(state, ignore_errors=True)
+
     def test_rejected_claude_bind_retains_potentially_committed_relay(self):
         inbox_dir = Path(self.temporary.name) / "claude-inbox"
         inbox_dir.mkdir()

@@ -6,6 +6,7 @@ import io
 import json
 import os
 from pathlib import Path
+import signal
 import shutil
 import socket
 import subprocess
@@ -228,6 +229,90 @@ class InspectionTests(unittest.TestCase):
                 "/fixture/opencode", self.root, os.getpid()
             )
         )
+
+    def test_artifact_dispatch_uses_root_relative_family_and_nested_schema(self):
+        with council.CouncilBroker(self.root) as broker:
+            broker.bind(
+                "codex",
+                "retention",
+                "Retention",
+                "fixture",
+                target_thread_id="thread-retention",
+                binding_capability=CAP,
+            )
+        report = inspection.inspect_state(self.root)
+        self.assertEqual(report["artifacts"]["malformed_count"], 0)
+
+        path = self.root / "outbox/retention/message.json"
+        write(
+            path,
+            {
+                "status": "pending",
+                "envelope": {
+                    "schema_version": council.SCHEMA_VERSION,
+                    "payload": {
+                        "schema_version": 999,
+                        "dialogue_schema_version": 999,
+                    },
+                },
+            },
+        )
+        report = inspection.inspect_state(self.root)
+        self.assertEqual(report["artifacts"]["unsupported_schema_count"], 0)
+        value = json.loads(path.read_text())
+        value["envelope"]["schema_version"] = 999
+        write(path, value)
+        report = inspection.inspect_state(self.root)
+        self.assertEqual(report["artifacts"]["unsupported_schema_count"], 1)
+
+    def test_unicode_and_recursive_json_become_malformed_evidence(self):
+        route = {
+            "runtime": "codex",
+            "participant": "alpha",
+            "label": "\ud800",
+            "project": "fixture",
+            "bound_at": "fixture",
+            "lease_minutes": 5,
+            "lease_expires_epoch": 1,
+            "capability_hash": "a" * 64,
+            "binding_generation": "gen-alpha",
+            "runtime_cohort": council.RUNTIME_COHORT,
+            "target_thread_id": "thread-alpha",
+        }
+        write(self.root / "registrations/alpha.json", route)
+        report = inspection.inspect_state(self.root, now=2)
+        self.assertEqual(report["registrations"]["incompatible_count"], 1)
+        self.assertTrue(report["registrations"]["blocked"])
+
+        deep = "[" * 1100 + "0" + "]" * 1100
+        registration_root = Path(self.temp.name) / "deep-registration"
+        registration = registration_root / "registrations/alpha.json"
+        registration.parent.mkdir(parents=True)
+        registration.write_text(deep)
+        snapshot = inspection.snapshot_registrations(registration_root)
+        self.assertEqual(snapshot.records[0][4], "malformed_registration")
+
+        admission_root = Path(self.temp.name) / "deep-admission"
+        marker = admission_root / admission.NAMESPACE / "admission.json"
+        marker.parent.mkdir(parents=True)
+        marker.write_text(deep)
+        inspected = admission.inspect_admission(admission_root)
+        self.assertTrue(inspected["managed"])
+        self.assertEqual(inspected["status"], "invalid")
+
+        artifact_root = Path(self.temp.name) / "deep-artifact"
+        artifact_root.mkdir()
+        (artifact_root / "retention.json").write_text(deep)
+        inspected = inspection.inspect_state(artifact_root)
+        self.assertEqual(inspected["artifacts"]["malformed_count"], 1)
+
+        payload_root = Path(self.temp.name) / "deep-payload"
+        payload_root.mkdir()
+        (payload_root / "release_manifest.json").write_text(deep)
+        opencode_root = Path(self.temp.name) / "deep-opencode"
+        opencode_root.mkdir()
+        inspected = inspection.inspect_artifacts(payload_root, opencode_root)
+        self.assertEqual(inspected["error"], "missing_or_invalid_release_manifest")
 
     def test_release_artifact_coverage_hashes_and_missing_provenance(self):
         from build_release import RUNTIME_FILES
@@ -645,6 +730,96 @@ class LeaseTests(unittest.TestCase):
                         os._exit(0)
                 _, status = os.waitpid(pid, 0)
                 self.assertEqual(os.waitstatus_to_exitcode(status), 0)
+
+    def test_forked_unwind_refuses_before_inherited_cleanup_mutexes(self):
+        lease = admission.acquire_writer_lease(self.root)
+        ready = threading.Event()
+        release = threading.Event()
+
+        def hold_lease_condition():
+            with lease._condition:
+                ready.set()
+                release.wait()
+
+        try:
+            try:
+                with lease.operation():
+                    holder = threading.Thread(target=hold_lease_condition)
+                    holder.start()
+                    self.assertTrue(ready.wait(2))
+                    pid = os.fork()
+                    if pid == 0:
+                        signal.signal(signal.SIGALRM, lambda *_: os._exit(9))
+                        signal.alarm(1)
+                    else:
+                        release.set()
+                        holder.join(2)
+            except admission.AdmissionError:
+                if lease.pid != os.getpid():
+                    lease.close()
+                    os._exit(0)
+                raise
+            if pid == 0:
+                os._exit(8)
+            _, status = os.waitpid(pid, 0)
+            self.assertEqual(os.waitstatus_to_exitcode(status), 0)
+            self.assertEqual(lease._active, 0)
+            lease.validate()
+        finally:
+            if lease.pid == os.getpid():
+                lease.close()
+
+        @admission.lease_methods
+        class Probe:
+            def __init__(self, owned):
+                self._lease = owned
+                self._calls = threading.Condition()
+                self._closed = False
+                self._closing = False
+                self._call_counts = {}
+
+            def fork_unwind(self):
+                entered = threading.Event()
+                unblock = threading.Event()
+
+                def hold_call_condition():
+                    with self._calls:
+                        entered.set()
+                        unblock.wait()
+
+                thread = threading.Thread(target=hold_call_condition)
+                thread.start()
+                if not entered.wait(2):
+                    raise AssertionError("call-condition holder did not start")
+                child = os.fork()
+                if child == 0:
+                    signal.signal(signal.SIGALRM, lambda *_: os._exit(9))
+                    signal.alarm(1)
+                else:
+                    unblock.set()
+                    thread.join(2)
+                return child
+
+        lease = admission.acquire_writer_lease(self.root)
+        probe = Probe(lease)
+        try:
+            try:
+                pid = probe.fork_unwind()
+            except admission.AdmissionError:
+                if lease.pid != os.getpid():
+                    lease.close()
+                    os._exit(0)
+                raise
+            if pid == 0:
+                os._exit(8)
+            _, status = os.waitpid(pid, 0)
+            self.assertEqual(os.waitstatus_to_exitcode(status), 0)
+            self.assertEqual(probe._call_counts, {})
+            self.assertEqual(lease._active, 0)
+            lease.validate()
+        finally:
+            if lease.pid == os.getpid():
+                lease.close()
 
     def test_offline_commands_lose_without_touching_record_or_state(self):
         with council.CouncilBroker(self.root) as broker:
@@ -1379,39 +1554,62 @@ class ProcessBarrierTests(unittest.TestCase):
                 spawned.append(child)
                 return child
 
-            with (
-                mock.patch.dict(
-                    os.environ, {"COUNCIL_TEST_ALLOW_UNTRUSTED_DAEMON": "1"}
-                ),
-                mock.patch("council.DAEMON_STARTUP_TIMEOUT_SECONDS", 0.05),
-                mock.patch("council.subprocess.Popen", side_effect=delayed_child),
-                self.assertRaises(council.CouncilError) as caught,
+            with mock.patch.dict(
+                os.environ, {"COUNCIL_TEST_ALLOW_UNTRUSTED_DAEMON": "1"}
             ):
-                council.CouncilClient(root).ensure_daemon()
-            self.assertEqual(caught.exception.reason, "broker_unavailable")
-            self.assertEqual(len(spawned), 1)
-            self.assertIsNone(spawned[0].poll())
-            self.assertTrue(spawned[0].stdout.closed)
-            try:
-                deadline = time.monotonic() + 2
-                while True:
-                    try:
+                with (
+                    mock.patch("council.DAEMON_STARTUP_TIMEOUT_SECONDS", 0.05),
+                    mock.patch(
+                        "council.subprocess.Popen", side_effect=delayed_child
+                    ),
+                    self.assertRaises(council.CouncilError) as caught,
+                ):
+                    council.CouncilClient(root).ensure_daemon()
+                self.assertEqual(caught.exception.reason, "broker_unavailable")
+                self.assertEqual(len(spawned), 1)
+                self.assertIsNone(spawned[0].poll())
+                self.assertTrue(spawned[0].stdout.closed)
+                try:
+                    deadline = time.monotonic() + 2
+                    with mock.patch(
+                        "council.trusted_broker_runtime", return_value=None
+                    ):
+                        while True:
+                            try:
+                                result = council.CouncilClient(
+                                    root, autostart=False
+                                ).request("ping")
+                                break
+                            except council.CouncilError as error:
+                                if (
+                                    error.reason
+                                    not in ("broker_unavailable", "transport_lost")
+                                    or time.monotonic() >= deadline
+                                ):
+                                    raise
+                                time.sleep(0.02)
+                        with (
+                            mock.patch.dict(
+                                os.environ,
+                                {"COUNCIL_TEST_ALLOW_UNTRUSTED_DAEMON": ""},
+                            ),
+                            self.assertRaisesRegex(
+                                council.CouncilError,
+                                "not a broker launched by an admitted runtime",
+                            ),
+                        ):
+                            council.CouncilClient(
+                                root, autostart=False
+                            ).request("ping")
                         result = council.CouncilClient(
                             root, autostart=False
                         ).request("ping")
-                        break
-                    except council.CouncilError as error:
-                        if (
-                            error.reason
-                            not in ("broker_unavailable", "transport_lost")
-                            or time.monotonic() >= deadline
-                        ):
-                            raise
-                        time.sleep(0.02)
-                self.assertEqual(result["runtime_cohort"], council.RUNTIME_COHORT)
-            finally:
-                spawned[0].terminate()
-                spawned[0].wait(timeout=3)
+                    self.assertEqual(
+                        result["runtime_cohort"], council.RUNTIME_COHORT
+                    )
+                finally:
+                    spawned[0].terminate()
+                    spawned[0].wait(timeout=3)
             with admission.acquire_writer_lease(root):
                 pass
 

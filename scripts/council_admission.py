@@ -17,8 +17,8 @@ import threading
 
 import council_protocol as protocol
 
-PACKAGE_ID = "2a69398b06344529865fa5f262b43cb12eeabaa4f39d2221272cbea89d752a29"
-RUNTIME_COHORT = "5dd6570819f2f656374253e7385569f501a94338e00d5fb0eaf24b0960d84bf9"
+PACKAGE_ID = "912d9ad9006a8e8e6e2e2547e0ae8b6cdec2d72f3ef11b8d053925e5ce60a632"
+RUNTIME_COHORT = "819a6413f50aa7fcfb7c8d51f73d73bfc5a4b522ec7431f407505c40535d4961"
 NAMESPACE = ".council-lifecycle"
 _LEASE_PROOF = object()
 MAX_METADATA_BYTES = 1024 * 1024
@@ -60,11 +60,15 @@ def validated_name(value, field):
 
 
 def validated_text(value, field):
-    if (
-        not isinstance(value, str)
-        or not value.strip()
-        or len(value.encode("utf-8")) > protocol.MAX_TEXT_BYTES
-    ):
+    try:
+        invalid = (
+            not isinstance(value, str)
+            or not value.strip()
+            or len(value.encode("utf-8")) > protocol.MAX_TEXT_BYTES
+        )
+    except UnicodeError as error:
+        raise AdmissionError("%s must contain valid Unicode" % field) from error
+    if invalid:
         raise AdmissionError("%s must be nonempty bounded text" % field)
     return value
 
@@ -201,6 +205,13 @@ def no_duplicates(pairs):
     return result
 
 
+def parse_json(data):
+    try:
+        return json.loads(data, object_pairs_hook=no_duplicates)
+    except RecursionError as error:
+        raise AdmissionError("JSON nesting exceeds parser limit") from error
+
+
 def read_regular(path, limit=MAX_METADATA_BYTES):
     """Bounded no-follow read, including parent components; never repair."""
     path = Path(path).absolute()
@@ -242,7 +253,7 @@ def fingerprint(details):
 
 def read_object(path):
     data, _ = read_regular(path)
-    value = json.loads(data, object_pairs_hook=no_duplicates)
+    value = parse_json(data)
     if not isinstance(value, dict):
         raise AdmissionError("metadata must be a JSON object")
     return value
@@ -416,6 +427,10 @@ class WriterLease:
         finally:
             self._local.depth = depth
             if not depth:
+                if self.pid != os.getpid():
+                    raise AdmissionError(
+                        "writer lease operation belongs to another process"
+                    )
                 with self._condition:
                     self._active -= 1
                     self._condition.notify_all()
@@ -521,6 +536,8 @@ def lease_methods(cls):
                 with self._lease.operation():
                     return __method(self, *args, **kwargs)
             finally:
+                if self._lease.pid != os.getpid():
+                    raise AdmissionError("broker belongs to another process")
                 with self._calls:
                     self._call_counts[actor] -= 1
                     if not self._call_counts[actor]:
