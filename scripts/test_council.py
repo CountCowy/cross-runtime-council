@@ -61,6 +61,7 @@ from council import (
 )
 from council_mcp import (
     BINDING_CAPABILITIES,
+    CLAUDE_RELAY_OWNER_ID,
     PENDING_BINDING_ROTATIONS,
     PENDING_EXTENSION_OPERATIONS,
     PENDING_ROUTER_ROTATIONS,
@@ -87,6 +88,32 @@ CAP_GAMMA = "gamma-capability-" + "o" * 40
 CLAUDE_OWNER_A = "claude-owner-a-" + "a" * 40
 CLAUDE_OWNER_B = "claude-owner-b-" + "b" * 40
 TEST_CLAIM_ID_SALT = "ab" * 32
+
+
+class BrokerDispatchClient:
+    """Exercise MCP calls through the real broker dispatch without a live socket."""
+
+    def __init__(self, broker):
+        self.broker = broker
+        self.calls = []
+
+    def request(self, action, **arguments):
+        self.calls.append((action, arguments.get("participant")))
+        try:
+            return self.broker.handle(
+                {
+                    "action": action,
+                    "arguments": arguments,
+                    "runtime_cohort": council.RUNTIME_COHORT,
+                },
+                trusted_mcp_runtime=arguments.get("runtime")
+                if action == "bind"
+                else None,
+            )
+        except CouncilError as error:
+            raise CouncilRequestRejected(
+                str(error), reason=error.reason
+            ) from error
 
 
 def proposal(name):
@@ -6019,6 +6046,140 @@ class TerminalDialogueDeletionTests(TerminalDialogueFixture):
 
 
 class BindFailureRelayCleanupTests(TerminalDialogueFixture):
+    def test_confirmed_codex_renewal_bypasses_only_new_identity_capacity(self):
+        client = BrokerDispatchClient(self.broker)
+        request_meta = {"threadId": "task-primary"}
+        primary = {
+            "runtime": "codex",
+            "participant": "primary",
+            "label": "Primary",
+            "project": "test",
+        }
+        with mock.patch("council_mcp.CouncilClient", return_value=client):
+            call_tool("council_bind", primary, request_meta=request_meta)
+            identity = ("codex", "task-primary", "primary")
+            self.assertIn(identity, BINDING_CAPABILITIES)
+            for index in range(MAX_PENDING_BINDING_ROTATIONS):
+                with self.assertRaises(CouncilRequestRejected):
+                    call_tool(
+                        "council_bind",
+                        {
+                            "runtime": "codex",
+                            "participant": "alternate-%02d" % index,
+                            "label": "Alternate %02d" % index,
+                            "project": "test",
+                        },
+                        request_meta=request_meta,
+                    )
+            self.assertEqual(
+                len(PENDING_BINDING_ROTATIONS), MAX_PENDING_BINDING_ROTATIONS
+            )
+            alternate = ("codex", "task-primary", "alternate-00")
+            retained = PENDING_BINDING_ROTATIONS[alternate]
+            before = len(client.calls)
+            with self.assertRaises(CouncilRequestRejected):
+                call_tool(
+                    "council_bind",
+                    {
+                        "runtime": "codex",
+                        "participant": "alternate-00",
+                        "label": "Alternate 00",
+                        "project": "test",
+                    },
+                    request_meta=request_meta,
+                )
+            self.assertEqual(len(client.calls), before + 1)
+            self.assertIs(PENDING_BINDING_ROTATIONS[alternate], retained)
+            before = len(client.calls)
+            for arguments, metadata in (
+                (
+                    {
+                        "runtime": "codex",
+                        "participant": "unknown",
+                        "label": "Unknown",
+                        "project": "test",
+                    },
+                    request_meta,
+                ),
+                (primary, {"threadId": "different-task"}),
+            ):
+                with self.assertRaises(CouncilError):
+                    call_tool(
+                        "council_bind", arguments, request_meta=metadata
+                    )
+            self.assertEqual(len(client.calls), before)
+
+            call_tool("council_bind", primary, request_meta=request_meta)
+            self.assertNotIn(identity, PENDING_BINDING_ROTATIONS)
+            self.assertEqual(
+                self.broker.registrations["primary"]["capability_hash"],
+                capability_hash(BINDING_CAPABILITIES[identity]),
+            )
+            call_tool(
+                "council_unbind",
+                {"participant": "primary"},
+                request_meta=request_meta,
+            )
+            self.assertNotIn(identity, BINDING_CAPABILITIES)
+            self.assertNotIn(identity, PENDING_BINDING_ROTATIONS)
+            self.assertNotIn("primary", self.broker.registrations)
+            before = len(client.calls)
+            with self.assertRaises(CouncilError):
+                call_tool("council_bind", primary, request_meta=request_meta)
+            self.assertEqual(len(client.calls), before)
+
+    def test_confirmed_claude_identity_renews_at_unknown_capacity(self):
+        inbox_dir = Path(self.temporary.name) / "confirmed-claude-inbox"
+        inbox_dir.mkdir()
+        inbox = FakeClaudeInbox(inbox_dir)
+        relay_state = Path(
+            tempfile.mkdtemp(prefix="council-confirmed-claude.", dir="/private/tmp")
+        )
+        client = BrokerDispatchClient(self.broker)
+        primary = {
+            "runtime": "claude",
+            "participant": "claude-primary",
+            "label": "Claude primary",
+            "project": "test",
+        }
+        environment = {
+            "CLAUDE_CODE_MESSAGING_SOCKET": inbox.path,
+            "COUNCIL_STATE_ROOT": str(relay_state),
+        }
+        try:
+            with (
+                mock.patch.dict(os.environ, environment, clear=False),
+                mock.patch("council_mcp.CouncilClient", return_value=client),
+            ):
+                call_tool("council_bind", primary)
+                identity = ("claude", CLAUDE_RELAY_OWNER_ID, "claude-primary")
+                confirmed = BINDING_CAPABILITIES[identity]
+                relay = RELAYS["claude-primary"]
+                for index in range(MAX_PENDING_BINDING_ROTATIONS):
+                    pending_identity = (
+                        "claude",
+                        CLAUDE_RELAY_OWNER_ID,
+                        "unknown-%02d" % index,
+                    )
+                    PENDING_BINDING_ROTATIONS[pending_identity] = {
+                        "binding_capability": "pending-%02d-" % index + "p" * 40,
+                        "previous_capability": "",
+                    }
+                call_tool("council_bind", primary)
+                self.assertIs(RELAYS["claude-primary"], relay)
+                self.assertNotEqual(BINDING_CAPABILITIES[identity], confirmed)
+                self.assertNotIn(identity, PENDING_BINDING_ROTATIONS)
+                self.assertEqual(
+                    self.broker.registrations["claude-primary"]["capability_hash"],
+                    capability_hash(BINDING_CAPABILITIES[identity]),
+                )
+        finally:
+            close_relays()
+            PENDING_BINDING_ROTATIONS.clear()
+            BINDING_CAPABILITIES.clear()
+            inbox.close()
+            shutil.rmtree(relay_state, ignore_errors=True)
+
     def test_bind_validation_precedes_relay_and_pending_rotations_are_bounded(self):
         with self.assertRaises(CouncilError):
             self.broker.bind(

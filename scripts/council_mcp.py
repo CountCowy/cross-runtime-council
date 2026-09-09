@@ -39,8 +39,8 @@ from council import (
     validate_extension_result,
 )
 
-PACKAGE_ID = "fef882dd609147fc909045c4e67d0318a05a7c2cd861e9711b49d269a554eb0f"
-RUNTIME_COHORT = "6e28d8afe8417526d831827532f1d5eed8ee6821ee3bd910fb4d53055ae08246"
+PACKAGE_ID = "90091936f57c229b536ccc489b6e254648f5bc13c05e9af2ef1e7ebd5e06602e"
+RUNTIME_COHORT = "e94556d41743576d88ff1daae8097304b4d24cc6aa65c97a1bcb6903740a056a"
 if RUNTIME_COHORT != council.RUNTIME_COHORT:
     raise RuntimeError("Council MCP/helper cohort mismatch; refresh the complete runtime set")
 
@@ -382,13 +382,18 @@ def call_tool(
         with CAPABILITIES_LOCK:
             pending = PENDING_BINDING_ROTATIONS.get(identity)
             if pending is None:
-                if len(PENDING_BINDING_ROTATIONS) >= MAX_PENDING_BINDING_ROTATIONS:
+                confirmed_capability = BINDING_CAPABILITIES.get(identity)
+                if (
+                    len(PENDING_BINDING_ROTATIONS)
+                    >= MAX_PENDING_BINDING_ROTATIONS
+                    and not confirmed_capability
+                ):
                     raise CouncilError(
                         "too many pending Council binding rotations; retry an existing identity"
                     )
                 pending = {
                     "binding_capability": secrets.token_urlsafe(48),
-                    "previous_capability": BINDING_CAPABILITIES.get(identity) or "",
+                    "previous_capability": confirmed_capability or "",
                 }
                 PENDING_BINDING_ROTATIONS[identity] = pending
                 created_pending = True
