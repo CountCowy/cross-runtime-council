@@ -6020,6 +6020,20 @@ class TerminalDialogueDeletionTests(TerminalDialogueFixture):
 
 class BindFailureRelayCleanupTests(TerminalDialogueFixture):
     def test_bind_validation_precedes_relay_and_pending_rotations_are_bounded(self):
+        with self.assertRaises(CouncilError):
+            self.broker.bind(
+                "codex",
+                "bool-lease",
+                "Bool lease",
+                "test",
+                lease_minutes=True,
+                target_thread_id="thread-bool-lease",
+                binding_capability="bool-lease-capability-" + "b" * 40,
+            )
+        self.assertFalse(
+            (self.root / "registrations/bool-lease.json").exists()
+        )
+
         inbox_dir = Path(self.temporary.name) / "bounded-inbox"
         inbox_dir.mkdir()
         inbox = FakeClaudeInbox(inbox_dir)
@@ -6055,6 +6069,17 @@ class BindFailureRelayCleanupTests(TerminalDialogueFixture):
                 for _ in range(100):
                     with self.assertRaises(CouncilError):
                         call_tool("council_bind", invalid)
+                with self.assertRaises(CouncilError):
+                    call_tool(
+                        "council_bind",
+                        {
+                            "runtime": "claude",
+                            "participant": "bool-lease",
+                            "label": "Bool lease",
+                            "project": "test",
+                            "lease_minutes": True,
+                        },
+                    )
                 self.assertEqual(RELAYS, {})
                 self.assertEqual(PENDING_BINDING_ROTATIONS, {})
                 self.assertEqual(client.calls, 0)

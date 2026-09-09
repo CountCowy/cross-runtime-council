@@ -82,8 +82,8 @@ from council_protocol import (
 )
 import council_protocol
 
-PACKAGE_ID = "912d9ad9006a8e8e6e2e2547e0ae8b6cdec2d72f3ef11b8d053925e5ce60a632"
-RUNTIME_COHORT = "819a6413f50aa7fcfb7c8d51f73d73bfc5a4b522ec7431f407505c40535d4961"
+PACKAGE_ID = "fef882dd609147fc909045c4e67d0318a05a7c2cd861e9711b49d269a554eb0f"
+RUNTIME_COHORT = "6e28d8afe8417526d831827532f1d5eed8ee6821ee3bd910fb4d53055ae08246"
 if RUNTIME_COHORT != council_protocol.RUNTIME_COHORT or RUNTIME_COHORT != council_admission.RUNTIME_COHORT:
     raise RuntimeError("Council broker/helper cohort mismatch; refresh the complete runtime set")
 
@@ -545,7 +545,7 @@ def validate_bind_arguments(
     label = ensure_text(label, "label")
     project = ensure_text(project, "project")
     if (
-        not isinstance(lease_minutes, int)
+        type(lease_minutes) is not int
         or lease_minutes < 1
         or lease_minutes > MAX_LEASE_MINUTES
     ):
