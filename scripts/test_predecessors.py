@@ -473,7 +473,7 @@ class PredecessorTests(unittest.TestCase):
         import council_lifecycle as lifecycle
 
         with tempfile.TemporaryDirectory(prefix="c2-reader-state-") as directory:
-            base = Path(directory)
+            base = Path(directory).resolve()
             release = base / "release"
             built = subprocess.run(
                 [sys.executable, "-B", str(ROOT / "build_release.py"),
