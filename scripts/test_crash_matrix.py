@@ -22,6 +22,7 @@ from pathlib import Path
 import council
 from council import CouncilBroker, read_json
 from recovery_invariants import MANIFEST_PHASES, check_state_root
+from test_council import restart_broker
 from test_council import (
     CAP_ALPHA,
     TerminalDialogueFixture,
@@ -70,6 +71,7 @@ class CrashMatrixTests(TerminalDialogueFixture):
         council.epoch_now = self._original_epoch_now
         council.FAILPOINT_HOOK = None
         self._row_index += 1
+        self.broker.close()
         self.root = Path(self.temporary.name) / ("state-%d" % self._row_index)
         self.broker = CouncilBroker(self.root)
 
@@ -107,7 +109,7 @@ class CrashMatrixTests(TerminalDialogueFixture):
                     crashed = True
                 finally:
                     council.FAILPOINT_HOOK = None
-                recovered = CouncilBroker(self.root)
+                recovered = restart_broker(self)
                 self.assertEqual(check_state_root(self.root), [])
                 postcondition(recovered, context, crashed)
                 self.assertEqual(check_state_root(self.root), [])
@@ -414,7 +416,7 @@ class CrashMatrixTests(TerminalDialogueFixture):
             return {"dialogue": dialogue}
 
         def operate(_context):
-            CouncilBroker(self.root)
+            restart_broker(self)
 
         def postcondition(_recovered, context, _crashed):
             dialogue = context["dialogue"]
@@ -438,7 +440,7 @@ class CrashMatrixTests(TerminalDialogueFixture):
             return {}
 
         def operate(_context):
-            CouncilBroker(self.root)
+            restart_broker(self)
 
         def postcondition(recovered, _context, _crashed):
             self.assertEqual(
@@ -489,7 +491,7 @@ class CrashMatrixTests(TerminalDialogueFixture):
             )["dialogue_id"]
             self.broker.cancel(cancelled, "alpha", "matrix coverage")
             self.advance_clock(council.DEFAULT_LEASE_MINUTES * 60 + 1)
-            CouncilBroker(self.root)
+            restart_broker(self)
         finally:
             council.FAILPOINT_HOOK = None
         missing = MATRIX_SEAMS - seams

@@ -8,6 +8,7 @@ Claude MCP child-relay paths. It has no network listener.
 
 import argparse
 import datetime as dt
+import fcntl
 import hashlib
 import hmac
 import html
@@ -29,11 +30,6 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-
-sys.dont_write_bytecode = True
-# ruff: noqa: E402 -- custom imports must follow bytecode-write suppression.
-import council_admission
-from council_admission import (AdmissionError, acquire_writer_lease, admit_runtime_writer, lease_methods)
 
 from council_protocol import (
     SCHEMA_VERSION as SCHEMA_VERSION,
@@ -77,15 +73,14 @@ from council_protocol import (
     EVIDENCE_REQUIRED_CONCESSION_BASES as EVIDENCE_REQUIRED_CONCESSION_BASES,
     RESOLUTION_COSTS as RESOLUTION_COSTS,
     ERROR_REASONS as ERROR_REASONS,
-    BIND_COMMIT_STATUSES as BIND_COMMIT_STATUSES,
     REQUEST_SUBMISSION_KINDS,
     SYNTHESIS_REQUIRED_FIELDS,
 )
 import council_protocol
 
-PACKAGE_ID = "d082178b8a467ac52fdfdb1ab425f9a380d9d441de692b690651400e88cf9e09"
-RUNTIME_COHORT = "a6f177962d061266376766eb47d5d7904648126098eb81899652cfa474407478"
-if RUNTIME_COHORT != council_protocol.RUNTIME_COHORT or RUNTIME_COHORT != council_admission.RUNTIME_COHORT:
+PACKAGE_ID = "24e1b0902fe95d929f365cb57a156e454236e7f82b57dcb68b146ba12bb5ba47"
+RUNTIME_COHORT = "9401f1780d0d666764923aef9755778135399b0c6f17ed33aea21686d2715328"
+if RUNTIME_COHORT != council_protocol.RUNTIME_COHORT:
     raise RuntimeError("Council broker/helper cohort mismatch; refresh the complete runtime set")
 
 SECRET_PATTERNS = (
@@ -438,11 +433,7 @@ class CouncilError(Exception):
     """User-facing error; a reason describes cause, not a prior commit outcome."""
 
     def __init__(
-        self,
-        *args: Any,
-        reason: Any = "unknown",
-        error_kind: str = "error",
-        commit_status: Any = None,
+        self, *args: Any, reason: Any = "unknown", error_kind: str = "error"
     ):
         super().__init__(*args)
         self.reason = (
@@ -451,23 +442,13 @@ class CouncilError(Exception):
         self.error_kind = (
             error_kind if error_kind in ("rejected", "error", "internal") else "error"
         )
-        self.commit_status = (
-            commit_status if commit_status in BIND_COMMIT_STATUSES else None
-        )
 
 
 class CouncilRequestRejected(CouncilError):
     """The current request was rejected; an earlier attempt may have committed."""
 
-    def __init__(
-        self, *args: Any, reason: Any = "unknown", commit_status: Any = None
-    ):
-        super().__init__(
-            *args,
-            reason=reason,
-            error_kind="rejected",
-            commit_status=commit_status,
-        )
+    def __init__(self, *args: Any, reason: Any = "unknown"):
+        super().__init__(*args, reason=reason, error_kind="rejected")
 
 
 def validate_extension_result(result: Any, dialogue_id: str) -> Dict[str, Any]:
@@ -516,7 +497,7 @@ def utc_epoch(value: Any) -> Optional[float]:
     return parsed.timestamp()
 
 
-RETENTION_MAX_DAYS = council_admission.RETENTION_MAX_DAYS
+RETENTION_MAX_DAYS = 3650
 
 
 def load_retention_days(state_root: Path) -> Optional[int]:
@@ -524,16 +505,23 @@ def load_retention_days(state_root: Path) -> Optional[int]:
     path = state_root / "retention.json"
     if not path.exists():
         return None
-    try:
-        return council_admission.validate_retention_config(read_json(path))
-    except AdmissionError as error:
-        raise CouncilError(str(error)) from error
+    config = read_json(path)
+    if not isinstance(config, dict):
+        raise CouncilError("retention configuration must be an object")
+    days = config.get("days")
+    if (
+        not isinstance(days, int)
+        or isinstance(days, bool)
+        or not 1 <= days <= RETENTION_MAX_DAYS
+    ):
+        raise CouncilError(
+            "retention days must be an integer between 1 and %d" % RETENTION_MAX_DAYS
+        )
+    return days
 
 
 def safe_name(value: str, field: str = "identifier") -> str:
-    if not isinstance(value, str) or not re.fullmatch(
-        council_protocol.SAFE_NAME_PATTERN, value
-    ):
+    if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,79}", value):
         raise CouncilError("%s must match [A-Za-z0-9][A-Za-z0-9_.-]{0,79}" % field)
     return value
 
@@ -546,30 +534,6 @@ def ensure_text(value: Any, field: str, allow_empty: bool = False) -> str:
     if len(value.encode("utf-8")) > MAX_TEXT_BYTES:
         raise CouncilError("%s exceeds %d bytes" % (field, MAX_TEXT_BYTES))
     return value
-
-
-def validate_bind_arguments(
-    runtime: Any,
-    participant: Any,
-    label: Any,
-    project: Any,
-    lease_minutes: Any,
-) -> Tuple[str, str, str, str, int]:
-    runtime = ensure_text(runtime, "runtime").lower()
-    if runtime not in ("claude", "codex", "opencode"):
-        raise CouncilError("runtime must be claude, codex, or opencode")
-    participant = safe_name(participant, "participant")
-    label = ensure_text(label, "label")
-    project = ensure_text(project, "project")
-    if (
-        type(lease_minutes) is not int
-        or lease_minutes < 1
-        or lease_minutes > MAX_LEASE_MINUTES
-    ):
-        raise CouncilError(
-            "lease_minutes must be between 1 and %d" % MAX_LEASE_MINUTES
-        )
-    return runtime, participant, label, project, lease_minutes
 
 
 def ensure_bounded_text(value: Any, field: str, max_bytes: int) -> str:
@@ -861,17 +825,7 @@ def opencode_runtime_config_path(state_root: Path) -> Path:
     return state_root.expanduser().resolve() / "opencode-runtime.json"
 
 
-def configure_opencode_runtime(state_root: Path, executable: Path, *, lease=None) -> Dict[str, Any]:
-    if lease is None:
-        with acquire_writer_lease(state_root) as owned:
-            return configure_opencode_runtime(state_root, executable, lease=owned)
-    lease.validate(state_root)
-    admit_runtime_writer(lease, RUNTIME_COHORT)
-    with lease.operation():
-        return _configure_opencode_runtime(state_root, executable)
-
-
-def _configure_opencode_runtime(state_root: Path, executable: Path) -> Dict[str, Any]:
+def configure_opencode_runtime(state_root: Path, executable: Path) -> Dict[str, Any]:
     try:
         executable = executable.expanduser().resolve(strict=True)
     except OSError:
@@ -907,7 +861,9 @@ def _pinned_opencode_parent(
     if not path.exists():
         return False
     try:
-        config = council_admission.validate_opencode_config(read_json(path))
+        config = read_json(path)
+        if not isinstance(config, dict):
+            return False
         configured_path = Path(
             ensure_text(config.get("executable"), "OpenCode executable")
         ).resolve(strict=True)
@@ -915,8 +871,12 @@ def _pinned_opencode_parent(
         expected_hash = ensure_text(config.get("sha256"), "OpenCode executable hash")
         expected_cdhash = ensure_text(config.get("cdhash"), "OpenCode executable cdhash")
         configured_at_epoch = config.get("configured_at_epoch")
+        if not re.fullmatch(r"[0-9a-f]{64}", expected_hash):
+            return False
         if (
-            process_pid is None
+            not isinstance(configured_at_epoch, int)
+            or isinstance(configured_at_epoch, bool)
+            or process_pid is None
         ):
             return False
         process_started_at = _process_start_epoch(process_pid)
@@ -1244,62 +1204,8 @@ def post_to_relay(
         raise CouncilError(response.get("error") or "Claude child relay rejected delivery")
 
 
-@lease_methods
 class CouncilBroker:
-    """An owning context/close API, or an explicit borrowed writer lease.
-
-    Call close before restarting the same root. Borrowed close never releases
-    the caller's lease. Raw filesystem helpers are internal, not writer APIs.
-    """
-    def __init__(self, state_root: Path, *, lease=None):
-        self._closed = False
-        self._closing = False
-        self._calls = threading.Condition()
-        self._call_counts = {}
-        self._owns_lease = lease is None
-        self._lease = lease if lease is not None else acquire_writer_lease(state_root)
-        try:
-            self._lease.validate(state_root)
-            admit_runtime_writer(self._lease, RUNTIME_COHORT)
-            with self._lease.operation():
-                self._initialize(state_root)
-        except BaseException:
-            if self._owns_lease:
-                self._lease.close()
-            self._closed = True
-            raise
-
-    def close(self):
-        if self._lease.pid != os.getpid():
-            # A child must not touch mutexes inherited from vanished threads.
-            if self._owns_lease:
-                self._lease.close()
-            self._closed = True
-            return
-        # Drain this broker even when its lease is borrowed. Do not hold the
-        # broker RLock while handlers/long polls finish their active calls.
-        with self._calls:
-            if self._closed:
-                return
-            if self._call_counts.get(threading.get_ident()):
-                raise AdmissionError("cannot close a broker from its active operation")
-            self._closing = True
-            while self._call_counts:
-                self._calls.wait()
-            if self._owns_lease:
-                self._lease.close()
-            self._closed = True
-
-    def __enter__(self):
-        self._lease.validate()
-        if self._closed:
-            raise AdmissionError("broker is closed")
-        return self
-
-    def __exit__(self, *_):
-        self.close()
-
-    def _initialize(self, state_root):
+    def __init__(self, state_root: Path):
         self.root = state_root.expanduser().resolve()
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         os.chmod(self.root, 0o700)
@@ -1549,7 +1455,6 @@ class CouncilBroker:
                 "relay_process_start_epoch",
                 "capability_hash",
                 "binding_generation",
-                "runtime_cohort",
             )
             if key in registration
         }
@@ -1576,21 +1481,88 @@ class CouncilBroker:
         ]
 
     def _validated_persisted_registration(self, route: Dict[str, Any]) -> Dict[str, Any]:
-        try:
-            registration = council_admission.validate_persisted_registration(route)
-        except AdmissionError as error:
-            raise CouncilError(str(error)) from error
-        if registration["binding_generation"] is None:
-            registration["binding_generation"] = "gen-" + uuid.uuid4().hex
-        if registration["runtime"] in ("claude", "opencode"):
+        if not isinstance(route, dict):
+            raise CouncilError("registration route must be an object")
+        runtime = ensure_text(route.get("runtime"), "runtime").lower()
+        if runtime not in ("claude", "codex", "opencode"):
+            raise CouncilError("runtime must be claude, codex, or opencode")
+        participant = safe_name(route.get("participant"), "participant")
+        label = ensure_text(route.get("label"), "label")
+        project = ensure_text(route.get("project"), "project")
+        bound_at = ensure_text(route.get("bound_at"), "bound_at")
+        lease_minutes = route.get("lease_minutes")
+        lease_expires_epoch = route.get("lease_expires_epoch")
+        persisted_capability_hash = route.get("capability_hash")
+        binding_generation = route.get("binding_generation")
+        if not isinstance(lease_minutes, int) or lease_minutes < 1 or lease_minutes > MAX_LEASE_MINUTES:
+            raise CouncilError("invalid persisted lease_minutes")
+        if not isinstance(lease_expires_epoch, (int, float)):
+            raise CouncilError("invalid persisted lease expiry")
+        if not isinstance(persisted_capability_hash, str) or not re.fullmatch(
+            r"[0-9a-f]{64}", persisted_capability_hash
+        ):
+            raise CouncilError("persisted registration has no valid capability hash")
+        if binding_generation is None:
+            binding_generation = "gen-" + uuid.uuid4().hex
+        binding_generation = safe_name(
+            binding_generation, "persisted binding_generation"
+        )
+        registration: Dict[str, Any] = {
+            "runtime": runtime,
+            "participant": participant,
+            "label": label,
+            "project": project,
+            "bound_at": bound_at,
+            "lease_minutes": lease_minutes,
+            "lease_expires_epoch": float(lease_expires_epoch),
+            "capability_hash": persisted_capability_hash,
+            "binding_generation": binding_generation,
+        }
+        if runtime in ("claude", "opencode"):
+            expected_transport = (
+                "claude_mcp_child_relay"
+                if runtime == "claude"
+                else "opencode_plugin_relay"
+            )
+            if route.get("transport") != expected_transport:
+                raise CouncilError("persisted session relay transport is invalid")
+            registration["relay_path"] = validate_persisted_relay_path(
+                route.get("relay_path")
+            )
+            relay_pid = route.get("relay_pid")
+            relay_process_start_epoch = route.get("relay_process_start_epoch")
+            if (
+                not isinstance(relay_pid, int)
+                or isinstance(relay_pid, bool)
+                or relay_pid <= 1
+                or not isinstance(relay_process_start_epoch, int)
+                or isinstance(relay_process_start_epoch, bool)
+            ):
+                raise CouncilError("persisted relay process identity is invalid")
+            registration["relay_pid"] = relay_pid
+            registration["relay_process_start_epoch"] = relay_process_start_epoch
+            registration["transport"] = expected_transport
+            if runtime == "opencode":
+                registration["target_session_id"] = safe_name(
+                    route.get("target_session_id"), "target_session_id"
+                )
+            else:
+                relay_owner_hash = route.get("relay_owner_hash")
+                if not isinstance(relay_owner_hash, str) or not re.fullmatch(
+                    r"[0-9a-f]{64}", relay_owner_hash
+                ):
+                    raise CouncilError(
+                        "persisted Claude registration has no valid relay owner hash"
+                    )
+                registration["relay_owner_hash"] = relay_owner_hash
             registration["transport_ready"] = False
             registration["transport_error"] = (
                 "%s relay requires exact-session reauthentication after broker restart"
-                % (
-                    "Claude"
-                    if registration["runtime"] == "claude"
-                    else "OpenCode"
-                )
+                % ("Claude" if runtime == "claude" else "OpenCode")
+            )
+        else:
+            registration["target_thread_id"] = safe_name(
+                route.get("target_thread_id"), "target_thread_id"
             )
         return registration
 
@@ -1631,7 +1603,7 @@ class CouncilBroker:
             except (CouncilError, OSError, ValueError, TypeError, json.JSONDecodeError) as error:
                 self.registration_restore_errors.append("%s: %s" % (path.name, error))
 
-    def _registration(self, participant: str, *, mutate=True, require_cohort=True) -> Dict[str, Any]:
+    def _registration(self, participant: str) -> Dict[str, Any]:
         participant = safe_name(participant, "participant")
         with self.changed:
             registration = self.registrations.get(participant)
@@ -1640,31 +1612,17 @@ class CouncilBroker:
                     "participant is not bound: %s" % participant, reason="not_bound"
                 )
             if registration["lease_expires_epoch"] <= epoch_now():
-                if mutate:
-                    self.registrations.pop(participant, None)
-                    self._remove_persisted_registration(participant)
-                    self._clear_registration_restore_error(participant)
+                self.registrations.pop(participant, None)
+                self._remove_persisted_registration(participant)
+                self._clear_registration_restore_error(participant)
                 raise CouncilError(
                     "participant binding expired: %s" % participant,
                     reason="binding_expired",
                 )
-            if require_cohort:
-                self._require_route_cohort(registration)
             return registration
 
-    @staticmethod
-    def _require_cohort(cohort):
-        if not isinstance(cohort, str) or cohort != RUNTIME_COHORT:
-            raise CouncilError("Council runtime cohort mismatch; refresh the complete runtime set", reason="version_mismatch")
-
-    def _require_route_cohort(self, registration):
-        # Persisted current-cohort bindings retain their prior authorization.
-        # Each RPC still proves its capability before this compatibility check.
-        if registration.get("runtime_cohort") != RUNTIME_COHORT:
-            raise CouncilError("participant route requires authenticated same-scope rebind to the current cohort", reason="version_mismatch")
-
     def _authorize_participant(self, participant: str, capability: Any) -> str:
-        registration = self._registration(participant, mutate=False, require_cohort=False)
+        registration = self._registration(participant)
         if not isinstance(capability, str):
             raise CouncilError(
                 "this exact session is not authorized for participant %s" % participant,
@@ -1682,12 +1640,18 @@ class CouncilBroker:
     def _router_config(self) -> Dict[str, Any]:
         if not self.router_config_path.exists():
             raise CouncilError("Council router is not configured")
-        try:
-            return council_admission.validate_router_config(
-                read_json(self.router_config_path)
-            )
-        except AdmissionError as error:
-            raise CouncilError(str(error)) from error
+        config = read_json(self.router_config_path)
+        if not isinstance(config, dict):
+            raise CouncilError("Council router configuration is invalid")
+        config["target_thread_id"] = safe_name(
+            config.get("target_thread_id"), "router target_thread_id"
+        )
+        stored_hash = config.get("capability_hash")
+        if stored_hash is not None and (
+            not isinstance(stored_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", stored_hash)
+        ):
+            raise CouncilError("Council router capability configuration is invalid")
+        return config
 
     def configure_router(self, target_thread_id: str) -> Dict[str, Any]:
         target_thread_id = safe_name(target_thread_id, "router target_thread_id")
@@ -1704,7 +1668,6 @@ class CouncilBroker:
         target_thread_id: str,
         router_capability: str,
         previous_router_capability: Optional[str] = None,
-        _request_cohort=RUNTIME_COHORT,
     ) -> Dict[str, Any]:
         target_thread_id = safe_name(target_thread_id, "router target_thread_id")
         with self.lock:
@@ -1714,9 +1677,6 @@ class CouncilBroker:
             current_hash = config.get("capability_hash")
             desired_hash = capability_hash(router_capability)
             if current_hash and hmac.compare_digest(current_hash, desired_hash):
-                self._require_cohort(_request_cohort)
-                config["runtime_cohort"] = _request_cohort
-                atomic_json(self.router_config_path, config)
                 return {"bound": True, "duplicate": True}
             if current_hash and (
                 not isinstance(previous_router_capability, str)
@@ -1727,14 +1687,12 @@ class CouncilBroker:
                 raise CouncilError(
                     "Council router capability rotation requires its prior capability"
                 )
-            self._require_cohort(_request_cohort)
-            config["runtime_cohort"] = _request_cohort
             config["capability_hash"] = desired_hash
             config["bound_at"] = utc_now()
             atomic_json(self.router_config_path, config)
         return {"bound": True, "duplicate": False}
 
-    def _authorize_router(self, capability: Any) -> Dict[str, Any]:
+    def _authorize_router(self, capability: Any) -> None:
         config = self._router_config()
         expected = config.get("capability_hash")
         if not expected:
@@ -1743,7 +1701,6 @@ class CouncilBroker:
             raise CouncilError("this exact task is not authorized as the Council router")
         if not hmac.compare_digest(expected, capability_hash(capability)):
             raise CouncilError("this exact task is not authorized as the Council router")
-        return config
 
     def ping(self) -> Dict[str, Any]:
         with self.lock:
@@ -1784,16 +1741,15 @@ class CouncilBroker:
         target_session_id: Optional[str] = None,
         binding_capability: Optional[str] = None,
         previous_capability: Optional[str] = None,
-        _request_cohort=RUNTIME_COHORT,
-        _commit_state: Optional[Dict[str, bool]] = None,
     ) -> Dict[str, Any]:
-        def mark_commit_started() -> None:
-            if _commit_state is not None:
-                _commit_state["started"] = True
-
-        runtime, participant, label, project, lease_minutes = validate_bind_arguments(
-            runtime, participant, label, project, lease_minutes
-        )
+        runtime = ensure_text(runtime, "runtime").lower()
+        if runtime not in ("claude", "codex", "opencode"):
+            raise CouncilError("runtime must be claude, codex, or opencode")
+        participant = safe_name(participant, "participant")
+        label = ensure_text(label, "label")
+        project = ensure_text(project, "project")
+        if not isinstance(lease_minutes, int) or lease_minutes < 1 or lease_minutes > MAX_LEASE_MINUTES:
+            raise CouncilError("lease_minutes must be between 1 and %d" % MAX_LEASE_MINUTES)
         if socket_path is not None or token is not None:
             raise CouncilError("direct Claude socket/token binding is disabled; use the MCP child relay")
         registration: Dict[str, Any] = {
@@ -1808,7 +1764,6 @@ class CouncilBroker:
                 binding_capability or secrets.token_urlsafe(32)
             ),
             "binding_generation": "gen-" + uuid.uuid4().hex,
-            "runtime_cohort": _request_cohort,
         }
         if runtime in ("claude", "opencode"):
             if (
@@ -1892,17 +1847,12 @@ class CouncilBroker:
                             raise CouncilError(
                                 "idempotent OpenCode bind does not match its exact session"
                             )
-                        self._require_cohort(_request_cohort)
-                        mark_commit_started()
                         current["relay_path"] = registration["relay_path"]
                         current["transport"] = registration["transport"]
                         current["transport_ready"] = True
                         current["_relay_capability"] = registration[
                             "_relay_capability"
                         ]
-                    self._require_cohort(_request_cohort)
-                    mark_commit_started()
-                    current["runtime_cohort"] = _request_cohort
                     self._persist_registration(current)
                     self._clear_registration_restore_error(participant)
                     retry = self.retry(participant)
@@ -1988,8 +1938,6 @@ class CouncilBroker:
                             "Claude session is already bound as participant %s"
                             % existing_participant
                         )
-            self._require_cohort(_request_cohort)
-            mark_commit_started()
             self.registrations[participant] = registration
             self._persist_registration(registration)
             self._clear_registration_restore_error(participant)
@@ -2545,8 +2493,6 @@ class CouncilBroker:
         registration = self.registrations.get(recipient)
         if not registration or registration["lease_expires_epoch"] <= epoch_now():
             return
-        if registration.get("runtime_cohort") != RUNTIME_COHORT:
-            return
         if not self._record_matches_registration(record, registration):
             record["last_error"] = (
                 "recipient binding does not match the dialogue runtime or project"
@@ -2554,9 +2500,6 @@ class CouncilBroker:
             atomic_json(path, record)
             return
         if registration["runtime"] not in ("claude", "opencode"):
-            return
-        if not registration.get("transport_ready"):
-            # A compatible durable route does not resurrect its relay secret.
             return
         record["attempts"] += 1
         record["last_attempt_at"] = utc_now()
@@ -4709,7 +4652,7 @@ class CouncilBroker:
         )
         if not isinstance(timeout_seconds, int) or timeout_seconds < 0 or timeout_seconds > MAX_WAIT_SECONDS:
             raise CouncilError("timeout_seconds must be between 0 and %d" % MAX_WAIT_SECONDS)
-        deadline = time.monotonic() + timeout_seconds
+        deadline = epoch_now() + timeout_seconds
         with self.changed:
             reconciled = False
             while True:
@@ -4742,7 +4685,7 @@ class CouncilBroker:
                             record["wake_lease_until_epoch"] = None
                             atomic_json(path, record)
                             return {"message": record["envelope"], "claim_seconds": CLAIM_SECONDS}
-                remaining = deadline - time.monotonic()
+                remaining = deadline - epoch_now()
                 if remaining <= 0:
                     return {"message": None}
                 self.changed.wait(timeout=min(remaining, 1.0))
@@ -4855,8 +4798,7 @@ class CouncilBroker:
                     continue
                 participant = participant_dir.name
                 registration = self.registrations.get(participant)
-                if (not registration or registration.get("runtime") != "codex"
-                        or registration.get("runtime_cohort") != RUNTIME_COHORT):
+                if not registration or registration.get("runtime") != "codex":
                     continue
                 target_thread_id = registration.get("target_thread_id")
                 if not target_thread_id:
@@ -4956,8 +4898,6 @@ class CouncilBroker:
             if record["envelope"]["recipient"] != participant:
                 raise CouncilError("message recipient mismatch")
             registration = self.registrations.get(participant)
-            if registration:
-                self._require_route_cohort(registration)
             if not registration or not self._record_matches_registration(
                 record, registration
             ):
@@ -5090,10 +5030,6 @@ class CouncilBroker:
         if not isinstance(arguments, dict):
             raise CouncilError("arguments must be an object")
         arguments = dict(arguments)
-        # Transport metadata cannot be supplied as model-visible arguments.
-        arguments.pop("_request_cohort", None)
-        arguments.pop("_commit_state", None)
-        cohort = request.get("runtime_cohort")
         participant_fields = {
             "unbind": "participant",
             "start": "initiator",
@@ -5127,44 +5063,24 @@ class CouncilBroker:
         if not method:
             raise CouncilError("unknown action: %s" % action)
         if action == "bind":
-            commit_state = {"started": False}
-            try:
-                runtime = arguments.get("runtime")
-                if trusted_mcp_runtime != runtime:
-                    raise CouncilError(
-                        "participant bootstrap requires a matching signed-runtime MCP process"
-                    )
-                binding_capability = arguments.get("binding_capability")
-                capability_hash(binding_capability)
-                arguments["_request_cohort"] = cohort
-                arguments["_commit_state"] = commit_state
-                return method(**arguments)
-            except (
-                CouncilError,
-                ValueError,
-                TypeError,
-                json.JSONDecodeError,
-            ) as error:
-                if not commit_state["started"]:
-                    error.commit_status = "precommit"
-                raise
+            runtime = arguments.get("runtime")
+            if trusted_mcp_runtime != runtime:
+                raise CouncilError(
+                    "participant bootstrap requires a matching signed-runtime MCP process"
+                )
+            binding_capability = arguments.get("binding_capability")
+            capability_hash(binding_capability)
         elif action in participant_fields:
             with self.changed:
                 participant = arguments.get(participant_fields[action])
                 binding_generation = self._authorize_participant(
                     participant, arguments.pop("_auth_capability", None)
                 )
-                self._require_cohort(cohort)
-                self._require_route_cohort(self.registrations[participant])
                 if action == "wait":
                     arguments["_authorized_binding_generation"] = binding_generation
                 return method(**arguments)
         elif action in ("pending_wakes", "wake_ack"):
-            with self.changed:
-                router = self._authorize_router(arguments.pop("_router_capability", None))
-                self._require_cohort(cohort)
-                self._require_cohort(router.get("runtime_cohort"))
-                return method(**arguments)
+            self._authorize_router(arguments.pop("_router_capability", None))
         elif action == "router_bind":
             if trusted_mcp_runtime != "codex":
                 raise CouncilError(
@@ -5172,49 +5088,16 @@ class CouncilBroker:
                 )
             router_capability = arguments.get("router_capability")
             capability_hash(router_capability)
-            arguments["_request_cohort"] = cohort
-        else:
-            self._require_cohort(cohort)
         return method(**arguments)
-
-
-BROKER_INITIAL_FRAME_TIMEOUT_SECONDS = 5.0
-
-
-def read_initial_broker_frame(connection: socket.socket, timeout_seconds: float) -> bytes:
-    """Read one newline frame with an absolute deadline and a fixed byte bound."""
-    deadline = time.monotonic() + timeout_seconds
-    chunks = bytearray()
-    while len(chunks) <= MAX_LINE_BYTES:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise socket.timeout("broker initial frame deadline expired")
-        connection.settimeout(remaining)
-        chunk = connection.recv(min(64 * 1024, MAX_LINE_BYTES + 1 - len(chunks)))
-        if not chunk:
-            break
-        newline = chunk.find(b"\n")
-        if newline >= 0:
-            chunks.extend(chunk[: newline + 1])
-            break
-        chunks.extend(chunk)
-    return bytes(chunks)
 
 
 class BrokerRequestHandler(socketserver.StreamRequestHandler):
     def handle(self) -> None:
+        self.request.settimeout(5)
         try:
-            raw = read_initial_broker_frame(
-                self.request,
-                getattr(
-                    self.server,
-                    "initial_frame_timeout_seconds",
-                    BROKER_INITIAL_FRAME_TIMEOUT_SECONDS,
-                ),
-            )
+            raw = self.rfile.readline(MAX_LINE_BYTES + 1)
         except (socket.timeout, TimeoutError, OSError):
             raw = b""
-        self.request.settimeout(BROKER_INITIAL_FRAME_TIMEOUT_SECONDS)
         if len(raw) > MAX_LINE_BYTES:
             response = {
                 "ok": False, "error": "request exceeds 1 MiB",
@@ -5244,10 +5127,8 @@ class BrokerRequestHandler(socketserver.StreamRequestHandler):
                     "ok": False,
                     "error": str(error),
                     "error_kind": "rejected",
-                    "reason": error.reason if isinstance(error, (CouncilError, AdmissionError)) else "invalid_request",
+                    "reason": error.reason if isinstance(error, CouncilError) else "invalid_request",
                 }
-                if getattr(error, "commit_status", None) == "precommit":
-                    response["commit_status"] = "precommit"
             except Exception as error:
                 response = {
                     "ok": False,
@@ -5259,8 +5140,7 @@ class BrokerRequestHandler(socketserver.StreamRequestHandler):
 
 
 class ThreadingUnixServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
-    daemon_threads = False
-    block_on_close = True
+    daemon_threads = True
     allow_reuse_address = True
 
     def __init__(self, *args: Any, **kwargs: Any):
@@ -5302,7 +5182,7 @@ def verify_broker_peer(connection: socket.socket, state_root: Path) -> int:
     return peer_pid
 
 
-def run_daemon(state_root: Path, startup_reporter: Optional[Any] = None) -> None:
+def run_daemon(state_root: Path) -> None:
     state_root = state_root.expanduser().resolve()
     launcher_runtime = trusted_broker_runtime(os.getpid(), state_root)
     if launcher_runtime is None and not _test_daemon_launcher_allowed(state_root):
@@ -5313,13 +5193,17 @@ def run_daemon(state_root: Path, startup_reporter: Optional[Any] = None) -> None
     launcher_start_epoch = _process_start_epoch(launcher_pid)
     if launcher_start_epoch is None:
         raise CouncilError("broker launcher process generation could not be established")
-    lease = acquire_writer_lease(state_root)
+    state_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(state_root, 0o700)
+    lock_path = state_root / "broker.lock"
+    lock_descriptor = os.open(
+        str(lock_path), os.O_RDWR | os.O_CREAT, 0o600
+    )
     try:
-        admit_runtime_writer(lease, RUNTIME_COHORT)
-    except BaseException:
-        lease.close()
-        raise
-    lock_descriptor = lease.fd
+        fcntl.flock(lock_descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except (BlockingIOError, OSError):
+        os.close(lock_descriptor)
+        raise CouncilError("broker lifetime lock is already held")
 
     path = broker_socket_path(state_root)
     server: Optional[ThreadingUnixServer] = None
@@ -5372,7 +5256,7 @@ def run_daemon(state_root: Path, startup_reporter: Optional[Any] = None) -> None
         os.write(lock_descriptor, lock_record)
         os.fsync(lock_descriptor)
 
-        broker = CouncilBroker(state_root, lease=lease)
+        broker = CouncilBroker(state_root)
         server = ThreadingUnixServer(str(path), BrokerRequestHandler)
         server.broker = broker  # type: ignore[attr-defined]
         os.chmod(path, 0o600)
@@ -5396,8 +5280,6 @@ def run_daemon(state_root: Path, startup_reporter: Optional[Any] = None) -> None
             name="council-broker-launcher-watch",
             daemon=True,
         ).start()
-        if startup_reporter is not None:
-            startup_reporter(True, None, False)
         server.serve_forever(poll_interval=0.2)
     finally:
         if server is not None:
@@ -5408,87 +5290,17 @@ def run_daemon(state_root: Path, startup_reporter: Optional[Any] = None) -> None
                 path.unlink()
         except (FileNotFoundError, OSError):
             pass
-        lease.close()
-
-
-DAEMON_STARTUP_TIMEOUT_SECONDS = 3.0
-MAX_DAEMON_STARTUP_STATUS_BYTES = 1024
-
-
-def read_daemon_startup_status(
-    stream: Any, process: Any, deadline: Optional[float] = None
-) -> Dict[str, Any]:
-    descriptor = stream.fileno()
-    os.set_blocking(descriptor, False)
-    deadline = deadline or time.monotonic() + DAEMON_STARTUP_TIMEOUT_SECONDS
-    encoded = bytearray()
-    while time.monotonic() < deadline:
-        try:
-            chunk = os.read(
-                descriptor,
-                MAX_DAEMON_STARTUP_STATUS_BYTES + 1 - len(encoded),
-            )
-        except BlockingIOError:
-            chunk = None
-        if chunk:
-            encoded.extend(chunk)
-            if len(encoded) > MAX_DAEMON_STARTUP_STATUS_BYTES:
-                raise CouncilError(
-                    "broker returned oversized startup status",
-                    reason="malformed_response",
-                )
-            newline = encoded.find(b"\n")
-            if newline >= 0:
-                try:
-                    status = json.loads(encoded[:newline].decode("utf-8"))
-                except (UnicodeDecodeError, ValueError) as error:
-                    raise CouncilError(
-                        "broker returned malformed startup status",
-                        reason="malformed_response",
-                    ) from error
-                if (
-                    not isinstance(status, dict)
-                    or type(status.get("ok")) is not bool
-                    or type(status.get("retryable")) is not bool
-                    or status.get("reason") not in ERROR_REASONS + (None,)
-                    or (status["ok"] and status.get("reason") is not None)
-                    or (status["ok"] and status["retryable"])
-                ):
-                    raise CouncilError(
-                        "broker returned invalid startup status",
-                        reason="malformed_response",
-                    )
-                return status
-        elif chunk == b"" and process.poll() is not None:
-            break
-        time.sleep(0.01)
-    raise CouncilError(
-        "broker did not return bounded startup status",
-        reason="broker_unavailable",
-    )
-
-
-def stop_failed_daemon_startup(process: Any) -> None:
-    """Reap only the exact daemon child this client launched."""
-    if process.poll() is not None:
-        return
-    process.terminate()
-    try:
-        process.wait(timeout=1)
-    except subprocess.TimeoutExpired:
-        process.kill()
-        process.wait(timeout=1)
+        fcntl.flock(lock_descriptor, fcntl.LOCK_UN)
+        os.close(lock_descriptor)
 
 
 class CouncilClient:
-    def __init__(self, state_root: Optional[Path] = None, autostart: bool = True, *, origin_cohort=RUNTIME_COHORT):
+    def __init__(self, state_root: Optional[Path] = None, autostart: bool = True):
         self.state_root = (state_root or default_state_root()).expanduser().resolve()
         self.socket_path = broker_socket_path(self.state_root)
         self.autostart = autostart
-        self._origin_cohort = origin_cohort
 
     def _send(self, request: Dict[str, Any]) -> Dict[str, Any]:
-        request = dict(request, runtime_cohort=self._origin_cohort)
         client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         client.settimeout(60)
         connected = False
@@ -5526,15 +5338,7 @@ class CouncilClient:
             if not isinstance(error, str) or not error:
                 error = "broker request failed"
             if response.get("error_kind") == "rejected":
-                raise CouncilRequestRejected(
-                    error,
-                    reason=response.get("reason"),
-                    commit_status=(
-                        response.get("commit_status")
-                        if response.get("commit_status") == "precommit"
-                        else None
-                    ),
-                )
+                raise CouncilRequestRejected(error, reason=response.get("reason"))
             raise CouncilError(
                 error, reason=response.get("reason"),
                 error_kind=response.get("error_kind", "error"),
@@ -5547,102 +5351,42 @@ class CouncilClient:
     def ensure_daemon(self) -> None:
         try:
             result = self._send({"action": "ping", "arguments": {}})
-        except CouncilError as error:
-            if not self.autostart or error.reason not in ("broker_unavailable", "transport_lost"):
+        except CouncilError:
+            if not self.autostart:
                 raise
         else:
             self._require_current_broker(result)
             return
         self.state_root.mkdir(parents=True, exist_ok=True, mode=0o700)
-        startup_deadline = time.monotonic() + DAEMON_STARTUP_TIMEOUT_SECONDS
         log_path = self.state_root / "broker.log"
         log_descriptor = os.open(str(log_path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
         os.chmod(log_path, 0o600)
         log = os.fdopen(log_descriptor, "ab", buffering=0)
-        try:
-            process = subprocess.Popen(
-                [
-                    sys.executable,
-                    str(Path(__file__).resolve()),
-                    "daemon",
-                    "--state-root",
-                    str(self.state_root),
-                    "--startup-report",
-                ],
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=log,
-                start_new_session=True,
-                close_fds=True,
-            )
-        finally:
-            log.close()
-        if process.stdout is None:
-            stop_failed_daemon_startup(process)
-            raise CouncilError(
-                "broker startup status channel is unavailable",
-                reason="broker_unavailable",
-            )
-        try:
+        subprocess.Popen(
+            [sys.executable, str(Path(__file__).resolve()), "daemon", "--state-root", str(self.state_root)],
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=log,
+            start_new_session=True,
+            close_fds=True,
+        )
+        log.close()
+        deadline = epoch_now() + 3
+        last_error: Optional[Exception] = None
+        while epoch_now() < deadline:
             try:
-                startup = read_daemon_startup_status(
-                    process.stdout, process, startup_deadline
-                )
+                result = self._send({"action": "ping", "arguments": {}})
             except CouncilError as error:
-                # A valid large-state constructor may outlive the caller's
-                # bounded wait. Keep that owned child running so a later call
-                # can observe its socket; malformed status cannot be trusted.
-                if error.reason == "malformed_response":
-                    stop_failed_daemon_startup(process)
-                raise
-            except BaseException:
-                stop_failed_daemon_startup(process)
-                raise
-        finally:
-            process.stdout.close()
-        if startup["ok"] is False:
-            try:
-                exit_code = process.wait(
-                    timeout=max(0.01, startup_deadline - time.monotonic())
-                )
-            except subprocess.TimeoutExpired as error:
-                raise CouncilError(
-                    "broker startup child did not exit after refusal",
-                    reason="broker_unavailable",
-                ) from error
-            if exit_code == 0:
-                raise CouncilError(
-                    "broker startup child reported refusal with a successful exit",
-                    reason="malformed_response",
-                )
-            if not startup["retryable"]:
-                raise CouncilError(
-                    "Council broker startup failed: %s" % startup["reason"],
-                    reason=startup["reason"],
-                )
-            last_error: Optional[CouncilError] = None
-            while time.monotonic() < startup_deadline:
-                try:
-                    result = self._send({"action": "ping", "arguments": {}})
-                except CouncilError as error:
-                    if error.reason not in ("broker_unavailable", "transport_lost"):
-                        raise
-                    last_error = error
-                    time.sleep(0.05)
-                else:
-                    self._require_current_broker(result)
-                    return
-            raise CouncilError(
-                "Council broker startup race did not become ready: %s" % last_error,
-                reason="broker_unavailable",
-            )
-        result = self._send({"action": "ping", "arguments": {}})
-        self._require_current_broker(result)
-
+                last_error = error
+                time.sleep(0.05)
+            else:
+                self._require_current_broker(result)
+                return
+        raise CouncilError("broker failed to start: %s" % last_error, reason="broker_unavailable")
 
     def _require_current_broker(self, result: Any) -> None:
         version = result.get("broker_version") if isinstance(result, dict) else None
-        if version != BROKER_VERSION or result.get("runtime_cohort") != self._origin_cohort:
+        if version != BROKER_VERSION:
             raise CouncilError(
                 "Council adapter/broker version mismatch: adapter=%s broker=%s; "
                 "the owning runtime must stop the old broker and retry"
@@ -5653,10 +5397,7 @@ class CouncilClient:
     def request(self, action: str, **arguments: Any) -> Any:
         if action != "ping":
             self.ensure_daemon()
-        result = self._send({"action": action, "arguments": arguments})
-        if action == "ping":
-            self._require_current_broker(result)
-        return result
+        return self._send({"action": action, "arguments": arguments})
 
 
 def installation_doctor(
@@ -5672,14 +5413,26 @@ def installation_doctor(
         opencode_config_root or (Path.home() / ".config" / "opencode")
     ).expanduser().resolve()
 
-    from council_inspect import inspect_state, inspect_artifacts
-    inspection = inspect_state(state_root, payload_root=skill_root, opencode_root=opencode_config_root)
-    inspection["release_artifacts"] = inspect_artifacts(skill_root, opencode_config_root)
-    broker = {
-        "reachable": None, "version": None, "version_current": None,
-        "registration_restore_error_count": None, "corrupt_file_error_count": None,
-        "authenticated_readiness": "unobserved",
-    }
+    broker: Dict[str, Any]
+    try:
+        broker_ping = CouncilClient(state_root, autostart=False).request("ping")
+        broker = {
+            "reachable": True,
+            "version": broker_ping.get("broker_version"),
+            "version_current": broker_ping.get("broker_version") == BROKER_VERSION,
+            "registration_restore_error_count": broker_ping.get(
+                "registration_restore_error_count"
+            ),
+            "corrupt_file_error_count": broker_ping.get("corrupt_file_error_count"),
+        }
+    except CouncilError as error:
+        broker = {
+            "reachable": False,
+            "version": None,
+            "version_current": False,
+            "registration_restore_error_count": None,
+            "error": str(error),
+        }
 
     tracked = False
     try:
@@ -5821,13 +5574,16 @@ def installation_doctor(
     return {
         "broker_version": BROKER_VERSION,
         "broker": broker,
-        "inspection": inspection,
         "source": {"tracked": tracked},
         "router": router,
         "opencode": opencode,
         "deletion": deletion,
         "release_snapshot_ready": tracked,
-        "local_runtime_ready": None,  # Offline files cannot establish authenticated readiness.
+        "local_runtime_ready": bool(
+            broker["reachable"]
+            and broker["version_current"]
+            and broker.get("registration_restore_error_count") == 0
+        ),
     }
 
 
@@ -6302,42 +6058,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     daemon = subparsers.add_parser("daemon")
     daemon.add_argument("--state-root", type=Path, default=argparse.SUPPRESS)
-    daemon.add_argument("--startup-report", action="store_true", help=argparse.SUPPRESS)
     return parser
 
 
 def run_cli(argv: Optional[List[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    startup_reported = False
-
-    def report_startup(ok, reason, retryable=False):
-        nonlocal startup_reported
-        if not getattr(args, "startup_report", False) or startup_reported:
-            return
-        startup_reported = True
-        safe_reason = reason if reason in ERROR_REASONS else "unknown"
-        if ok:
-            safe_reason = None
-        try:
-            sys.stdout.write(
-                json.dumps(
-                    {
-                        "ok": bool(ok),
-                        "reason": safe_reason,
-                        "retryable": bool(retryable) if not ok else False,
-                    },
-                    separators=(",", ":"),
-                )
-                + "\n"
-            )
-            sys.stdout.flush()
-        except (BrokenPipeError, OSError):
-            pass
-
     try:
         if args.command == "daemon":
-            run_daemon(args.state_root, startup_reporter=report_startup)
+            run_daemon(args.state_root)
             return 0
         if args.command == "ping":
             client = CouncilClient(args.state_root, autostart=False)
@@ -6367,53 +6096,68 @@ def run_cli(argv: Optional[List[str]] = None) -> int:
             result = info
         elif args.command == "delete":
             state_root = args.state_root.expanduser().resolve()
-            with CouncilBroker(state_root) as broker:
-                result = broker.delete_terminal_dialogue(args.dialogue_id, args.reason)
+            probe = CouncilClient(state_root, autostart=False)
+            try:
+                probe.request("ping")
+            except CouncilError:
+                pass
+            else:
+                raise CouncilError("stop the broker before deleting dialogue records")
+            result = CouncilBroker(state_root).delete_terminal_dialogue(
+                args.dialogue_id, args.reason
+            )
         elif args.command in (
             "configure-router",
             "configure-opencode",
             "configure-retention",
         ):
             state_root = args.state_root.expanduser().resolve()
-            with acquire_writer_lease(state_root) as lease:
-                admit_runtime_writer(lease, RUNTIME_COHORT)
-                if args.command == "configure-retention":
-                    if args.disable:
-                        remove_file(state_root / "retention.json")
-                        result = {"configured": False}
-                    else:
-                        if (
-                            not isinstance(args.days, int)
-                            or not 1 <= args.days <= RETENTION_MAX_DAYS
-                        ):
-                            raise CouncilError(
-                                "retention days must be an integer between 1 and %d"
-                                % RETENTION_MAX_DAYS
-                            )
-                        atomic_json(
-                            state_root / "retention.json",
-                            {"days": args.days, "configured_at": utc_now()},
-                        )
-                        result = {"configured": True, "days": args.days}
-                elif args.command == "configure-router":
-                    target_thread_id = safe_name(args.target_thread_id, "router target_thread_id")
-                    atomic_json(
-                        state_root / "router.json",
-                        {
-                            "target_thread_id": target_thread_id,
-                            "capability_hash": None,
-                            "configured_at": utc_now(),
-                        },
-                    )
-                    result = {"configured": True, "target_thread_id": target_thread_id}
+            probe = CouncilClient(state_root, autostart=False)
+            try:
+                probe.request("ping")
+            except CouncilError:
+                pass
+            else:
+                raise CouncilError(
+                    "stop the broker before changing its offline configuration"
+                )
+            state_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+            if args.command == "configure-retention":
+                if args.disable:
+                    remove_file(state_root / "retention.json")
+                    result = {"configured": False}
                 else:
-                    result = configure_opencode_runtime(state_root, args.executable, lease=lease)
+                    if (
+                        not isinstance(args.days, int)
+                        or not 1 <= args.days <= RETENTION_MAX_DAYS
+                    ):
+                        raise CouncilError(
+                            "retention days must be an integer between 1 and %d"
+                            % RETENTION_MAX_DAYS
+                        )
+                    atomic_json(
+                        state_root / "retention.json",
+                        {"days": args.days, "configured_at": utc_now()},
+                    )
+                    result = {"configured": True, "days": args.days}
+            elif args.command == "configure-router":
+                target_thread_id = safe_name(args.target_thread_id, "router target_thread_id")
+                atomic_json(
+                    state_root / "router.json",
+                    {
+                        "target_thread_id": target_thread_id,
+                        "capability_hash": None,
+                        "configured_at": utc_now(),
+                    },
+                )
+                result = {"configured": True, "target_thread_id": target_thread_id}
+            else:
+                result = configure_opencode_runtime(state_root, args.executable)
         else:
             raise CouncilError("unsupported command")
         print(json.dumps(result, indent=2, sort_keys=True, ensure_ascii=False))
         return 0
-    except (CouncilError, AdmissionError) as error:
-        report_startup(False, error.reason, getattr(error, "retryable", False))
+    except CouncilError as error:
         print("council: %s" % error, file=sys.stderr)
         return 2
 

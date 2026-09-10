@@ -1,8 +1,8 @@
 import { ERROR_REASONS, MAX_LINE_BYTES, RUNTIME_COHORT as PROTOCOL_COHORT } from "./council_protocol.ts"
 import type { ToolDefinition } from "@opencode-ai/plugin"
 
-export const PACKAGE_ID = "24e1b0902fe95d929f365cb57a156e454236e7f82b57dcb68b146ba12bb5ba47"
-export const RUNTIME_COHORT = "9401f1780d0d666764923aef9755778135399b0c6f17ed33aea21686d2715328"
+export const PACKAGE_ID = "d082178b8a467ac52fdfdb1ab425f9a380d9d441de692b690651400e88cf9e09"
+export const RUNTIME_COHORT = "a6f177962d061266376766eb47d5d7904648126098eb81899652cfa474407478"
 if (RUNTIME_COHORT !== PROTOCOL_COHORT) {
   throw new Error("Council registry/definitions cohort mismatch; refresh the complete runtime set")
 }
@@ -227,11 +227,14 @@ export class OpenCodeDeliveryRegistry {
   }
 
   retain(sessionID: string, participant: string) {
+    const identity = this.key(sessionID, participant)
+    const previous = this.states.get(identity)
     const state = this.state(sessionID, participant)
     if (state.expiryTimer) clearTimeout(state.expiryTimer)
     state.expiryTimer = undefined
     state.expiresAt = undefined
     state.clearWhenIdle = false
+    return previous === state
   }
 
   discard(sessionID: string, participant: string) {
@@ -239,5 +242,12 @@ export class OpenCodeDeliveryRegistry {
     const state = this.states.get(identity)
     if (state?.expiryTimer) clearTimeout(state.expiryTimer)
     this.states.delete(identity)
+  }
+
+  dispose() {
+    for (const state of this.states.values()) {
+      if (state.expiryTimer) clearTimeout(state.expiryTimer)
+    }
+    this.states.clear()
   }
 }

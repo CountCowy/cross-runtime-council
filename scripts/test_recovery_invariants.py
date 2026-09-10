@@ -14,8 +14,9 @@ import unittest
 from pathlib import Path
 
 import council
-from council import CouncilBroker, read_json
+from council import read_json
 from recovery_invariants import check_state_root
+from test_council import restart_broker
 from test_council import TerminalDialogueFixture
 
 
@@ -71,7 +72,7 @@ class RecoveryInvariantTests(TerminalDialogueFixture):
                 break
         self.assertIsNotNone(flipped)
         self.assertEqual(check_state_root(self.root), [])
-        CouncilBroker(self.root)
+        restart_broker(self)
         self.assertEqual(read_json(flipped)["status"], "acknowledged")
         self.assertEqual(check_state_root(self.root), [])
 
@@ -281,7 +282,7 @@ class NamedFailpointTests(TerminalDialogueFixture):
         with self.assertRaises(SeamCrash):
             self.broker.delete_terminal_dialogue(dialogue, "failpoint fixture")
         council.FAILPOINT_HOOK = None
-        broker = CouncilBroker(self.root)
+        broker = restart_broker(self)
         self.assertEqual(check_state_root(self.root), [])
         self.assertFalse(
             (self.root / "tombstones" / ("%s.json" % dialogue)).exists()
@@ -299,7 +300,7 @@ class NamedFailpointTests(TerminalDialogueFixture):
         council.FAILPOINT_HOOK = None
         # The tombstone committed before the crash, so restart must finish
         # the deletion on its own.
-        CouncilBroker(self.root)
+        restart_broker(self)
         self.assertEqual(check_state_root(self.root), [])
         self.assertTrue(
             (self.root / "tombstones" / ("%s.json" % dialogue)).exists()
@@ -344,7 +345,7 @@ class NamedFailpointTests(TerminalDialogueFixture):
                 dialogue, "beta", "representation_check", 2, representation_check()
             )
         council.FAILPOINT_HOOK = None
-        broker = CouncilBroker(self.root)
+        broker = restart_broker(self)
         self.assertEqual(check_state_root(self.root), [])
         manifest = read_json(self.root / "dialogues" / dialogue / "manifest.json")
         if manifest["phase"] != "complete":
@@ -438,7 +439,7 @@ class InjectableTimeSourceTests(TerminalDialogueFixture):
         dialogue = self.completed_dialogue()
         write_json_0600(self.root / "retention.json", {"days": 1})
         clock["offset"] = 2 * 86400
-        CouncilBroker(self.root)
+        restart_broker(self)
         self.assertFalse((self.root / "dialogues" / dialogue).exists())
         tombstone = read_json(self.root / "tombstones" / ("%s.json" % dialogue))
         self.assertEqual(tombstone["reason"], "retention_sweep")

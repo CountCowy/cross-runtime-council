@@ -1,0 +1,45 @@
+{
+  "format": 1,
+  "readers": {
+    "pre-c1": {
+      "commit": "a3f35b07207e85af1aafbd21933182aa87570e1b",
+      "files": {
+        "LICENSE": {
+          "git_blob": "261eeb9e9f8b2b4b0d119366dda99c6fd7d35c64",
+          "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+        },
+        "NOTICE": {
+          "git_blob": "c108dc29e9f39bd5498bc145584d8d27193e341a",
+          "sha256": "c107f4746d20aaa762ad632e1feaf75c22a3b025f05d1362675f8f728597f603"
+        },
+        "scripts/council.py": {
+          "git_blob": "ee5d88cb5bf9a708c95b08ee60bf98e22451d651",
+          "sha256": "83653266060703005f93c07105b0bf201be5e025a057d3d3062b5d4207063bde"
+        },
+        "scripts/council_protocol.py": {
+          "git_blob": "ad42908d57dead04f516740472e691d68d965f0d",
+          "sha256": "1c51e97ec674f9265e0d15e720a11a60ba04ec8a664aecd0d367719dd16e17c4"
+        }
+      },
+      "managed_writer_admission": false
+    },
+    "public-v0.19": {
+      "commit": "f376101e1ee2092fe01152232f48c306b4a1ba21",
+      "files": {
+        "LICENSE": {
+          "git_blob": "261eeb9e9f8b2b4b0d119366dda99c6fd7d35c64",
+          "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+        },
+        "NOTICE": {
+          "git_blob": "c108dc29e9f39bd5498bc145584d8d27193e341a",
+          "sha256": "c107f4746d20aaa762ad632e1feaf75c22a3b025f05d1362675f8f728597f603"
+        },
+        "scripts/council.py": {
+          "git_blob": "0f04368564817ac3cedeca0d1e64c304754d8fc7",
+          "sha256": "be0ee3eabe59b2b41f101fd0c457ff5073303739ac078bc55d2476d64f2a8274"
+        }
+      },
+      "managed_writer_admission": false
+    }
+  }
+}

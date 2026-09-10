@@ -93,6 +93,7 @@ class DefinitionTests(unittest.TestCase):
     def test_broker_reports_loaded_component_identity(self):
         with tempfile.TemporaryDirectory() as directory:
             broker = council.CouncilBroker(Path(directory))
+            self.addCleanup(broker.close)
             ping = broker.ping()
             self.assertEqual(ping["package_id"], council.PACKAGE_ID)
             self.assertEqual(ping["runtime_cohort"], council.RUNTIME_COHORT)
@@ -111,6 +112,7 @@ class DefinitionTests(unittest.TestCase):
         for case in CASES:
             with self.subTest(case=case["name"]), tempfile.TemporaryDirectory() as directory:
                 broker = council.CouncilBroker(Path(directory))
+                self.addCleanup(broker.close)
                 with mock.patch("council._codesign_cdhash", return_value="c" * 40):
                     for participant in ("alpha", "beta"):
                         broker.bind("codex", participant, participant, "test", target_thread_id="thread-" + participant,
@@ -134,6 +136,7 @@ class DefinitionTests(unittest.TestCase):
     def test_broker_still_rejects_invalid_relational_and_typed_policies(self):
         with tempfile.TemporaryDirectory() as directory:
             broker = council.CouncilBroker(Path(directory))
+            self.addCleanup(broker.close)
             with mock.patch("council._codesign_cdhash", return_value="c" * 40):
                 for participant in ("alpha", "beta"):
                     broker.bind("codex", participant, participant, "test", target_thread_id="thread-" + participant,
@@ -158,6 +161,7 @@ class PayloadContractTests(unittest.TestCase):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         self.broker = council.CouncilBroker(Path(self.directory.name))
+        self.addCleanup(self.broker.close)
         self.manifest = {
             "dialogue_id": "dlg-fixture",
             "claim_ledger": [{"claim_id": "clm-peer", "origin_participant": "beta"}],

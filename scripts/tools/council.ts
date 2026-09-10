@@ -2,8 +2,8 @@ import { openCodeToolArgs, RUNTIME_COHORT as PROTOCOL_COHORT } from "../council_
 import { registeredTools, TOOL_REGISTRY_KEY, RUNTIME_COHORT as REGISTRY_COHORT } from "../opencode_delivery_registry.ts"
 import { tool, type ToolDefinition } from "@opencode-ai/plugin"
 
-const PACKAGE_ID = "24e1b0902fe95d929f365cb57a156e454236e7f82b57dcb68b146ba12bb5ba47"
-const RUNTIME_COHORT = "9401f1780d0d666764923aef9755778135399b0c6f17ed33aea21686d2715328"
+const PACKAGE_ID = "d082178b8a467ac52fdfdb1ab425f9a380d9d441de692b690651400e88cf9e09"
+const RUNTIME_COHORT = "a6f177962d061266376766eb47d5d7904648126098eb81899652cfa474407478"
 if (RUNTIME_COHORT !== PROTOCOL_COHORT || RUNTIME_COHORT !== REGISTRY_COHORT) {
   throw new Error("Council wrapper/helper cohort mismatch; refresh the complete runtime set")
 }

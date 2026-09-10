@@ -6,8 +6,8 @@ These descriptions do not replace broker authorization or dialogue validation.
 
 from copy import deepcopy
 
-PACKAGE_ID = "d082178b8a467ac52fdfdb1ab425f9a380d9d441de692b690651400e88cf9e09"
-RUNTIME_COHORT = "a6f177962d061266376766eb47d5d7904648126098eb81899652cfa474407478"
+PACKAGE_ID = "24e1b0902fe95d929f365cb57a156e454236e7f82b57dcb68b146ba12bb5ba47"
+RUNTIME_COHORT = "9401f1780d0d666764923aef9755778135399b0c6f17ed33aea21686d2715328"
 
 SCHEMA_VERSION = 1
 
@@ -31,7 +31,6 @@ DIALOGUE_SCHEMA_VERSION = 2
 BROKER_VERSION = "0.19.0"
 MAX_LINE_BYTES = 1024 * 1024
 MAX_TEXT_BYTES = 64 * 1024
-SAFE_NAME_PATTERN = r"[A-Za-z0-9][A-Za-z0-9_.-]{0,79}"
 MAX_SUBMISSION_BYTES = 16 * 1024
 MAX_ENVELOPE_BYTES = 256 * 1024
 MAX_MANIFEST_BYTES = 768 * 1024
@@ -100,12 +99,10 @@ ERROR_REASONS = (
     "request_timeout",
     "internal",
     "version_mismatch",
-    "maintenance_required",
     "broker_unavailable",
     "transport_lost",
     "malformed_response",
 )
-BIND_COMMIT_STATUSES = ("precommit",)
 
 
 REQUEST_SUBMISSION_KINDS = {

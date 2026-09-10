@@ -45,6 +45,12 @@ jobs:
       - name: Deterministic crash matrix
         run: python3 test_crash_matrix.py
         working-directory: scripts
+      - name: Maintenance admission and delayed-process barriers
+        run: python3 test_admission.py
+        working-directory: scripts
+      - name: Frozen predecessor reader matrix and negative controls
+        run: python3 test_predecessors.py
+        working-directory: scripts
       - name: TypeScript type-check
         run: |
           npm install --no-save --silent typescript@5.6.3 "@opencode-ai/plugin@1.18.21" "@types/node@22.7.5"

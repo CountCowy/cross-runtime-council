@@ -259,3 +259,21 @@ test("settled tombstone survives explicit unbind and same-session rebind", async
   )
   assert.equal(posts, 1)
 })
+
+test("disposing the registry clears retained delivery state", async () => {
+  const registry = new OpenCodeDeliveryRegistry()
+  let posts = 0
+  const post = async () => {
+    posts += 1
+  }
+
+  await registry.deliver("session-a", "gamma", "msg-dispose", post)
+  registry.clear("session-a", "gamma")
+  registry.dispose()
+
+  assert.deepEqual(
+    await registry.deliver("session-a", "gamma", "msg-dispose", post),
+    { duplicate: false },
+  )
+  assert.equal(posts, 2)
+})

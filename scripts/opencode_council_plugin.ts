@@ -2,7 +2,9 @@ import {
   ENVELOPE_PREAMBLE, RELAY_ENVELOPE_KINDS as PROTOCOL_RELAY_KINDS,
   DEFAULT_LEASE_MINUTES, DEFAULT_ROUNDS, DEFAULT_MINIMUM_ROUNDS,
   DEFAULT_MAX_ROUNDS, DEFAULT_ACTIVE_CLAIM_CEILING, openCodeToolArgs,
-  RUNTIME_COHORT as PROTOCOL_COHORT,
+  BIND_COMMIT_STATUSES,
+  MAX_LEASE_MINUTES, MAX_TEXT_BYTES, RUNTIME_COHORT as PROTOCOL_COHORT,
+  SAFE_NAME_PATTERN,
 } from "./council_protocol.ts"
 import { type Plugin, tool } from "@opencode-ai/plugin"
 import { randomBytes } from "node:crypto"
@@ -32,10 +34,20 @@ type BridgeResponse = {
   error?: string
   error_kind?: "rejected" | "error" | "internal"
   reason?: unknown
+  commit_status?: unknown
 }
 
-const PACKAGE_ID = "24e1b0902fe95d929f365cb57a156e454236e7f82b57dcb68b146ba12bb5ba47"
-const RUNTIME_COHORT = "9401f1780d0d666764923aef9755778135399b0c6f17ed33aea21686d2715328"
+type DaemonStartupStatus = {
+  ok: boolean
+  reason: ErrorReason | null
+  retryable: boolean
+}
+
+const PACKAGE_ID = "d082178b8a467ac52fdfdb1ab425f9a380d9d441de692b690651400e88cf9e09"
+const RUNTIME_COHORT = "a6f177962d061266376766eb47d5d7904648126098eb81899652cfa474407478"
+const DAEMON_STARTUP_TIMEOUT_MS = 3000
+const MAX_DAEMON_STARTUP_STATUS_BYTES = 1024
+const MAX_PENDING_BINDING_ROTATIONS = 32
 if (RUNTIME_COHORT !== PROTOCOL_COHORT || RUNTIME_COHORT !== REGISTRY_COHORT) {
   throw new Error("Council plugin/helper cohort mismatch; refresh the complete runtime set")
 }
@@ -53,12 +65,20 @@ type PendingRotation = {
   capability: string
   previousCapability?: string
   relayCapability: string
+  inFlight: number
+  uncertain: boolean
+  deliveryStateWasPresent?: boolean
 }
 
 class BridgeError extends Error {
   readonly reason: ErrorReason
 
-  constructor(message: string, readonly kind?: string, reason?: unknown) {
+  constructor(
+    message: string,
+    readonly kind?: string,
+    reason?: unknown,
+    readonly commitStatus?: typeof BIND_COMMIT_STATUSES[number],
+  ) {
     super(message)
     this.reason = normalizeErrorReason(reason)
   }
@@ -98,14 +118,81 @@ function capability() {
   return randomBytes(48).toString("base64url")
 }
 
+const safeNamePattern = new RegExp(`^(?:${SAFE_NAME_PATTERN})$`)
+
+function validateBindInputs(
+  args: {
+    participant: string
+    label: string
+    project: string
+    lease_minutes?: number
+  },
+  sessionID: string,
+) {
+  for (const [field, value] of [
+    ["participant", args.participant],
+    ["target_session_id", sessionID],
+  ] as const) {
+    if (typeof value !== "string" || !safeNamePattern.test(value)) {
+      throw new BridgeError(
+        `${field} must match [A-Za-z0-9][A-Za-z0-9_.-]{0,79}`,
+        "error",
+        "invalid_request",
+      )
+    }
+  }
+  for (const [field, value] of [
+    ["label", args.label],
+    ["project", args.project],
+  ] as const) {
+    if (typeof value !== "string" || !value.trim()) {
+      throw new BridgeError(`${field} must not be empty`, "error", "invalid_request")
+    }
+    if (new TextEncoder().encode(value).byteLength > MAX_TEXT_BYTES) {
+      throw new BridgeError(
+        `${field} exceeds ${MAX_TEXT_BYTES} bytes`,
+        "error",
+        "invalid_request",
+      )
+    }
+  }
+  const leaseMinutes = args.lease_minutes ?? DEFAULT_LEASE_MINUTES
+  if (!Number.isInteger(leaseMinutes) || leaseMinutes < 1 || leaseMinutes > MAX_LEASE_MINUTES) {
+    throw new BridgeError(
+      `lease_minutes must be between 1 and ${MAX_LEASE_MINUTES}`,
+      "error",
+      "invalid_request",
+    )
+  }
+}
+
 async function rawBridge(action: string, args: Record<string, unknown>) {
-  const child = Bun.spawn(["python3", bridgePath], {
-    stdin: "pipe",
-    stdout: "pipe",
-    stderr: "pipe",
-  })
-  child.stdin.write(JSON.stringify({ action, arguments: args }) + "\n")
-  child.stdin.end()
+  let child: CouncilBunSubprocess
+  try {
+    child = Bun.spawn(["python3", bridgePath], {
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+  } catch {
+    throw new BridgeError(
+      "OpenCode Council bridge child was not created",
+      "internal",
+      "broker_unavailable",
+      "precommit",
+    )
+  }
+  try {
+    child.stdin.write(JSON.stringify(
+      { action, arguments: args, runtime_cohort: RUNTIME_COHORT },
+    ) + "\n")
+    child.stdin.end()
+  } catch (error) {
+    try {
+      child.kill()
+    } catch {}
+    throw error
+  }
   const [stdout, stderr, exitCode] = await Promise.all([
     new Response(child.stdout).text(),
     new Response(child.stderr).text(),
@@ -127,7 +214,9 @@ async function rawBridge(action: string, args: Record<string, unknown>) {
   if (response.ok === false) {
     throw new BridgeError(
       typeof response.error === "string" ? response.error : `bridge exited ${exitCode}`,
-      response.error_kind, response.reason,
+      response.error_kind,
+      response.reason,
+      response.commit_status === "precommit" ? "precommit" : undefined,
     )
   }
   if (response.result === null || typeof response.result !== "object" || Array.isArray(response.result)) {
@@ -138,30 +227,155 @@ async function rawBridge(action: string, args: Record<string, unknown>) {
 
 let brokerStartup: Promise<void> | undefined
 
+async function readDaemonStartupStatus(
+  stream: ReadableStream<Uint8Array>,
+  deadline: number,
+): Promise<DaemonStartupStatus> {
+  const reader = stream.getReader()
+  let timedOut = false
+  let encoded = new Uint8Array()
+  const timeout = setTimeout(() => {
+    timedOut = true
+    void reader.cancel()
+  }, Math.max(0, deadline - performance.now()))
+  try {
+    while (encoded.byteLength <= MAX_DAEMON_STARTUP_STATUS_BYTES) {
+      const { value, done } = await reader.read()
+      if (done) break
+      if (value) {
+        const combined = new Uint8Array(encoded.byteLength + value.byteLength)
+        combined.set(encoded)
+        combined.set(value, encoded.byteLength)
+        encoded = combined
+      }
+      if (encoded.byteLength > MAX_DAEMON_STARTUP_STATUS_BYTES) {
+        throw new BridgeError("Council broker returned oversized startup status", "internal", "malformed_response")
+      }
+      const newline = encoded.indexOf(10)
+      if (newline >= 0) {
+        let status: unknown
+        try {
+          status = JSON.parse(new TextDecoder().decode(encoded.slice(0, newline)))
+        } catch {
+          throw new BridgeError("Council broker returned malformed startup status", "internal", "malformed_response")
+        }
+        if (
+          !status || typeof status !== "object" || Array.isArray(status)
+          || typeof (status as { ok?: unknown }).ok !== "boolean"
+          || typeof (status as { retryable?: unknown }).retryable !== "boolean"
+        ) {
+          throw new BridgeError("Council broker returned invalid startup status", "internal", "malformed_response")
+        }
+        const rawReason = (status as { reason?: unknown }).reason
+        if ((status as { ok: boolean }).ok && (rawReason !== null || (status as { retryable: boolean }).retryable)) {
+          throw new BridgeError("Council broker returned invalid startup status", "internal", "malformed_response")
+        }
+        if (!(status as { ok: boolean }).ok && (typeof rawReason !== "string" || normalizeErrorReason(rawReason) !== rawReason)) {
+          throw new BridgeError("Council broker returned invalid startup status", "internal", "malformed_response")
+        }
+        return {
+          ok: (status as { ok: boolean }).ok,
+          reason: rawReason === null ? null : normalizeErrorReason(rawReason),
+          retryable: (status as { retryable: boolean }).retryable,
+        }
+      }
+    }
+  } finally {
+    clearTimeout(timeout)
+    await reader.cancel().catch(() => {})
+    reader.releaseLock()
+  }
+  throw new BridgeError(
+    timedOut ? "Council broker startup status timed out" : "Council broker startup status ended early",
+    "internal",
+    "broker_unavailable",
+  )
+}
+
+async function waitForDaemonStartupExit(exited: Promise<number>, deadline: number): Promise<number> {
+  let timeout: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      exited,
+      new Promise<number>((_resolve, reject) => {
+        timeout = setTimeout(
+          () => reject(new BridgeError(
+            "Council broker startup child did not exit after refusal",
+            "internal",
+            "broker_unavailable",
+          )),
+          Math.max(0, deadline - performance.now()),
+        )
+      }),
+    ])
+  } finally {
+    if (timeout) clearTimeout(timeout)
+  }
+}
+
 async function ensureBroker() {
   try {
     await rawBridge("ping", {})
     return
-  } catch {}
+  } catch (error) {
+    if (!(error instanceof BridgeError) || !["broker_unavailable", "transport_lost"].includes(error.reason)) throw error
+  }
   if (!brokerStartup) {
     brokerStartup = (async () => {
-      Bun.spawn(
-        ["python3", brokerPath, "daemon", "--state-root", stateRoot],
-        { stdin: "ignore", stdout: "ignore", stderr: "ignore" },
+      const startupDeadline = performance.now() + DAEMON_STARTUP_TIMEOUT_MS
+      const daemon = Bun.spawn(
+        ["python3", brokerPath, "daemon", "--state-root", stateRoot, "--startup-report"],
+        { stdin: "ignore", stdout: "pipe", stderr: "ignore" },
       )
-      let lastError: unknown
-      for (let attempt = 0; attempt < 60; attempt += 1) {
-        await new Promise<void>((resolve) => setTimeout(resolve, 50))
-        try {
-          await rawBridge("ping", {})
-          return
-        } catch (error) {
-          lastError = error
+      let status: DaemonStartupStatus
+      try {
+        status = await readDaemonStartupStatus(
+          daemon.stdout as ReadableStream<Uint8Array>,
+          startupDeadline,
+        )
+      } catch (error) {
+        if (error instanceof BridgeError && error.reason === "malformed_response") {
+          daemon.kill()
+          try {
+            await waitForDaemonStartupExit(daemon.exited, performance.now() + 1000)
+          } catch {
+            // The bounded startup error remains authoritative.
+          }
         }
+        throw error
       }
-      throw lastError instanceof Error
-        ? lastError
-        : new BridgeError("Council broker failed to start", "internal")
+      if (!status.ok) {
+        const exitCode = await waitForDaemonStartupExit(daemon.exited, startupDeadline)
+        if (exitCode === 0) {
+          throw new BridgeError(
+            "Council broker startup child reported refusal with a successful exit",
+            "internal",
+            "malformed_response",
+          )
+        }
+        if (!status.retryable) {
+          throw new BridgeError(
+            `Council broker startup failed: ${status.reason}`,
+            "rejected",
+            status.reason,
+          )
+        }
+        let lastError: unknown
+        while (performance.now() < startupDeadline) {
+          await new Promise<void>((resolve) => setTimeout(resolve, 50))
+          try {
+            await rawBridge("ping", {})
+            return
+          } catch (error) {
+            if (!(error instanceof BridgeError) || !["broker_unavailable", "transport_lost"].includes(error.reason)) throw error
+            lastError = error
+          }
+        }
+        throw lastError instanceof Error
+          ? lastError
+          : new BridgeError("Council broker startup race did not become ready", "internal", "broker_unavailable")
+      }
+      await rawBridge("ping", {})
     })().finally(() => {
       brokerStartup = undefined
     })
@@ -331,7 +545,7 @@ export const CouncilPlugin: Plugin = async ({ client }) => {
           )
         ) {
           bindings.delete(identity)
-          pendingRotations.delete(identity)
+          // Expiry does not disprove an earlier pending rotation commit.
           deliveryRegistry.clear(sessionID, participant)
         }
       }
@@ -339,10 +553,33 @@ export const CouncilPlugin: Plugin = async ({ client }) => {
     }
   }
 
+  function releaseUncommittedRotation(
+    identity: string,
+    sessionID: string,
+    participant: string,
+    pending: PendingRotation,
+  ) {
+    if (
+      pendingRotations.get(identity) !== pending
+      || pending.uncertain
+      || pending.inFlight !== 0
+    ) return
+    pendingRotations.delete(identity)
+    if (pending.previousCapability) return
+    if (pending.deliveryStateWasPresent) {
+      deliveryRegistry.clear(sessionID, participant)
+    } else if (pending.deliveryStateWasPresent === false) {
+      deliveryRegistry.discard(sessionID, participant)
+    }
+  }
+
   const hooks = {
     dispose: async () => {
       for (const socket of relaySockets) socket.destroy()
       await new Promise<void>((resolve) => server.close(() => resolve()))
+      bindings.clear()
+      pendingRotations.clear()
+      deliveryRegistry.dispose()
       try {
         unlinkSync(relayPath)
       } catch {}
@@ -360,20 +597,46 @@ export const CouncilPlugin: Plugin = async ({ client }) => {
           "Bind this exact OpenCode session as an expiring Council participant. The model provider is not treated as the transport identity.",
         args: toolArgs.council_bind,
         async execute(args, context) {
+          validateBindInputs(args, context.sessionID)
           const identity = key(context.sessionID, args.participant)
-          const hadBinding = bindings.has(identity)
           let pending = pendingRotations.get(identity)
           if (!pending) {
+            const confirmed = bindings.get(identity)
+            if (
+              pendingRotations.size >= MAX_PENDING_BINDING_ROTATIONS
+              && !confirmed
+            ) {
+              throw new BridgeError(
+                "too many pending Council binding rotations; retry an existing identity",
+                "error",
+                "invalid_request",
+              )
+            }
             pending = {
               capability: capability(),
-              previousCapability: bindings.get(identity)?.capability,
+              previousCapability: confirmed?.capability,
               relayCapability: capability(),
+              inFlight: 0,
+              uncertain: false,
             }
             pendingRotations.set(identity, pending)
           }
-          deliveryRegistry.retain(context.sessionID, args.participant)
+          pending.inFlight += 1
+          let precommitFailure = false
           try {
-            const result = await bridge("bind", {
+            try {
+              await ensureBroker()
+            } catch (error) {
+              precommitFailure = true
+              throw error
+            }
+            const deliveryStateWasPresent = deliveryRegistry.retain(
+              context.sessionID, args.participant,
+            )
+            if (pending.deliveryStateWasPresent === undefined) {
+              pending.deliveryStateWasPresent = deliveryStateWasPresent
+            }
+            const result = await rawBridge("bind", {
               runtime: "opencode",
               participant: args.participant,
               label: args.label,
@@ -386,41 +649,51 @@ export const CouncilPlugin: Plugin = async ({ client }) => {
               binding_capability: pending.capability,
               previous_capability: pending.previousCapability,
             })
-            for (const [existingIdentity, existing] of bindings) {
-              if (
-                existingIdentity !== identity &&
-                existing.participant === args.participant
-              ) {
-                bindings.delete(existingIdentity)
-                pendingRotations.delete(existingIdentity)
-                deliveryRegistry.discard(existing.sessionID, existing.participant)
+            if (pendingRotations.get(identity) === pending) {
+              for (const [existingIdentity, existing] of bindings) {
+                if (
+                  existingIdentity !== identity &&
+                  existing.participant === args.participant
+                ) {
+                  bindings.delete(existingIdentity)
+                  pendingRotations.delete(existingIdentity)
+                  deliveryRegistry.discard(existing.sessionID, existing.participant)
+                }
               }
-            }
-            for (const pendingIdentity of pendingRotations.keys()) {
-              const separator = pendingIdentity.indexOf("\u0000")
-              if (
-                pendingIdentity !== identity &&
-                pendingIdentity.slice(separator + 1) === args.participant
-              ) {
-                pendingRotations.delete(pendingIdentity)
+              for (const pendingIdentity of pendingRotations.keys()) {
+                const separator = pendingIdentity.indexOf("\u0000")
+                if (
+                  pendingIdentity !== identity &&
+                  pendingIdentity.slice(separator + 1) === args.participant
+                ) {
+                  pendingRotations.delete(pendingIdentity)
+                }
               }
+              bindings.set(identity, {
+                participant: args.participant,
+                sessionID: context.sessionID,
+                capability: pending.capability,
+                relayCapability: pending.relayCapability,
+              })
+              pendingRotations.delete(identity)
             }
-            bindings.set(identity, {
-              participant: args.participant,
-              sessionID: context.sessionID,
-              capability: pending.capability,
-              relayCapability: pending.relayCapability,
-            })
-            pendingRotations.delete(identity)
             return safeResult(result)
           } catch (error) {
-            if (error instanceof BridgeError && error.kind === "rejected") {
-              pendingRotations.delete(identity)
-              if (!hadBinding) {
-                deliveryRegistry.clear(context.sessionID, args.participant)
-              }
+            if (!precommitFailure) {
+              precommitFailure = (
+                error instanceof BridgeError
+                && error.commitStatus === "precommit"
+              )
             }
+            if (!precommitFailure) pending.uncertain = true
             throw error
+          } finally {
+            pending.inFlight -= 1
+            if (precommitFailure) {
+              releaseUncommittedRotation(
+                identity, context.sessionID, args.participant, pending,
+              )
+            }
           }
         },
       }),
@@ -443,8 +716,19 @@ export const CouncilPlugin: Plugin = async ({ client }) => {
             )
           ) {
             bindings.delete(identity)
-            pendingRotations.delete(identity)
-            deliveryRegistry.clear(context.sessionID, args.participant)
+            const pending = pendingRotations.get(identity)
+            if (pending?.inFlight) {
+              const deliveryStateWasPresent = deliveryRegistry.retain(
+                context.sessionID, args.participant,
+              )
+              if (pending.deliveryStateWasPresent === undefined) {
+                pending.deliveryStateWasPresent = deliveryStateWasPresent
+              }
+              pending.previousCapability = undefined
+            } else {
+              pendingRotations.delete(identity)
+              deliveryRegistry.clear(context.sessionID, args.participant)
+            }
           }
           return safeResult(result)
         },

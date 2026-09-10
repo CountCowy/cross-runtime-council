@@ -67,6 +67,61 @@ class ReleaseTests(unittest.TestCase):
             self.assertIn("cohort mismatch", result.stderr, name)
             path.write_bytes(original)
 
+    def test_runtime_entrypoints_suppress_custom_bytecode_writes_at_every_optimization(self):
+        self.run_builder("--write")
+        prefix = self.base / "entrypoint-cache"
+        env = dict(os.environ, PYTHONPYCACHEPREFIX=str(prefix), COUNCIL_STATE_ROOT=str(self.base / "absent-state"))
+        env.pop("PYTHONDONTWRITEBYTECODE", None)
+        env.pop("PYTHONOPTIMIZE", None)
+        runtime_stems = {Path(name).stem for name in RUNTIME_FILES if name.endswith(".py")}
+        def own_caches():
+            return {str(path): path.read_bytes() for base in (prefix, self.source / "scripts")
+                    if base.exists() for path in base.rglob("*.pyc")
+                    if any(path.name.startswith(stem + ".") for stem in runtime_stems)}
+        for optimization in ([], ["-O"], ["-OO"]):
+            for component, arguments, payload in (
+                ("council.py", ["--help"], ""),
+                ("council_mcp.py", [], ""),
+                ("council_opencode.py", [], '{"action":"ping","runtime_cohort":"stale"}\n'),
+                ("council_inspect.py", ["--state-root", str(self.base / "absent-state"), "--payload-root", str(self.source), "--opencode-root", str(self.base / "fixture-opencode")], ""),
+            ):
+                with self.subTest(component=component, optimization=optimization):
+                    before = own_caches()
+                    command = [sys.executable, *optimization, str(self.source / "scripts" / component), *arguments]
+                    if component == "council_inspect.py":
+                        # This subprocess-only hook makes a missing root argument
+                        # fail before any live-home file open. The canary proves
+                        # the hook runs even when the live installation is absent.
+                        program = "\n".join([
+                            "import os,runpy,sys",
+                            "live_home = " + repr(str(Path.home().resolve())),
+                            "fixture = " + repr(str(self.base.resolve())),
+                            "stdlib = os.path.dirname(os.__file__)",
+                            "def within(path, root): return path == root or path.startswith(root + os.sep)",
+                            "def audit(event, args):",
+                            "    if event == 'open' and not isinstance(args[0], int):",
+                            "        path = os.path.abspath(os.fsdecode(args[0]))",
+                            "        if within(path, live_home) and not within(path, fixture) and not within(path, stdlib):",
+                            "            raise RuntimeError('fixture isolation: live-home read blocked')",
+                            "sys.addaudithook(audit)",
+                            "try:",
+                            "    open(os.path.join(live_home, '.council-forbidden-fixture-read'), 'rb')",
+                            "except RuntimeError as error:",
+                            "    assert str(error) == 'fixture isolation: live-home read blocked'",
+                            "else: raise AssertionError('isolation canary was not blocked')",
+                            "print('guard_canary_passed')",
+                            "sys.path.insert(0, " + repr(str(self.source / "scripts")) + ")",
+                            "sys.argv = " + repr([str(self.source / "scripts" / component), *arguments]),
+                            "runpy.run_path(sys.argv[0], run_name='__main__')",
+                        ])
+                        command = [sys.executable, *optimization, "-c", program]
+                    result = subprocess.run(command, input=payload, env=env, capture_output=True, text=True, timeout=10)
+                    self.assertEqual(result.returncode, 2 if component == "council_opencode.py" else 0, result.stderr)
+                    if component == "council_inspect.py":
+                        self.assertIn("guard_canary_passed", result.stdout)
+                    self.assertEqual(own_caches(), before)
+        self.assertFalse((self.base / "absent-state").exists())
+
     def test_documentation_and_tests_do_not_change_runtime_cohort(self):
         _, _, original = release(self.source)
         for name in ("README.md", "scripts/test_parity.py"):
@@ -101,7 +156,7 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(loaded.RUNTIME_COHORT, json.loads(original)["runtime_cohort"])
         self.assertNotEqual(loaded.RUNTIME_COHORT, json.loads(changed)["runtime_cohort"])
         for entry_set, helper_set in ((old, new), (new, old)):
-            for component in ("council", "council_mcp", "council_opencode"):
+            for component in ("council", "council_mcp", "council_opencode", "council_inspect"):
                 with self.subTest(component=component, direction=entry_set is old):
                     for name in RUNTIME_FILES:
                         (self.source / name).write_bytes(helper_set[name])
@@ -189,9 +244,9 @@ class ReleaseTests(unittest.TestCase):
                 env = dict(os.environ)
                 env.pop("PYTHONOPTIMIZE", None)
                 script = ("import json, sys; sys.pycache_prefix = " + repr(prefix) + "; "
-                          "import council_protocol, council, council_mcp, council_opencode; "
+                          "import council_protocol, council_admission, council, council_mcp, council_opencode, council_inspect; "
                           "print(json.dumps({m.__name__: m.RUNTIME_COHORT for m in "
-                          "(council_protocol, council, council_mcp, council_opencode)}))")
+                          "(council_protocol, council_admission, council, council_mcp, council_opencode, council_inspect)}))")
 
                 def loaded_cohorts(optimization):
                     result = subprocess.run([sys.executable, "-B", *optimization, "-c", script],
@@ -201,7 +256,7 @@ class ReleaseTests(unittest.TestCase):
 
                 expected_cohort = json.loads(release(source)[2])["runtime_cohort"]
                 expected = {name: expected_cohort for name in
-                            ("council_protocol", "council", "council_mcp", "council_opencode")}
+                            ("council_protocol", "council_admission", "council", "council_mcp", "council_opencode", "council_inspect")}
                 for optimization in ([], ["-O"], ["-OO"]):
                     # Imports succeed for a coherent old generation; the parent
                     # oracle must still distinguish it at every optimization level.

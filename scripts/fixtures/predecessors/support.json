@@ -1,0 +1,1479 @@
+{
+  "pre-c1": {
+    "attention": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "83653266060703005f93c07105b0bf201be5e025a057d3d3062b5d4207063bde",
+        "council_protocol": "1c51e97ec674f9265e0d15e720a11a60ba04ec8a664aecd0d367719dd16e17c4"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {
+        "dlg-00000000000000000000000000000004": "collecting_exchange"
+      },
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": true,
+      "relay_ready": false,
+      "restore_error_count": 0
+    },
+    "audit-missing-newline": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "83653266060703005f93c07105b0bf201be5e025a057d3d3062b5d4207063bde",
+        "council_protocol": "1c51e97ec674f9265e0d15e720a11a60ba04ec8a664aecd0d367719dd16e17c4"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {
+        "dlg-00000000000000000000000000000004": "complete"
+      },
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": true,
+      "relay_ready": false,
+      "restore_error_count": 0
+    },
+    "audit-torn-tail": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "83653266060703005f93c07105b0bf201be5e025a057d3d3062b5d4207063bde",
+        "council_protocol": "1c51e97ec674f9265e0d15e720a11a60ba04ec8a664aecd0d367719dd16e17c4"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {
+        "dlg-00000000000000000000000000000004": "complete"
+      },
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": true,
+      "relay_ready": false,
+      "restore_error_count": 0
+    },
+    "cancellation-lost-ack": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "83653266060703005f93c07105b0bf201be5e025a057d3d3062b5d4207063bde",
+        "council_protocol": "1c51e97ec674f9265e0d15e720a11a60ba04ec8a664aecd0d367719dd16e17c4"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {
+        "dlg-00000000000000000000000000000029": "cancelled"
+      },
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": true,
+      "relay_ready": false,
+      "restore_error_count": 0
+    },
+    "claimed-and-wake-leased": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "83653266060703005f93c07105b0bf201be5e025a057d3d3062b5d4207063bde",
+        "council_protocol": "1c51e97ec674f9265e0d15e720a11a60ba04ec8a664aecd0d367719dd16e17c4"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {
+        "dlg-00000000000000000000000000000004": "collecting_proposals"
+      },
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": true,
+      "relay_ready": false,
+      "restore_error_count": 0
+    },
+    "claude-dead-relay": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "83653266060703005f93c07105b0bf201be5e025a057d3d3062b5d4207063bde",
+        "council_protocol": "1c51e97ec674f9265e0d15e720a11a60ba04ec8a664aecd0d367719dd16e17c4"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {
+        "dlg-00000000000000000000000000000029": "collecting_proposals"
+      },
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": true,
+      "relay_ready": false,
+      "restore_error_count": 1
+    },
+    "corrupt-manifest": {
+      "constructor": "ok",
+      "corrupt_error_count": 1,
+      "loaded": {
+        "council": "83653266060703005f93c07105b0bf201be5e025a057d3d3062b5d4207063bde",
+        "council_protocol": "1c51e97ec674f9265e0d15e720a11a60ba04ec8a664aecd0d367719dd16e17c4"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {},
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": false,
+      "relay_ready": false,
+      "restore_error_count": 0
+    },
+    "deleted": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "83653266060703005f93c07105b0bf201be5e025a057d3d3062b5d4207063bde",
+        "council_protocol": "1c51e97ec674f9265e0d15e720a11a60ba04ec8a664aecd0d367719dd16e17c4"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {},
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": true,
+      "relay_ready": false,
+      "restore_error_count": 0
+    },
+    "delivered-lost-ack": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "83653266060703005f93c07105b0bf201be5e025a057d3d3062b5d4207063bde",
+        "council_protocol": "1c51e97ec674f9265e0d15e720a11a60ba04ec8a664aecd0d367719dd16e17c4"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {
+        "dlg-00000000000000000000000000000004": "collecting_exchange"
+      },
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": true,
+      "relay_ready": false,
+      "restore_error_count": 0
+    },
+    "dormant-awaiting-extension": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "83653266060703005f93c07105b0bf201be5e025a057d3d3062b5d4207063bde",
+        "council_protocol": "1c51e97ec674f9265e0d15e720a11a60ba04ec8a664aecd0d367719dd16e17c4"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {
+        "dlg-00000000000000000000000000000029": "collecting_exchange"
+      },
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": true,
+      "relay_ready": false,
+      "restore_error_count": 0
+    },
+    "duplicate-route": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "83653266060703005f93c07105b0bf201be5e025a057d3d3062b5d4207063bde",
+        "council_protocol": "1c51e97ec674f9265e0d15e720a11a60ba04ec8a664aecd0d367719dd16e17c4"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {
+        "dlg-00000000000000000000000000000029": "collecting_proposals"
+      },
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": false,
+      "relay_ready": false,
+      "restore_error_count": 1
+    },
+    "dyad-proposals": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "83653266060703005f93c07105b0bf201be5e025a057d3d3062b5d4207063bde",
+        "council_protocol": "1c51e97ec674f9265e0d15e720a11a60ba04ec8a664aecd0d367719dd16e17c4"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {
+        "dlg-00000000000000000000000000000029": "collecting_proposals"
+      },
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": true,
+      "relay_ready": false,
+      "restore_error_count": 0
+    },
+    "expired-registration": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "83653266060703005f93c07105b0bf201be5e025a057d3d3062b5d4207063bde",
+        "council_protocol": "1c51e97ec674f9265e0d15e720a11a60ba04ec8a664aecd0d367719dd16e17c4"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {
+        "dlg-00000000000000000000000000000029": "collecting_proposals"
+      },
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": true,
+      "relay_ready": false,
+      "restore_error_count": 0
+    },
+    "extension-lost-ack": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "duplicate_extension": true,
+      "loaded": {
+        "council": "83653266060703005f93c07105b0bf201be5e025a057d3d3062b5d4207063bde",
+        "council_protocol": "1c51e97ec674f9265e0d15e720a11a60ba04ec8a664aecd0d367719dd16e17c4"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {
+        "dlg-00000000000000000000000000000029": "collecting_exchange"
+      },
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": true,
+      "relay_ready": false,
+      "restore_error_count": 0
+    },
+    "inert-lifecycle-committed": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "83653266060703005f93c07105b0bf201be5e025a057d3d3062b5d4207063bde",
+        "council_protocol": "1c51e97ec674f9265e0d15e720a11a60ba04ec8a664aecd0d367719dd16e17c4"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {
+        "dlg-00000000000000000000000000000004": "complete"
+      },
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": true,
+      "relay_ready": false,
+      "restore_error_count": 0
+    },
+    "inert-lifecycle-pending": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "83653266060703005f93c07105b0bf201be5e025a057d3d3062b5d4207063bde",
+        "council_protocol": "1c51e97ec674f9265e0d15e720a11a60ba04ec8a664aecd0d367719dd16e17c4"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {
+        "dlg-00000000000000000000000000000004": "complete"
+      },
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": true,
+      "relay_ready": false,
+      "restore_error_count": 0
+    },
+    "inert-lifecycle-uninstalled": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "83653266060703005f93c07105b0bf201be5e025a057d3d3062b5d4207063bde",
+        "council_protocol": "1c51e97ec674f9265e0d15e720a11a60ba04ec8a664aecd0d367719dd16e17c4"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {
+        "dlg-00000000000000000000000000000004": "complete"
+      },
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": true,
+      "relay_ready": false,
+      "restore_error_count": 0
+    },
+    "interrupted-tombstone-deletion": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "83653266060703005f93c07105b0bf201be5e025a057d3d3062b5d4207063bde",
+        "council_protocol": "1c51e97ec674f9265e0d15e720a11a60ba04ec8a664aecd0d367719dd16e17c4"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {},
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": true,
+      "relay_ready": false,
+      "restore_error_count": 0
+    },
+    "legacy-generation-missing": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "83653266060703005f93c07105b0bf201be5e025a057d3d3062b5d4207063bde",
+        "council_protocol": "1c51e97ec674f9265e0d15e720a11a60ba04ec8a664aecd0d367719dd16e17c4"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {
+        "dlg-00000000000000000000000000000029": "collecting_proposals"
+      },
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": true,
+      "relay_ready": false,
+      "restore_error_count": 0
+    },
+    "malformed-registration": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "83653266060703005f93c07105b0bf201be5e025a057d3d3062b5d4207063bde",
+        "council_protocol": "1c51e97ec674f9265e0d15e720a11a60ba04ec8a664aecd0d367719dd16e17c4"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {
+        "dlg-00000000000000000000000000000029": "collecting_proposals"
+      },
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": false,
+      "relay_ready": false,
+      "restore_error_count": 1
+    },
+    "opencode-dead-relay": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "83653266060703005f93c07105b0bf201be5e025a057d3d3062b5d4207063bde",
+        "council_protocol": "1c51e97ec674f9265e0d15e720a11a60ba04ec8a664aecd0d367719dd16e17c4"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {
+        "dlg-00000000000000000000000000000029": "collecting_proposals"
+      },
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": true,
+      "relay_ready": false,
+      "restore_error_count": 1
+    },
+    "opencode-pin": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "83653266060703005f93c07105b0bf201be5e025a057d3d3062b5d4207063bde",
+        "council_protocol": "1c51e97ec674f9265e0d15e720a11a60ba04ec8a664aecd0d367719dd16e17c4"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {
+        "dlg-00000000000000000000000000000029": "collecting_proposals"
+      },
+      "oracle_errors": [],
+      "pin_admitted": false,
+      "reader_errors": [],
+      "reader_supported": true,
+      "relay_ready": false,
+      "restore_error_count": 0
+    },
+    "opencode-pin-malformed": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "83653266060703005f93c07105b0bf201be5e025a057d3d3062b5d4207063bde",
+        "council_protocol": "1c51e97ec674f9265e0d15e720a11a60ba04ec8a664aecd0d367719dd16e17c4"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {
+        "dlg-00000000000000000000000000000029": "collecting_proposals"
+      },
+      "oracle_errors": [],
+      "pin_admitted": false,
+      "reader_errors": [],
+      "reader_supported": true,
+      "relay_ready": false,
+      "restore_error_count": 0
+    },
+    "orphan-final": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "83653266060703005f93c07105b0bf201be5e025a057d3d3062b5d4207063bde",
+        "council_protocol": "1c51e97ec674f9265e0d15e720a11a60ba04ec8a664aecd0d367719dd16e17c4"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {
+        "dlg-00000000000000000000000000000004": "collecting_revision_check"
+      },
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": true,
+      "relay_ready": false,
+      "restore_error_count": 0
+    },
+    "pending-audit-intent": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "83653266060703005f93c07105b0bf201be5e025a057d3d3062b5d4207063bde",
+        "council_protocol": "1c51e97ec674f9265e0d15e720a11a60ba04ec8a664aecd0d367719dd16e17c4"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {
+        "dlg-00000000000000000000000000000029": "collecting_proposals"
+      },
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": true,
+      "relay_ready": false,
+      "restore_error_count": 0
+    },
+    "retention-expired-terminal": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "83653266060703005f93c07105b0bf201be5e025a057d3d3062b5d4207063bde",
+        "council_protocol": "1c51e97ec674f9265e0d15e720a11a60ba04ec8a664aecd0d367719dd16e17c4"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {},
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": true,
+      "relay_ready": false,
+      "restore_error_count": 0
+    },
+    "retention-malformed": {
+      "constructor": "refused",
+      "corrupt_error_count": 0,
+      "error_type": "CouncilError",
+      "loaded": {
+        "council": "83653266060703005f93c07105b0bf201be5e025a057d3d3062b5d4207063bde",
+        "council_protocol": "1c51e97ec674f9265e0d15e720a11a60ba04ec8a664aecd0d367719dd16e17c4"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {},
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": false,
+      "relay_ready": false,
+      "restore_error_count": 0
+    },
+    "retention-off": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "83653266060703005f93c07105b0bf201be5e025a057d3d3062b5d4207063bde",
+        "council_protocol": "1c51e97ec674f9265e0d15e720a11a60ba04ec8a664aecd0d367719dd16e17c4"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {
+        "dlg-00000000000000000000000000000029": "collecting_proposals"
+      },
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": true,
+      "relay_ready": false,
+      "restore_error_count": 0
+    },
+    "retention-on": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "83653266060703005f93c07105b0bf201be5e025a057d3d3062b5d4207063bde",
+        "council_protocol": "1c51e97ec674f9265e0d15e720a11a60ba04ec8a664aecd0d367719dd16e17c4"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {
+        "dlg-00000000000000000000000000000029": "collecting_proposals"
+      },
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": true,
+      "relay_ready": false,
+      "restore_error_count": 0
+    },
+    "router-bound": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "83653266060703005f93c07105b0bf201be5e025a057d3d3062b5d4207063bde",
+        "council_protocol": "1c51e97ec674f9265e0d15e720a11a60ba04ec8a664aecd0d367719dd16e17c4"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {},
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": true,
+      "relay_ready": false,
+      "restore_error_count": 0
+    },
+    "router-configured-unbound": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "83653266060703005f93c07105b0bf201be5e025a057d3d3062b5d4207063bde",
+        "council_protocol": "1c51e97ec674f9265e0d15e720a11a60ba04ec8a664aecd0d367719dd16e17c4"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {},
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": true,
+      "relay_ready": false,
+      "restore_error_count": 0
+    },
+    "router-malformed": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "83653266060703005f93c07105b0bf201be5e025a057d3d3062b5d4207063bde",
+        "council_protocol": "1c51e97ec674f9265e0d15e720a11a60ba04ec8a664aecd0d367719dd16e17c4"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {
+        "dlg-00000000000000000000000000000029": "collecting_proposals"
+      },
+      "oracle_errors": [],
+      "reader_errors": [
+        "CouncilError"
+      ],
+      "reader_supported": false,
+      "relay_ready": false,
+      "restore_error_count": 0
+    },
+    "staged-after-commit": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "83653266060703005f93c07105b0bf201be5e025a057d3d3062b5d4207063bde",
+        "council_protocol": "1c51e97ec674f9265e0d15e720a11a60ba04ec8a664aecd0d367719dd16e17c4"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {
+        "dlg-00000000000000000000000000000004": "collecting_exchange"
+      },
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": true,
+      "relay_ready": false,
+      "restore_error_count": 0
+    },
+    "staged-before-commit": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "83653266060703005f93c07105b0bf201be5e025a057d3d3062b5d4207063bde",
+        "council_protocol": "1c51e97ec674f9265e0d15e720a11a60ba04ec8a664aecd0d367719dd16e17c4"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {
+        "dlg-00000000000000000000000000000029": "collecting_proposals"
+      },
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": true,
+      "relay_ready": false,
+      "restore_error_count": 0
+    },
+    "stale-binding-generation": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "83653266060703005f93c07105b0bf201be5e025a057d3d3062b5d4207063bde",
+        "council_protocol": "1c51e97ec674f9265e0d15e720a11a60ba04ec8a664aecd0d367719dd16e17c4"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {
+        "dlg-00000000000000000000000000000004": "collecting_proposals"
+      },
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": true,
+      "relay_ready": false,
+      "restore_error_count": 0,
+      "stale_wake_rejected": true
+    },
+    "triad-challenge": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "83653266060703005f93c07105b0bf201be5e025a057d3d3062b5d4207063bde",
+        "council_protocol": "1c51e97ec674f9265e0d15e720a11a60ba04ec8a664aecd0d367719dd16e17c4"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {
+        "dlg-00000000000000000000000000000004": "collecting_convergence_challenge"
+      },
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": true,
+      "relay_ready": false,
+      "restore_error_count": 0
+    },
+    "triad-complete": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "83653266060703005f93c07105b0bf201be5e025a057d3d3062b5d4207063bde",
+        "council_protocol": "1c51e97ec674f9265e0d15e720a11a60ba04ec8a664aecd0d367719dd16e17c4"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {
+        "dlg-00000000000000000000000000000004": "complete"
+      },
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": true,
+      "relay_ready": false,
+      "restore_error_count": 0
+    },
+    "triad-exchange": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "83653266060703005f93c07105b0bf201be5e025a057d3d3062b5d4207063bde",
+        "council_protocol": "1c51e97ec674f9265e0d15e720a11a60ba04ec8a664aecd0d367719dd16e17c4"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {
+        "dlg-00000000000000000000000000000004": "collecting_exchange"
+      },
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": true,
+      "relay_ready": false,
+      "restore_error_count": 0
+    },
+    "triad-proposals": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "83653266060703005f93c07105b0bf201be5e025a057d3d3062b5d4207063bde",
+        "council_protocol": "1c51e97ec674f9265e0d15e720a11a60ba04ec8a664aecd0d367719dd16e17c4"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {
+        "dlg-00000000000000000000000000000004": "collecting_proposals"
+      },
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": true,
+      "relay_ready": false,
+      "restore_error_count": 0
+    },
+    "triad-representation": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "83653266060703005f93c07105b0bf201be5e025a057d3d3062b5d4207063bde",
+        "council_protocol": "1c51e97ec674f9265e0d15e720a11a60ba04ec8a664aecd0d367719dd16e17c4"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {
+        "dlg-00000000000000000000000000000004": "collecting_representation_check"
+      },
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": true,
+      "relay_ready": false,
+      "restore_error_count": 0
+    },
+    "triad-revision": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "83653266060703005f93c07105b0bf201be5e025a057d3d3062b5d4207063bde",
+        "council_protocol": "1c51e97ec674f9265e0d15e720a11a60ba04ec8a664aecd0d367719dd16e17c4"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {
+        "dlg-00000000000000000000000000000004": "collecting_synthesis_revision"
+      },
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": true,
+      "relay_ready": false,
+      "restore_error_count": 0
+    },
+    "triad-revision-check": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "83653266060703005f93c07105b0bf201be5e025a057d3d3062b5d4207063bde",
+        "council_protocol": "1c51e97ec674f9265e0d15e720a11a60ba04ec8a664aecd0d367719dd16e17c4"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {
+        "dlg-00000000000000000000000000000004": "collecting_revision_check"
+      },
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": true,
+      "relay_ready": false,
+      "restore_error_count": 0
+    },
+    "triad-synthesis": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "83653266060703005f93c07105b0bf201be5e025a057d3d3062b5d4207063bde",
+        "council_protocol": "1c51e97ec674f9265e0d15e720a11a60ba04ec8a664aecd0d367719dd16e17c4"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {
+        "dlg-00000000000000000000000000000004": "collecting_synthesis"
+      },
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": true,
+      "relay_ready": false,
+      "restore_error_count": 0
+    },
+    "unknown-dialogue-schema": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "83653266060703005f93c07105b0bf201be5e025a057d3d3062b5d4207063bde",
+        "council_protocol": "1c51e97ec674f9265e0d15e720a11a60ba04ec8a664aecd0d367719dd16e17c4"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {
+        "dlg-00000000000000000000000000000029": "collecting_proposals"
+      },
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": false,
+      "relay_ready": false,
+      "restore_error_count": 0
+    },
+    "unknown-lifecycle-format": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "83653266060703005f93c07105b0bf201be5e025a057d3d3062b5d4207063bde",
+        "council_protocol": "1c51e97ec674f9265e0d15e720a11a60ba04ec8a664aecd0d367719dd16e17c4"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {
+        "dlg-00000000000000000000000000000004": "complete"
+      },
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": false,
+      "relay_ready": false,
+      "restore_error_count": 0
+    }
+  },
+  "public-v0.19": {
+    "attention": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "be0ee3eabe59b2b41f101fd0c457ff5073303739ac078bc55d2476d64f2a8274"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {
+        "dlg-00000000000000000000000000000004": "collecting_exchange"
+      },
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": true,
+      "relay_ready": false,
+      "restore_error_count": 0
+    },
+    "audit-missing-newline": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "be0ee3eabe59b2b41f101fd0c457ff5073303739ac078bc55d2476d64f2a8274"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {
+        "dlg-00000000000000000000000000000004": "complete"
+      },
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": true,
+      "relay_ready": false,
+      "restore_error_count": 0
+    },
+    "audit-torn-tail": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "be0ee3eabe59b2b41f101fd0c457ff5073303739ac078bc55d2476d64f2a8274"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {
+        "dlg-00000000000000000000000000000004": "complete"
+      },
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": true,
+      "relay_ready": false,
+      "restore_error_count": 0
+    },
+    "cancellation-lost-ack": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "be0ee3eabe59b2b41f101fd0c457ff5073303739ac078bc55d2476d64f2a8274"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {
+        "dlg-00000000000000000000000000000029": "cancelled"
+      },
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": true,
+      "relay_ready": false,
+      "restore_error_count": 0
+    },
+    "claimed-and-wake-leased": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "be0ee3eabe59b2b41f101fd0c457ff5073303739ac078bc55d2476d64f2a8274"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {
+        "dlg-00000000000000000000000000000004": "collecting_proposals"
+      },
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": true,
+      "relay_ready": false,
+      "restore_error_count": 0
+    },
+    "claude-dead-relay": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "be0ee3eabe59b2b41f101fd0c457ff5073303739ac078bc55d2476d64f2a8274"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {
+        "dlg-00000000000000000000000000000029": "collecting_proposals"
+      },
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": true,
+      "relay_ready": false,
+      "restore_error_count": 1
+    },
+    "corrupt-manifest": {
+      "constructor": "ok",
+      "corrupt_error_count": 1,
+      "loaded": {
+        "council": "be0ee3eabe59b2b41f101fd0c457ff5073303739ac078bc55d2476d64f2a8274"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {},
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": false,
+      "relay_ready": false,
+      "restore_error_count": 0
+    },
+    "deleted": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "be0ee3eabe59b2b41f101fd0c457ff5073303739ac078bc55d2476d64f2a8274"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {},
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": true,
+      "relay_ready": false,
+      "restore_error_count": 0
+    },
+    "delivered-lost-ack": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "be0ee3eabe59b2b41f101fd0c457ff5073303739ac078bc55d2476d64f2a8274"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {
+        "dlg-00000000000000000000000000000004": "collecting_exchange"
+      },
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": true,
+      "relay_ready": false,
+      "restore_error_count": 0
+    },
+    "dormant-awaiting-extension": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "be0ee3eabe59b2b41f101fd0c457ff5073303739ac078bc55d2476d64f2a8274"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {
+        "dlg-00000000000000000000000000000029": "collecting_exchange"
+      },
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": true,
+      "relay_ready": false,
+      "restore_error_count": 0
+    },
+    "duplicate-route": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "be0ee3eabe59b2b41f101fd0c457ff5073303739ac078bc55d2476d64f2a8274"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {
+        "dlg-00000000000000000000000000000029": "collecting_proposals"
+      },
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": false,
+      "relay_ready": false,
+      "restore_error_count": 1
+    },
+    "dyad-proposals": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "be0ee3eabe59b2b41f101fd0c457ff5073303739ac078bc55d2476d64f2a8274"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {
+        "dlg-00000000000000000000000000000029": "collecting_proposals"
+      },
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": true,
+      "relay_ready": false,
+      "restore_error_count": 0
+    },
+    "expired-registration": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "be0ee3eabe59b2b41f101fd0c457ff5073303739ac078bc55d2476d64f2a8274"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {
+        "dlg-00000000000000000000000000000029": "collecting_proposals"
+      },
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": true,
+      "relay_ready": false,
+      "restore_error_count": 0
+    },
+    "extension-lost-ack": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "duplicate_extension": true,
+      "loaded": {
+        "council": "be0ee3eabe59b2b41f101fd0c457ff5073303739ac078bc55d2476d64f2a8274"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {
+        "dlg-00000000000000000000000000000029": "collecting_exchange"
+      },
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": true,
+      "relay_ready": false,
+      "restore_error_count": 0
+    },
+    "inert-lifecycle-committed": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "be0ee3eabe59b2b41f101fd0c457ff5073303739ac078bc55d2476d64f2a8274"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {
+        "dlg-00000000000000000000000000000004": "complete"
+      },
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": true,
+      "relay_ready": false,
+      "restore_error_count": 0
+    },
+    "inert-lifecycle-pending": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "be0ee3eabe59b2b41f101fd0c457ff5073303739ac078bc55d2476d64f2a8274"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {
+        "dlg-00000000000000000000000000000004": "complete"
+      },
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": true,
+      "relay_ready": false,
+      "restore_error_count": 0
+    },
+    "inert-lifecycle-uninstalled": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "be0ee3eabe59b2b41f101fd0c457ff5073303739ac078bc55d2476d64f2a8274"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {
+        "dlg-00000000000000000000000000000004": "complete"
+      },
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": true,
+      "relay_ready": false,
+      "restore_error_count": 0
+    },
+    "interrupted-tombstone-deletion": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "be0ee3eabe59b2b41f101fd0c457ff5073303739ac078bc55d2476d64f2a8274"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {},
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": true,
+      "relay_ready": false,
+      "restore_error_count": 0
+    },
+    "legacy-generation-missing": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "be0ee3eabe59b2b41f101fd0c457ff5073303739ac078bc55d2476d64f2a8274"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {
+        "dlg-00000000000000000000000000000029": "collecting_proposals"
+      },
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": true,
+      "relay_ready": false,
+      "restore_error_count": 0
+    },
+    "malformed-registration": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "be0ee3eabe59b2b41f101fd0c457ff5073303739ac078bc55d2476d64f2a8274"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {
+        "dlg-00000000000000000000000000000029": "collecting_proposals"
+      },
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": false,
+      "relay_ready": false,
+      "restore_error_count": 1
+    },
+    "opencode-dead-relay": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "be0ee3eabe59b2b41f101fd0c457ff5073303739ac078bc55d2476d64f2a8274"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {
+        "dlg-00000000000000000000000000000029": "collecting_proposals"
+      },
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": true,
+      "relay_ready": false,
+      "restore_error_count": 1
+    },
+    "opencode-pin": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "be0ee3eabe59b2b41f101fd0c457ff5073303739ac078bc55d2476d64f2a8274"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {
+        "dlg-00000000000000000000000000000029": "collecting_proposals"
+      },
+      "oracle_errors": [],
+      "pin_admitted": false,
+      "reader_errors": [],
+      "reader_supported": true,
+      "relay_ready": false,
+      "restore_error_count": 0
+    },
+    "opencode-pin-malformed": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "be0ee3eabe59b2b41f101fd0c457ff5073303739ac078bc55d2476d64f2a8274"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {
+        "dlg-00000000000000000000000000000029": "collecting_proposals"
+      },
+      "oracle_errors": [],
+      "pin_admitted": false,
+      "reader_errors": [],
+      "reader_supported": true,
+      "relay_ready": false,
+      "restore_error_count": 0
+    },
+    "orphan-final": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "be0ee3eabe59b2b41f101fd0c457ff5073303739ac078bc55d2476d64f2a8274"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {
+        "dlg-00000000000000000000000000000004": "collecting_revision_check"
+      },
+      "oracle_errors": [
+        "orphan_final_retained"
+      ],
+      "reader_errors": [],
+      "reader_supported": false,
+      "relay_ready": false,
+      "restore_error_count": 0
+    },
+    "pending-audit-intent": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "be0ee3eabe59b2b41f101fd0c457ff5073303739ac078bc55d2476d64f2a8274"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {
+        "dlg-00000000000000000000000000000029": "collecting_proposals"
+      },
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": true,
+      "relay_ready": false,
+      "restore_error_count": 0
+    },
+    "retention-expired-terminal": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "be0ee3eabe59b2b41f101fd0c457ff5073303739ac078bc55d2476d64f2a8274"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {},
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": true,
+      "relay_ready": false,
+      "restore_error_count": 0
+    },
+    "retention-malformed": {
+      "constructor": "refused",
+      "corrupt_error_count": 0,
+      "error_type": "CouncilError",
+      "loaded": {
+        "council": "be0ee3eabe59b2b41f101fd0c457ff5073303739ac078bc55d2476d64f2a8274"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {},
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": false,
+      "relay_ready": false,
+      "restore_error_count": 0
+    },
+    "retention-off": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "be0ee3eabe59b2b41f101fd0c457ff5073303739ac078bc55d2476d64f2a8274"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {
+        "dlg-00000000000000000000000000000029": "collecting_proposals"
+      },
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": true,
+      "relay_ready": false,
+      "restore_error_count": 0
+    },
+    "retention-on": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "be0ee3eabe59b2b41f101fd0c457ff5073303739ac078bc55d2476d64f2a8274"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {
+        "dlg-00000000000000000000000000000029": "collecting_proposals"
+      },
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": true,
+      "relay_ready": false,
+      "restore_error_count": 0
+    },
+    "router-bound": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "be0ee3eabe59b2b41f101fd0c457ff5073303739ac078bc55d2476d64f2a8274"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {},
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": true,
+      "relay_ready": false,
+      "restore_error_count": 0
+    },
+    "router-configured-unbound": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "be0ee3eabe59b2b41f101fd0c457ff5073303739ac078bc55d2476d64f2a8274"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {},
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": true,
+      "relay_ready": false,
+      "restore_error_count": 0
+    },
+    "router-malformed": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "be0ee3eabe59b2b41f101fd0c457ff5073303739ac078bc55d2476d64f2a8274"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {
+        "dlg-00000000000000000000000000000029": "collecting_proposals"
+      },
+      "oracle_errors": [],
+      "reader_errors": [
+        "CouncilError"
+      ],
+      "reader_supported": false,
+      "relay_ready": false,
+      "restore_error_count": 0
+    },
+    "staged-after-commit": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "be0ee3eabe59b2b41f101fd0c457ff5073303739ac078bc55d2476d64f2a8274"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {
+        "dlg-00000000000000000000000000000004": "collecting_exchange"
+      },
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": true,
+      "relay_ready": false,
+      "restore_error_count": 0
+    },
+    "staged-before-commit": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "be0ee3eabe59b2b41f101fd0c457ff5073303739ac078bc55d2476d64f2a8274"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {
+        "dlg-00000000000000000000000000000029": "collecting_proposals"
+      },
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": true,
+      "relay_ready": false,
+      "restore_error_count": 0
+    },
+    "stale-binding-generation": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "be0ee3eabe59b2b41f101fd0c457ff5073303739ac078bc55d2476d64f2a8274"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {
+        "dlg-00000000000000000000000000000004": "collecting_proposals"
+      },
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": true,
+      "relay_ready": false,
+      "restore_error_count": 0,
+      "stale_wake_rejected": true
+    },
+    "triad-challenge": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "be0ee3eabe59b2b41f101fd0c457ff5073303739ac078bc55d2476d64f2a8274"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {
+        "dlg-00000000000000000000000000000004": "collecting_convergence_challenge"
+      },
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": true,
+      "relay_ready": false,
+      "restore_error_count": 0
+    },
+    "triad-complete": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "be0ee3eabe59b2b41f101fd0c457ff5073303739ac078bc55d2476d64f2a8274"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {
+        "dlg-00000000000000000000000000000004": "complete"
+      },
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": true,
+      "relay_ready": false,
+      "restore_error_count": 0
+    },
+    "triad-exchange": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "be0ee3eabe59b2b41f101fd0c457ff5073303739ac078bc55d2476d64f2a8274"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {
+        "dlg-00000000000000000000000000000004": "collecting_exchange"
+      },
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": true,
+      "relay_ready": false,
+      "restore_error_count": 0
+    },
+    "triad-proposals": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "be0ee3eabe59b2b41f101fd0c457ff5073303739ac078bc55d2476d64f2a8274"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {
+        "dlg-00000000000000000000000000000004": "collecting_proposals"
+      },
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": true,
+      "relay_ready": false,
+      "restore_error_count": 0
+    },
+    "triad-representation": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "be0ee3eabe59b2b41f101fd0c457ff5073303739ac078bc55d2476d64f2a8274"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {
+        "dlg-00000000000000000000000000000004": "collecting_representation_check"
+      },
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": true,
+      "relay_ready": false,
+      "restore_error_count": 0
+    },
+    "triad-revision": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "be0ee3eabe59b2b41f101fd0c457ff5073303739ac078bc55d2476d64f2a8274"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {
+        "dlg-00000000000000000000000000000004": "collecting_synthesis_revision"
+      },
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": true,
+      "relay_ready": false,
+      "restore_error_count": 0
+    },
+    "triad-revision-check": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "be0ee3eabe59b2b41f101fd0c457ff5073303739ac078bc55d2476d64f2a8274"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {
+        "dlg-00000000000000000000000000000004": "collecting_revision_check"
+      },
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": true,
+      "relay_ready": false,
+      "restore_error_count": 0
+    },
+    "triad-synthesis": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "be0ee3eabe59b2b41f101fd0c457ff5073303739ac078bc55d2476d64f2a8274"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {
+        "dlg-00000000000000000000000000000004": "collecting_synthesis"
+      },
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": true,
+      "relay_ready": false,
+      "restore_error_count": 0
+    },
+    "unknown-dialogue-schema": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "be0ee3eabe59b2b41f101fd0c457ff5073303739ac078bc55d2476d64f2a8274"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {
+        "dlg-00000000000000000000000000000029": "collecting_proposals"
+      },
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": false,
+      "relay_ready": false,
+      "restore_error_count": 0
+    },
+    "unknown-lifecycle-format": {
+      "constructor": "ok",
+      "corrupt_error_count": 0,
+      "loaded": {
+        "council": "be0ee3eabe59b2b41f101fd0c457ff5073303739ac078bc55d2476d64f2a8274"
+      },
+      "managed_writer_admission": false,
+      "manifest_phases": {
+        "dlg-00000000000000000000000000000004": "complete"
+      },
+      "oracle_errors": [],
+      "reader_errors": [],
+      "reader_supported": false,
+      "relay_ready": false,
+      "restore_error_count": 0
+    }
+  }
+}

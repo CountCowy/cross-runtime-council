@@ -10,6 +10,8 @@ import secrets
 import socket
 import socketserver
 import sys
+sys.dont_write_bytecode = True
+# ruff: noqa: E402 -- custom imports must follow bytecode-write suppression.
 import threading
 from typing import Any, Dict, List, Optional
 
@@ -32,12 +34,13 @@ from council import (
     default_state_root,
     post_to_claude,
     validate_claude_socket,
+    validate_bind_arguments,
     validate_relay_envelope_content,
     validate_extension_result,
 )
 
-PACKAGE_ID = "24e1b0902fe95d929f365cb57a156e454236e7f82b57dcb68b146ba12bb5ba47"
-RUNTIME_COHORT = "9401f1780d0d666764923aef9755778135399b0c6f17ed33aea21686d2715328"
+PACKAGE_ID = "d082178b8a467ac52fdfdb1ab425f9a380d9d441de692b690651400e88cf9e09"
+RUNTIME_COHORT = "a6f177962d061266376766eb47d5d7904648126098eb81899652cfa474407478"
 if RUNTIME_COHORT != council.RUNTIME_COHORT:
     raise RuntimeError("Council MCP/helper cohort mismatch; refresh the complete runtime set")
 
@@ -54,6 +57,7 @@ PENDING_ROUTER_ROTATIONS: Dict[str, Dict[str, str]] = {}
 CAPABILITIES_LOCK = threading.RLock()
 CLAUDE_RELAY_OWNER_ID = secrets.token_urlsafe(48)
 MAX_CONCURRENT_RELAY_HANDLERS = 32
+MAX_PENDING_BINDING_ROTATIONS = 32
 
 
 def extension_rejection_is_ambiguous(error: Exception) -> bool:
@@ -262,18 +266,12 @@ def router_capability(client: CouncilClient, request_meta: Dict[str, Any]) -> st
             PENDING_ROUTER_ROTATIONS[target_thread_id] = pending
         capability = pending["router_capability"]
         previous = pending["previous_router_capability"] or None
-    try:
-        client.request(
-            "router_bind",
-            target_thread_id=target_thread_id,
-            router_capability=capability,
-            previous_router_capability=previous,
-        )
-    except CouncilRequestRejected:
-        with CAPABILITIES_LOCK:
-            if PENDING_ROUTER_ROTATIONS.get(target_thread_id) is pending:
-                PENDING_ROUTER_ROTATIONS.pop(target_thread_id, None)
-        raise
+    client.request(
+        "router_bind",
+        target_thread_id=target_thread_id,
+        router_capability=capability,
+        previous_router_capability=previous,
+    )
     with CAPABILITIES_LOCK:
         ROUTER_CAPABILITIES[target_thread_id] = capability
         if PENDING_ROUTER_ROTATIONS.get(target_thread_id) is pending:
@@ -367,36 +365,58 @@ def call_tool(
     if name == "council_ping":
         result = client.request("ping")
     elif name == "council_bind":
-        relay = None
-        relay_preexisting = None
-        if arguments["runtime"] == "claude":
-            with RELAYS_LOCK:
-                relay_preexisting = RELAYS.get(arguments["participant"])
-            relay = get_claude_relay(arguments["participant"])
+        runtime, participant, label, project, lease_minutes = validate_bind_arguments(
+            arguments["runtime"],
+            arguments["participant"],
+            arguments["label"],
+            arguments["project"],
+            arguments.get("lease_minutes", DEFAULT_LEASE_MINUTES),
+        )
         target_thread_id = (
-            codex_thread_id(request_meta) if arguments["runtime"] == "codex" else None
+            codex_thread_id(request_meta) if runtime == "codex" else None
         )
         identity = participant_identity(
-            arguments["participant"], request_meta, runtime=arguments["runtime"]
+            participant, request_meta, runtime=runtime
         )
+        created_pending = False
         with CAPABILITIES_LOCK:
             pending = PENDING_BINDING_ROTATIONS.get(identity)
             if pending is None:
+                confirmed_capability = BINDING_CAPABILITIES.get(identity)
+                if (
+                    len(PENDING_BINDING_ROTATIONS)
+                    >= MAX_PENDING_BINDING_ROTATIONS
+                    and not confirmed_capability
+                ):
+                    raise CouncilError(
+                        "too many pending Council binding rotations; retry an existing identity"
+                    )
                 pending = {
                     "binding_capability": secrets.token_urlsafe(48),
-                    "previous_capability": BINDING_CAPABILITIES.get(identity) or "",
+                    "previous_capability": confirmed_capability or "",
                 }
                 PENDING_BINDING_ROTATIONS[identity] = pending
+                created_pending = True
             binding_capability = pending["binding_capability"]
             previous_capability = pending["previous_capability"] or None
+        relay = None
+        try:
+            if runtime == "claude":
+                relay = get_claude_relay(participant)
+        except BaseException:
+            if created_pending:
+                with CAPABILITIES_LOCK:
+                    if PENDING_BINDING_ROTATIONS.get(identity) is pending:
+                        PENDING_BINDING_ROTATIONS.pop(identity, None)
+            raise
         try:
             result = client.request(
                 "bind",
-                runtime=arguments["runtime"],
-                participant=arguments["participant"],
-                label=arguments["label"],
-                project=arguments["project"],
-                lease_minutes=arguments.get("lease_minutes", DEFAULT_LEASE_MINUTES),
+                runtime=runtime,
+                participant=participant,
+                label=label,
+                project=project,
+                lease_minutes=lease_minutes,
                 relay_path=str(relay.path) if relay else None,
                 relay_capability=relay.relay_capability if relay else None,
                 relay_owner_id=CLAUDE_RELAY_OWNER_ID if relay else None,
@@ -406,19 +426,7 @@ def call_tool(
                 previous_capability=previous_capability,
             )
         except CouncilRequestRejected:
-            with CAPABILITIES_LOCK:
-                if PENDING_BINDING_ROTATIONS.get(identity) is pending:
-                    PENDING_BINDING_ROTATIONS.pop(identity, None)
-            if relay is not None and relay is not relay_preexisting:
-                # This bind created the relay; a definitive rejection must not
-                # leave a live delivery socket listening for a participant
-                # that never bound. Ambiguous failures keep it for idempotent
-                # retry, and a relay from an earlier successful bind of this
-                # participant is never touched.
-                with RELAYS_LOCK:
-                    if RELAYS.get(arguments["participant"]) is relay:
-                        RELAYS.pop(arguments["participant"], None)
-                relay.close()
+            # A rejection of this retry says nothing about an earlier commit.
             raise
         with CAPABILITIES_LOCK:
             BINDING_CAPABILITIES[identity] = binding_capability
