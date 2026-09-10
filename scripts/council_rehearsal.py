@@ -10,6 +10,7 @@ host intervention.  Every mutable root is supplied explicitly by the maintainer.
 import argparse
 import copy
 import os
+import re
 import shutil
 import stat
 import sys
@@ -53,6 +54,7 @@ PLAN_FORMAT = "rehearsal-plan/v1"
 STATE_FORMAT = "rehearsal-runner-state/v1"
 CHECKPOINT_FORMAT = "rehearsal-checkpoint/v1"
 EXPORT_FORMAT = "rehearsal-export/v1"
+FIXTURE_EXPORT_FORMAT = "rehearsal-fixture-export/v1"
 GATE_IDS = ("G1", "G2", "G3", "G4", "G5")
 PRECEDENCE = {"pass": 0, "skipped": 1, "unobserved": 2, "fail": 3}
 MAX_CASES = 512
@@ -93,6 +95,12 @@ def _count(value, field):
     require_nonnegative_int(value, field)
     if value > MAX_OBSERVATION_COUNT:
         raise RehearsalError("count-too-large", field)
+    return value
+
+
+def _object_id(value, field):
+    if not isinstance(value, str) or re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", value) is None:
+        raise RehearsalError("invalid-source-object-id", field)
     return value
 
 
@@ -212,8 +220,12 @@ def _validate_tested_tuple(value):
         ),
         field="tested_tuple",
     )
-    for key in ("source_commit", "source_tree", "release_manifest_sha256"):
-        require_sha256(value[key], "tested_tuple." + key)
+    for key in ("source_commit", "source_tree"):
+        _object_id(value[key], "tested_tuple." + key)
+    require_sha256(
+        value["release_manifest_sha256"],
+        "tested_tuple.release_manifest_sha256",
+    )
     require_bool(value["dirty"], "tested_tuple.dirty")
     if value["captured_diff_ref"] is not None:
         require_ref(value["captured_diff_ref"], "tested_tuple.captured_diff_ref")
@@ -2060,13 +2072,23 @@ def import_run_evidence(run_root, spec):
         return import_evidence(run_root, spec)
 
 
-def _redacted_record(record):
+FIXTURE_EXPORT_LIMITATION = (
+    "Synthetic runner fixture; this artifact records no live receiving-runtime event."
+)
+
+
+def _redacted_record(record, context_kind="live"):
     # Structure validation has already rejected unknown keys; this copy cannot
     # accidentally pass private-index fields through.
-    return copy.deepcopy(record)
+    projected = copy.deepcopy(record)
+    if context_kind == "fixture":
+        projected["limitations"] = sorted(
+            set(projected["limitations"] + [FIXTURE_EXPORT_LIMITATION])
+        )
+    return projected
 
 
-def deterministic_summary(record, assessment):
+def deterministic_summary(record, assessment, context_kind="live"):
     gates = []
     for gate in assessment["gates"]:
         gates.append(
@@ -2084,8 +2106,12 @@ def deterministic_summary(record, assessment):
                 ],
             }
         )
-    return {
-        "format": "rehearsal-summary/v1",
+    summary = {
+        "format": (
+            "rehearsal-fixture-summary/v1"
+            if context_kind == "fixture"
+            else "rehearsal-summary/v1"
+        ),
         "contract": CONTRACT,
         "run_id": record["run_id"],
         "claim": copy.deepcopy(record["claim"]),
@@ -2097,9 +2123,21 @@ def deterministic_summary(record, assessment):
             "g4-live-interruption-boundary-requires-separately-authorized-evidence",
         ],
     }
+    if context_kind == "fixture":
+        summary["context_kind"] = "fixture"
+        summary["proof_eligible"] = False
+        summary["limitations"] = sorted(
+            set(summary["limitations"] + [FIXTURE_EXPORT_LIMITATION])
+        )
+    return summary
 
 
-def export_run(run_root, destination, private_refs=()):
+def export_run(
+    run_root,
+    destination,
+    private_refs=(),
+    allow_fixture_artifacts=False,
+):
     run_root = Path(run_root)
     destination = Path(destination)
     if not destination.is_absolute():
@@ -2117,19 +2155,24 @@ def export_run(run_root, destination, private_refs=()):
     state = load_state(run_root)
     if state["state"] != "assessment_ready":
         raise RehearsalError("assessment-ready-required")
-    if state["context_kind"] != "live":
+    context_kind = state["context_kind"]
+    if context_kind == "fixture" and not allow_fixture_artifacts:
         raise RehearsalError("fixture-context-cannot-export-live-proof")
+    if context_kind == "live" and allow_fixture_artifacts:
+        raise RehearsalError("fixture-artifacts-require-fixture-context")
     record = strict_load_json(run_root / "record.json", "record")
     verified = verify_evidence(run_root, record["evidence"])
     assessment = assess_record(
         record,
         run_root=run_root,
-        context_kind="live",
+        context_kind=context_kind,
         verified_index=verified["index"],
     )
-    public_record = _redacted_record(record)
+    public_record = _redacted_record(record, context_kind=context_kind)
     record_bytes = canonical_json_bytes(public_record)
-    summary_bytes = canonical_json_bytes(deterministic_summary(record, assessment))
+    summary_bytes = canonical_json_bytes(
+        deterministic_summary(record, assessment, context_kind=context_kind)
+    )
     index = verified["index"]
     assert_no_private_markers(record_bytes, index)
     assert_no_private_markers(summary_bytes, index)
@@ -2144,7 +2187,11 @@ def export_run(run_root, destination, private_refs=()):
     temporary = Path(tempfile.mkdtemp(prefix=".%s." % destination.name, dir=str(parent)))
     os.chmod(str(temporary), 0o700)
     try:
-        write_new_private(temporary / "run-record.json", record_bytes)
+        record_name = (
+            "fixture-record.json" if context_kind == "fixture" else "run-record.json"
+        )
+        record_key = "fixture_record" if context_kind == "fixture" else "run_record"
+        write_new_private(temporary / record_name, record_bytes)
         write_new_private(temporary / "summary.json", summary_bytes)
         private_manifest = []
         if selected:
@@ -2161,12 +2208,19 @@ def export_run(run_root, destination, private_refs=()):
                 {"ref": reference, "sha256": item["sha256"], "bytes": item["bytes"]}
             )
         manifest = {
-            "format": EXPORT_FORMAT,
+            "format": (
+                FIXTURE_EXPORT_FORMAT if context_kind == "fixture" else EXPORT_FORMAT
+            ),
             "run_id": record["run_id"],
-            "run_record": {"sha256": sha256_bytes(record_bytes), "bytes": len(record_bytes)},
+            record_key: {
+                "sha256": sha256_bytes(record_bytes),
+                "bytes": len(record_bytes),
+            },
             "summary": {"sha256": sha256_bytes(summary_bytes), "bytes": len(summary_bytes)},
             "private_objects": private_manifest,
         }
+        if context_kind == "fixture":
+            manifest["proof_eligible"] = False
         manifest_bytes = canonical_json_bytes(manifest)
         assert_no_private_markers(manifest_bytes, index)
         write_new_private(temporary / "export-manifest.json", manifest_bytes)
@@ -2187,6 +2241,8 @@ def export_run(run_root, destination, private_refs=()):
         "record_valid": True,
         "claim": copy.deepcopy(record["claim"]),
         "result": assessment["result"],
+        "context_kind": context_kind,
+        "proof_eligible": context_kind == "live",
     }
 
 
@@ -2197,15 +2253,37 @@ def validate_export(destination):
         raise RehearsalError("unsafe-export-directory")
     _require_private_regular(destination / "export-manifest.json", "export_manifest")
     manifest = strict_load_json(destination / "export-manifest.json", "export_manifest")
-    require_keys(
-        manifest,
-        ("format", "run_id", "run_record", "summary", "private_objects"),
-        field="export_manifest",
-    )
-    if manifest["format"] != EXPORT_FORMAT:
+    if not isinstance(manifest, dict):
+        raise RehearsalError("object-required", "export_manifest")
+    if manifest.get("format") == EXPORT_FORMAT:
+        require_keys(
+            manifest,
+            ("format", "run_id", "run_record", "summary", "private_objects"),
+            field="export_manifest",
+        )
+        record_key = "run_record"
+        record_name = "run-record.json"
+    elif manifest.get("format") == FIXTURE_EXPORT_FORMAT:
+        require_keys(
+            manifest,
+            (
+                "format",
+                "run_id",
+                "fixture_record",
+                "summary",
+                "private_objects",
+                "proof_eligible",
+            ),
+            field="export_manifest",
+        )
+        if manifest["proof_eligible"] is not False:
+            raise RehearsalError("fixture-export-cannot-be-proof-eligible")
+        record_key = "fixture_record"
+        record_name = "fixture-record.json"
+    else:
         raise RehearsalError("unsupported-format", "export_manifest.format")
     require_ref(manifest["run_id"], "export_manifest.run_id")
-    for name, filename in (("run_record", "run-record.json"), ("summary", "summary.json")):
+    for name, filename in ((record_key, record_name), ("summary", "summary.json")):
         item = require_keys(manifest[name], ("sha256", "bytes"), field="export_manifest." + name)
         require_sha256(item["sha256"], "export_manifest.%s.sha256" % name)
         require_nonnegative_int(item["bytes"], "export_manifest.%s.bytes" % name)
@@ -2215,6 +2293,21 @@ def validate_export(destination):
             raise RehearsalError("export-object-mismatch", name)
         if stat.S_IMODE(path.stat().st_mode) != 0o600:
             raise RehearsalError("unsafe-file-mode", name)
+    if manifest["format"] == FIXTURE_EXPORT_FORMAT:
+        fixture_record = strict_load_json(
+            destination / "fixture-record.json", "fixture_record"
+        )
+        fixture_summary = strict_load_json(destination / "summary.json", "summary")
+        if not isinstance(fixture_record, dict) or not isinstance(fixture_summary, dict):
+            raise RehearsalError("object-required", "fixture_export")
+        if FIXTURE_EXPORT_LIMITATION not in fixture_record.get("limitations", []):
+            raise RehearsalError("fixture-export-marker-missing", "fixture_record")
+        if (
+            fixture_summary.get("format") != "rehearsal-fixture-summary/v1"
+            or fixture_summary.get("context_kind") != "fixture"
+            or fixture_summary.get("proof_eligible") is not False
+        ):
+            raise RehearsalError("fixture-export-marker-missing", "summary")
     private_items = require_list(manifest["private_objects"], "export_manifest.private_objects", MAX_EVIDENCE_ITEMS)
     refs = []
     for position, item in enumerate(private_items):
@@ -2261,6 +2354,11 @@ def _parser():
     export_parser.add_argument("--run", required=True)
     export_parser.add_argument("--destination", required=True)
     export_parser.add_argument("--include-private", action="append", default=[])
+    export_parser.add_argument(
+        "--fixture-artifacts",
+        action="store_true",
+        help="export a fixture-labeled, proof-ineligible artifact set",
+    )
     return parser
 
 
@@ -2300,7 +2398,12 @@ def main(argv=None):
             report = validate_run(args.run, assess=True)
             exit_code = 0 if report["result"] == "pass" else 1
         else:
-            report = export_run(args.run, args.destination, args.include_private)
+            report = export_run(
+                args.run,
+                args.destination,
+                args.include_private,
+                allow_fixture_artifacts=args.fixture_artifacts,
+            )
             exit_code = 0
         _print_json(report)
         return exit_code

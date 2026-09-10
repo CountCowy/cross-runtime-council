@@ -21,6 +21,13 @@ from council_rehearsal import RehearsalError
 
 FIXTURES = Path(__file__).parent / "fixtures" / "live_rehearsal"
 SCRIPT = Path(__file__).parent / "council_rehearsal.py"
+WALKTHROUGH = (
+    Path(__file__).parent.parent
+    / "examples"
+    / "live-rehearsal"
+    / "core-walkthrough"
+    / "walkthrough.py"
+)
 
 
 def literal_json(name):
@@ -142,6 +149,15 @@ class RecordValidationTests(unittest.TestCase):
             rehearsal.validate_record_structure(changed)
         changed["limitations"].append("tested_tuple.os.build: fixture intentionally unknown")
         rehearsal.validate_record_structure(changed)
+
+    def test_source_commit_and_tree_accept_git_sha1_or_sha256_only(self):
+        changed = copy.deepcopy(self.record)
+        changed["tested_tuple"]["source_commit"] = "a" * 40
+        changed["tested_tuple"]["source_tree"] = "b" * 40
+        rehearsal.validate_record_structure(changed)
+        changed["tested_tuple"]["source_commit"] = "a" * 39
+        with self.assertRaisesRegex(RehearsalError, "invalid-source-object-id"):
+            rehearsal.validate_record_structure(changed)
 
     def test_hand_edited_results_and_rationale_refuse(self):
         mutators = (
@@ -741,6 +757,26 @@ class RunLifecycleTests(unittest.TestCase):
         with self.assertRaisesRegex(RehearsalError, "fixture-context-cannot-export"):
             rehearsal.export_run(self.run_root, self.base / "export")
 
+    def test_fixture_artifact_export_is_explicitly_proof_ineligible(self):
+        self.advance_to_assessment_ready(context_kind="fixture")
+        destination = self.base / "fixture-export"
+        result = rehearsal.export_run(
+            self.run_root,
+            destination,
+            allow_fixture_artifacts=True,
+        )
+        self.assertEqual(result["context_kind"], "fixture")
+        self.assertFalse(result["proof_eligible"])
+        self.assertTrue((destination / "fixture-record.json").is_file())
+        self.assertFalse((destination / "run-record.json").exists())
+        manifest = rehearsal.validate_export(destination)
+        self.assertEqual(manifest["format"], "rehearsal-fixture-export/v1")
+        self.assertFalse(manifest["proof_eligible"])
+        exported_record = json.loads(
+            (destination / "fixture-record.json").read_text(encoding="utf-8")
+        )
+        self.assertIn(rehearsal.FIXTURE_EXPORT_LIMITATION, exported_record["limitations"])
+
     def test_validate_and_assess_exit_conventions_separate_validity_from_verdict(self):
         record, _imported, _previous = self.advance_to_assessment_ready(
             context_kind="fixture"
@@ -780,6 +816,14 @@ class RunLifecycleTests(unittest.TestCase):
     def test_live_export_then_separate_cleanup_checkpoint(self):
         record, imported, previous = self.advance_to_assessment_ready(context_kind="live")
         destination = self.base / "export"
+        with self.assertRaisesRegex(
+            RehearsalError, "fixture-artifacts-require-fixture-context"
+        ):
+            rehearsal.export_run(
+                self.run_root,
+                self.base / "wrong-fixture-export",
+                allow_fixture_artifacts=True,
+            )
         exported = rehearsal.export_run(self.run_root, destination)
         self.assertEqual(exported["result"], "pass")
         self.assertFalse((destination / "private-index.json").exists())
@@ -897,6 +941,22 @@ class CliAndNoLiveSideEffectTests(unittest.TestCase):
         source = SCRIPT.read_text(encoding="utf-8")
         self.assertNotIn("HOME", source)
         self.assertNotIn("CODEX_HOME", source)
+
+    def test_committed_walkthrough_runs_a_proof_ineligible_fixture_cycle(self):
+        with tempfile.TemporaryDirectory(prefix="rehearsal-walkthrough-") as temporary:
+            completed = subprocess.run(
+                [sys.executable, str(WALKTHROUGH), "--workspace", temporary],
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            result = json.loads(completed.stdout)
+            self.assertEqual(result["context_kind"], "fixture")
+            self.assertFalse(result["proof_eligible"])
+            self.assertEqual(result["runner_state"], "cleanup_recorded")
+            self.assertEqual(result["live_actions_performed"], [])
 
 
 if __name__ == "__main__":

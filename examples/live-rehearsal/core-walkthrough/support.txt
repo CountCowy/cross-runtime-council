@@ -1,0 +1,2 @@
+Synthetic walkthrough support bytes.
+No runtime received a message and no live recovery action occurred.

@@ -1,0 +1,10 @@
+{
+  "format": "rehearsal-core-walkthrough/v1",
+  "context_kind": "fixture",
+  "run_id": "fixture-run-one",
+  "source_commit": "1111111111111111111111111111111111111111",
+  "source_tree": "2222222222222222222222222222222222222222",
+  "support_identity": "synthetic-walkthrough-support",
+  "collected_utc": "2026-09-08T19:58:00Z",
+  "cleanup_utc": "2026-09-08T20:13:00Z"
+}
