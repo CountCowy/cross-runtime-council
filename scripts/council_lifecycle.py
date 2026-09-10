@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath
+import re
 import secrets
 import stat
 import subprocess
@@ -65,6 +66,19 @@ RETAINED_RELEASE_FORMAT = 1
 OWNERSHIP_SNAPSHOT_FORMAT = 1
 PLANNING_PREVIEW_FORMAT = 1
 PLANNING_KINDS = {"install", "upgrade", "rollback", "uninstall"}
+RUNTIME_SOURCES = (
+    "scripts/council_admission.py", "scripts/council_inspect.py",
+    "scripts/council_protocol.py", "scripts/council_protocol.ts",
+    "scripts/council.py", "scripts/council_mcp.py", "scripts/council_opencode.py",
+    "scripts/opencode_council_plugin.ts", "scripts/opencode_delivery_registry.ts",
+    "scripts/tools/council.ts",
+)
+_STAMP_PATTERN = {
+    name: re.compile(
+        rb'(?m)^((?:(?:export )?const )?' + name.encode() + rb' = ")[^"]+("\r?)$'
+    )
+    for name in ("PACKAGE_ID", "RUNTIME_COHORT")
+}
 
 
 class LifecyclePlanningError(recovery.RecoveryError):
@@ -96,20 +110,21 @@ def _lexical_root(path: Path) -> Path:
 
 
 def _observed_root(path: Path) -> Path:
-    if path.exists():
-        if path.is_symlink():
-            raise LifecyclePlanningError("root path must not be a symlink")
-        return path.resolve(strict=True)
-    missing = [path.name]
-    ancestor = path.parent
-    while not ancestor.exists():
-        if ancestor == ancestor.parent:
-            break
-        missing.append(ancestor.name)
-        ancestor = ancestor.parent
-    if not ancestor.is_dir():
-        raise LifecyclePlanningError("absent root has no physical directory ancestor")
-    return ancestor.resolve(strict=True).joinpath(*reversed(missing))
+    path = Path(path)
+    if not path.is_absolute():
+        raise LifecyclePlanningError("observed root must be absolute")
+    current = Path(path.anchor)
+    parts = path.parts[1:]
+    for index, part in enumerate(parts):
+        candidate = current / part
+        try:
+            details = candidate.lstat()
+        except FileNotFoundError:
+            return candidate.joinpath(*parts[index + 1:])
+        if stat.S_ISLNK(details.st_mode) or not stat.S_ISDIR(details.st_mode):
+            raise LifecyclePlanningError("root path has a nonphysical ancestor")
+        current = candidate
+    return current
 
 
 def _release_tree_files(release_root: Path) -> Tuple[List[str], List[str]]:
@@ -134,6 +149,80 @@ def _expected_directories(files: List[str]) -> List[str]:
             directories.add(str(parent))
             parent = parent.parent
     return sorted(directories)
+
+
+def _file_fingerprint(details: Any) -> Tuple[int, ...]:
+    return (
+        details.st_dev, details.st_ino, details.st_mode, details.st_nlink,
+        details.st_size, details.st_mtime_ns, details.st_ctime_ns,
+    )
+
+
+def _read_artifact_bytes(path: Path, label: str) -> bytes:
+    before = path.lstat()
+    if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+        raise LifecyclePlanningError("%s must be a single-linked regular file" % label)
+    descriptor = os.open(str(path), os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        opened = os.fstat(descriptor)
+        chunks = []
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        after = os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+    if (_file_fingerprint(before) != _file_fingerprint(opened) or
+            _file_fingerprint(opened) != _file_fingerprint(after)):
+        raise LifecyclePlanningError("%s changed while reading" % label)
+    final = path.lstat()
+    if _file_fingerprint(after) != _file_fingerprint(final):
+        raise LifecyclePlanningError("%s changed while reading" % label)
+    return b"".join(chunks)
+
+
+def _identity_hash(hashes: Dict[str, str]) -> str:
+    return recovery.sha256_bytes(
+        json.dumps(sorted(hashes.items()), separators=(",", ":")).encode("utf-8")
+    )
+
+
+def _derived_release_identity(release_root: Path, manifest: Dict[str, Any],
+                              artifacts: List[Dict[str, Any]]) -> Tuple[str, str]:
+    if manifest["runtime_sources"] != list(RUNTIME_SOURCES):
+        raise LifecyclePlanningError("release runtime source inventory is unsupported")
+    payload_hashes = {
+        item["release_path"].removeprefix("payload/"): item["sha256"]
+        for item in artifacts if item["release_path"].startswith("payload/")
+    }
+    normalized = {}
+    embedded = {"PACKAGE_ID": set(), "RUNTIME_COHORT": set()}
+    for name in RUNTIME_SOURCES:
+        data = _read_artifact_bytes(release_root / "payload" / name, "runtime source")
+        for field, pattern in _STAMP_PATTERN.items():
+            matches = pattern.findall(data)
+            if len(matches) != 1:
+                raise LifecyclePlanningError("runtime source has missing or duplicate stamps")
+            match = pattern.search(data)
+            try:
+                value = data[match.start(0):match.end(0)].split(b'"')[1].decode("ascii")
+            except UnicodeError as error:
+                raise LifecyclePlanningError("runtime source stamp is not ASCII") from error
+            if re.fullmatch(recovery.HASH_PATTERN, value) is None:
+                raise LifecyclePlanningError("runtime source has an invalid embedded stamp")
+            embedded[field].add(value)
+            data = pattern.sub(rb'\1unstamped\2', data)
+        normalized[name] = recovery.sha256_bytes(data)
+        payload_hashes[name] = normalized[name]
+    package_id = _identity_hash(payload_hashes)
+    runtime_cohort = _identity_hash(normalized)
+    if embedded["PACKAGE_ID"] != {package_id} or embedded["RUNTIME_COHORT"] != {runtime_cohort}:
+        raise LifecyclePlanningError("runtime embedded stamps differ from derived release identity")
+    if manifest["package_id"] != package_id or manifest["runtime_cohort"] != runtime_cohort:
+        raise LifecyclePlanningError("manifest identity differs from validated release bytes")
+    return package_id, runtime_cohort
 
 
 def validate_release(release_root: Path) -> Dict[str, Any]:
@@ -180,6 +269,9 @@ def validate_release(release_root: Path) -> Dict[str, Any]:
                 "intended_mode": 0o644,
             }
         )
+    package_id, runtime_cohort = _derived_release_identity(
+        release_root, manifest, artifacts
+    )
     for destination, source_name in manifest["opencode_sources"].items():
         external = release_root / "opencode" / destination
         payload = release_root / "payload" / source_name
@@ -192,8 +284,8 @@ def validate_release(release_root: Path) -> Dict[str, Any]:
         "root": str(release_root),
         "manifest_path": str(manifest_path),
         "manifest_sha256": recovery.sha256_bytes(manifest_data),
-        "package_id": manifest["package_id"],
-        "runtime_cohort": manifest["runtime_cohort"],
+        "package_id": package_id,
+        "runtime_cohort": runtime_cohort,
         "runtime_sources": manifest["runtime_sources"],
         "artifact_count": len(artifacts),
         "artifacts": artifacts,
@@ -699,22 +791,158 @@ def _mkdir(path: Path) -> None:
         raise LifecyclePlanningError("prepared path is not a real directory: %s" % path)
 
 
-def _copy_file(source: Path, destination: Path, mode: int = 0o644) -> None:
-    data = recovery.read_regular(source, "release/staged artifact")
-    descriptor = os.open(
-        str(destination), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode
-    )
+def _remove_prepared_tree(path: Path, expected: Dict[str, Any], counter: List[int]) -> None:
+    allowed = {item["path"]: item for item in expected["artifacts"]}
+    actual = []
+    for child in path.rglob("*"):
+        relative = str(child.relative_to(path).as_posix())
+        item = allowed.get(relative)
+        details = child.lstat()
+        if item is None or stat.S_ISLNK(details.st_mode):
+            raise LifecyclePlanningError("prepared cleanup encountered unexpected content")
+        if item["kind"] == "file":
+            if not stat.S_ISREG(details.st_mode) or details.st_nlink != 1:
+                raise LifecyclePlanningError("prepared cleanup encountered a changed file")
+        elif not stat.S_ISDIR(details.st_mode):
+            raise LifecyclePlanningError("prepared cleanup encountered a changed directory")
+        actual.append(child)
+        counter[0] += 1
+        if counter[0] > recovery.MAX_ARTIFACTS * 2:
+            raise LifecyclePlanningError("prepared cleanup exceeds its bound")
+    for child in sorted(
+        actual, key=lambda item: (len(item.relative_to(path).parts), str(item)),
+        reverse=True,
+    ):
+        if child.is_dir():
+            child.rmdir()
+        else:
+            child.unlink()
+        recovery._sync_directory(child.parent, None, "pre-intent-cleanup")
+
+
+def _remove_prepared_path(path: Path, expected: Optional[Dict[str, Any]],
+                          counter: List[int]) -> None:
     try:
-        view = memoryview(data)
-        while view:
-            written = os.write(descriptor, view)
-            if written <= 0:
-                raise LifecyclePlanningError("short artifact staging write")
-            view = view[written:]
-        os.fchmod(descriptor, mode)
-        os.fsync(descriptor)
+        details = path.lstat()
+    except FileNotFoundError:
+        return
+    counter[0] += 1
+    if counter[0] > recovery.MAX_ARTIFACTS * 2:
+        raise LifecyclePlanningError("prepared cleanup exceeds its bound")
+    if stat.S_ISLNK(details.st_mode):
+        raise LifecyclePlanningError("prepared cleanup encountered a symlink")
+    if expected is not None and expected["kind"] == "file":
+        if not stat.S_ISREG(details.st_mode):
+            raise LifecyclePlanningError("prepared cleanup encountered a changed file")
+        if details.st_nlink != 1:
+            raise LifecyclePlanningError("prepared cleanup encountered a hard link")
+        path.unlink()
+        recovery._sync_directory(path.parent, None, "pre-intent-cleanup")
+        return
+    if not stat.S_ISDIR(details.st_mode):
+        raise LifecyclePlanningError("prepared cleanup encountered unsupported content")
+    if expected is not None:
+        if expected["kind"] != "directory":
+            raise LifecyclePlanningError("prepared cleanup kind differs")
+        _remove_prepared_tree(path, expected, counter)
+    else:
+        with os.scandir(path) as entries:
+            if next(entries, None) is not None:
+                raise LifecyclePlanningError(
+                    "prepared cleanup directory contains unexpected content"
+                )
+    path.rmdir()
+    recovery._sync_directory(path.parent, None, "pre-intent-cleanup")
+
+
+class _PreparationGuard:
+    def __init__(self, lease: Any):
+        self.lease = lease
+        self.claims = []
+        self.active = True
+
+    def claim_absent(self, path: Path,
+                     expected: Optional[Dict[str, Any]] = None) -> None:
+        self.lease.validate()
+        if path.exists() or path.is_symlink():
+            raise LifecyclePlanningError("prepared path was occupied before creation")
+        self.claims.append((path, recovery.physical_identity(path.parent), expected))
+
+    def cleanup(self) -> None:
+        if not self.active:
+            return
+        self.lease.validate()
+        counter = [0]
+        for path, parent_identity, expected in reversed(self.claims):
+            if not (path.exists() or path.is_symlink()):
+                continue
+            if recovery.physical_identity(path.parent) != parent_identity:
+                raise LifecyclePlanningError("prepared cleanup parent identity changed")
+            _remove_prepared_path(path, expected, counter)
+        self.active = False
+
+    def preserve(self) -> None:
+        self.active = False
+
+
+class _PreparedBundle(dict):
+    pass
+
+
+def _cleanup_preintent_bundle(bundle: _PreparedBundle) -> None:
+    guard = bundle.preparation_guard
+    canonical = Path(bundle["canonical_root"])
+    if bundle["bootstrap"]:
+        if canonical.exists() or canonical.is_symlink():
+            guard.preserve()
+    else:
+        try:
+            current, _ = recovery.read_object(canonical / "admission.json", "admission")
+            current = recovery.validate_admission(current)
+        except (OSError, ValueError, UnicodeError):
+            guard.preserve()
+        else:
+            if current == bundle["pending_admission"] or current["transaction_id"] is not None:
+                guard.preserve()
+    guard.cleanup()
+
+
+def _copy_file(source: Path, destination: Path, expected_sha256: str,
+               mode: int = 0o644) -> None:
+    before = source.lstat()
+    if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+        raise LifecyclePlanningError("staged source must be a single-linked regular file")
+    source_descriptor = os.open(str(source), os.O_RDONLY | os.O_NOFOLLOW)
+    destination_descriptor = -1
+    try:
+        destination_descriptor = os.open(
+            str(destination), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode
+        )
+        opened = os.fstat(source_descriptor)
+        digest = hashlib.sha256()
+        while True:
+            chunk = os.read(source_descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+            view = memoryview(chunk)
+            while view:
+                written = os.write(destination_descriptor, view)
+                if written <= 0:
+                    raise LifecyclePlanningError("short artifact staging write")
+                view = view[written:]
+        after = os.fstat(source_descriptor)
+        if (_file_fingerprint(before) != _file_fingerprint(opened) or
+                _file_fingerprint(opened) != _file_fingerprint(after) or
+                _file_fingerprint(after) != _file_fingerprint(source.lstat()) or
+                digest.hexdigest() != expected_sha256):
+            raise LifecyclePlanningError("staged source changed or differs from its digest")
+        os.fchmod(destination_descriptor, mode)
+        os.fsync(destination_descriptor)
     finally:
-        os.close(descriptor)
+        os.close(source_descriptor)
+        if destination_descriptor >= 0:
+            os.close(destination_descriptor)
     recovery._sync_directory(destination.parent, None, "staged-artifact")
 
 
@@ -722,7 +950,7 @@ def _copy_state(source: Path, destination: Path, expected: Dict[str, Any]) -> No
     if not expected["exists"]:
         return
     if expected["kind"] == "file":
-        _copy_file(source, destination, expected["mode"])
+        _copy_file(source, destination, expected["sha256"], expected["mode"])
     else:
         _mkdir(destination)
         destination.chmod(expected["mode"])
@@ -732,9 +960,16 @@ def _copy_state(source: Path, destination: Path, expected: Dict[str, Any]) -> No
                 _mkdir(path)
                 path.chmod(item["mode"])
             else:
-                _copy_file(source / item["path"], path, item["mode"])
+                _copy_file(source / item["path"], path, item["sha256"], item["mode"])
     if not recovery.state_matches(destination, expected):
         raise LifecyclePlanningError("staged recovery object differs from planned state")
+
+
+def _control_bytes(value: Any, label: str) -> bytes:
+    data = value if isinstance(value, bytes) else recovery.json_bytes(value)
+    if len(data) > recovery.MAX_METADATA_BYTES:
+        raise LifecyclePlanningError("%s exceeds the 1 MiB metadata limit" % label)
+    return data
 
 
 def _release_artifact_map(release: Dict[str, Any]) -> Dict[Tuple[str, str], Dict[str, Any]]:
@@ -880,6 +1115,20 @@ def _receipt_from_preview(preview: Dict[str, Any], transaction_id: str, receipt_
 
 def prepare_transaction(preview: Dict[str, Any], release_snapshot: Optional[Dict[str, Any]],
                         lease: Any, *, transaction_id: Optional[str] = None) -> Dict[str, Any]:
+    guard = _PreparationGuard(lease)
+    try:
+        return _prepare_transaction(
+            preview, release_snapshot, lease, transaction_id=transaction_id,
+            preparation_guard=guard,
+        )
+    except BaseException:
+        guard.cleanup()
+        raise
+
+
+def _prepare_transaction(preview: Dict[str, Any], release_snapshot: Optional[Dict[str, Any]],
+                         lease: Any, *, transaction_id: Optional[str],
+                         preparation_guard: _PreparationGuard) -> Dict[str, Any]:
     """Prepare durable recovery inputs under an already-held C1 lease; no intent is published."""
     if preview["executable"] is not False or not preview["eligible_for_integration"]:
         raise LifecyclePlanningError("only an eligible non-executable preview can be prepared")
@@ -928,11 +1177,12 @@ def prepare_transaction(preview: Dict[str, Any], release_snapshot: Optional[Dict
         control, control / "v1", control / "v1/receipts", control / "v1/recovery",
         control / "v1/transactions", transaction,
     ):
+        if not (path.exists() or path.is_symlink()):
+            preparation_guard.claim_absent(path)
         _mkdir(path)
     manifest_path = transaction / "source-manifest.json"
-    recovery._write_immutable(manifest_path, manifest_data, None, "source-manifest")
     support_path = transaction / "reader-support.json"
-    recovery._write_immutable(support_path, support_data, None, "reader-support")
+    support_sha256 = recovery.sha256_bytes(support_data)
     if source is None:
         tool_source = Path(roots["payload"]) / "scripts/council_recover.py"
     elif "retained_release_format" in source:
@@ -944,20 +1194,16 @@ def prepare_transaction(preview: Dict[str, Any], release_snapshot: Optional[Dict
         raise LifecyclePlanningError("source recovery tool differs from its manifest")
     tool_sha256 = recovery.sha256_file(tool_source)
     actual_tool = control / "v1/recovery" / (tool_sha256 + ".py")
-    if actual_tool.exists() or actual_tool.is_symlink():
+    tool_exists = actual_tool.exists() or actual_tool.is_symlink()
+    if tool_exists:
         if (actual_tool.is_symlink() or recovery.sha256_file(actual_tool) != tool_sha256 or
                 stat.S_IMODE(actual_tool.stat().st_mode) != 0o600):
             raise LifecyclePlanningError("retained recovery tool differs from source")
-    else:
-        _copy_file(tool_source, actual_tool, 0o600)
     canonical_tool = canonical / "v1/recovery" / (tool_sha256 + ".py")
-    loaded = _load_source_module(
-        "_council_pinned_recover_" + transaction_id.replace("-", "_"), actual_tool,
-        tool_sha256, canonical_tool,
-    )
     unit_map = {item["unit_id"]: item for item in preview["units"]}
     release_map = {} if source is None else _release_artifact_map(source)
     units = []
+    copy_jobs = []
     for unit_id in recovery.UNIT_IDS:
         unit = unit_map[unit_id]
         destination = Path(unit["destination"])
@@ -970,7 +1216,7 @@ def prepare_transaction(preview: Dict[str, Any], release_snapshot: Optional[Dict
         prior_path = Path(objects["prior"])
         target_path = Path(objects["target"])
         if prior["exists"]:
-            _copy_state(destination, prior_path, prior)
+            copy_jobs.append((destination, prior_path, prior))
         if target["exists"]:
             if source is not None and "retained_release_format" in source:
                 target_source = Path(source["unit_sources"][unit_id])
@@ -983,7 +1229,7 @@ def prepare_transaction(preview: Dict[str, Any], release_snapshot: Optional[Dict
                     if release_item is not None and release_item["sha256"] == target["sha256"]
                     else destination
                 )
-            _copy_state(target_source, target_path, target)
+            copy_jobs.append((target_source, target_path, target))
         units.append({
             "unit_id": unit_id, "destination": str(destination),
             "parent_identity": recovery.physical_identity(destination.parent),
@@ -1001,15 +1247,14 @@ def prepare_transaction(preview: Dict[str, Any], release_snapshot: Optional[Dict
         preview, transaction_id, receipt_id,
         "uninstalled" if preview["kind"] == "uninstall" else "committed",
         roots, receipt_root_identities, lock_identity, recovery.sha256_bytes(manifest_data),
-        tool_sha256, recovery.sha256_file(support_path), preview["artifacts"], prior_summary,
+        tool_sha256, support_sha256, preview["artifacts"], prior_summary,
         manifest["package_id"], manifest["runtime_cohort"],
     )
     target_receipt_path = transaction / "receipt.json"
-    recovery._write_immutable(target_receipt_path, recovery.json_bytes(target_receipt), None,
-                              "target-receipt")
+    target_receipt_data = recovery.json_bytes(target_receipt)
     target_summary = {
         "receipt_id": receipt_id,
-        "receipt_sha256": recovery.sha256_file(target_receipt_path),
+        "receipt_sha256": recovery.sha256_bytes(target_receipt_data),
         "package_id": manifest["package_id"],
         "runtime_cohort": manifest["runtime_cohort"],
     }
@@ -1019,6 +1264,7 @@ def prepare_transaction(preview: Dict[str, Any], release_snapshot: Optional[Dict
     )
     prior_outcome = _admission(preview["current"]["status"], roots, prior_summary)
     proposed_prior = None
+    prior_receipt_data = None
     if prior_summary is None:
         prior_id = receipt_id + "-prior"
         preview_artifacts = {
@@ -1048,13 +1294,15 @@ def prepare_transaction(preview: Dict[str, Any], release_snapshot: Optional[Dict
         prior_receipt = _receipt_from_preview(
             preview, transaction_id, prior_id, "uninstalled", roots,
             receipt_root_identities, lock_identity, recovery.sha256_bytes(manifest_data), tool_sha256,
-            recovery.sha256_file(support_path), prior_artifacts, None,
+            support_sha256, prior_artifacts, None,
             manifest["package_id"], manifest["runtime_cohort"],
         )
         prior_path = transaction / "prior-receipt.json"
-        recovery._write_immutable(prior_path, recovery.json_bytes(prior_receipt), None,
-                                  "prior-receipt")
-        proposed_prior = {"path": "prior-receipt.json", "sha256": recovery.sha256_file(prior_path)}
+        prior_receipt_data = recovery.json_bytes(prior_receipt)
+        proposed_prior = {
+            "path": "prior-receipt.json",
+            "sha256": recovery.sha256_bytes(prior_receipt_data),
+        }
         prior_summary = {
             "receipt_id": prior_id, "receipt_sha256": proposed_prior["sha256"],
             "package_id": manifest["package_id"], "runtime_cohort": manifest["runtime_cohort"],
@@ -1091,21 +1339,74 @@ def prepare_transaction(preview: Dict[str, Any], release_snapshot: Optional[Dict
         "required_operations": list(recovery.REQUIRED_OPERATIONS),
         "allowed_goals": ["target", "prior"], "units": units,
         "retained_state": recovery.retained_state_fingerprint(state_root, control),
-        "reader_support": {"path": "reader-support.json", "sha256": recovery.sha256_file(support_path)},
+        "reader_support": {"path": "reader-support.json", "sha256": support_sha256},
     }
     plan_path = transaction / "plan.json"
-    recovery._write_immutable(plan_path, recovery.json_bytes(plan), None, "plan")
+    plan_data = recovery.json_bytes(plan)
     progress = {
         "journal_format": 1, "transaction_id": transaction_id,
-        "plan_sha256": recovery.sha256_file(plan_path), "sequence": 0, "goal": "target",
+        "plan_sha256": recovery.sha256_bytes(plan_data), "sequence": 0, "goal": "target",
         "units": [{"unit_id": unit_id, "phase": "pending"} for unit_id in recovery.UNIT_IDS],
     }
-    recovery._atomic_json(transaction / "progress.json", progress, None, "progress")
     pending = _admission("recovery_required", roots, preview["current"]["summary"])
     pending["transaction_id"] = transaction_id
+    for value, label in (
+        (manifest_data, "source manifest"),
+        (support_data, "reader support"),
+        (target_receipt_data, "target receipt"),
+        (plan_data, "prepared plan"),
+        (progress, "progress journal"),
+        (pending, "pending admission"),
+    ):
+        _control_bytes(value, label)
+    if prior_receipt_data is not None:
+        _control_bytes(prior_receipt_data, "prior receipt")
+    immutable_paths = [manifest_path, support_path, target_receipt_path, plan_path]
+    if prior_receipt_data is not None:
+        immutable_paths.append(transaction / "prior-receipt.json")
+    for path in immutable_paths:
+        preparation_guard.claim_absent(path, recovery.absent_state("file"))
+        preparation_guard.claim_absent(
+            path.with_name(path.name + ".partial"), recovery.absent_state("file")
+        )
+    progress_path = transaction / "progress.json"
+    preparation_guard.claim_absent(progress_path, recovery.absent_state("file"))
+    preparation_guard.claim_absent(
+        progress_path.with_name(".%s.pending" % progress_path.name),
+        recovery.absent_state("file"),
+    )
+    if bootstrap:
+        admission_path = control / "admission.json"
+        preparation_guard.claim_absent(admission_path, recovery.absent_state("file"))
+        preparation_guard.claim_absent(
+            admission_path.with_name(".%s.pending" % admission_path.name),
+            recovery.absent_state("file"),
+        )
+    recovery._write_immutable(manifest_path, manifest_data, None, "source-manifest")
+    recovery._write_immutable(support_path, support_data, None, "reader-support")
+    if not tool_exists:
+        preparation_guard.claim_absent(actual_tool, recovery.absent_state("file"))
+        _copy_file(tool_source, actual_tool, tool_sha256, 0o600)
+    loaded = _load_source_module(
+        "_council_pinned_recover_" + transaction_id.replace("-", "_"), actual_tool,
+        tool_sha256, canonical_tool,
+    )
+    for copy_source, copy_destination, copy_expected in copy_jobs:
+        preparation_guard.claim_absent(copy_destination, copy_expected)
+        _copy_state(copy_source, copy_destination, copy_expected)
+    recovery._write_immutable(
+        target_receipt_path, target_receipt_data, None, "target-receipt"
+    )
+    if prior_receipt_data is not None:
+        recovery._write_immutable(
+            transaction / "prior-receipt.json", prior_receipt_data, None,
+            "prior-receipt",
+        )
+    recovery._write_immutable(plan_path, plan_data, None, "plan")
+    recovery._atomic_json(progress_path, progress, None, "progress")
     if bootstrap:
         recovery._atomic_json(control / "admission.json", pending, None, "prepared-admission")
-    return {
+    bundle = _PreparedBundle({
         "transaction_id": transaction_id, "kind": preview["kind"], "bootstrap": bootstrap,
         "control_root": str(control), "canonical_root": str(canonical),
         "plan": str(plan_path), "tool": str(actual_tool), "canonical_tool": str(canonical_tool),
@@ -1114,7 +1415,9 @@ def prepare_transaction(preview: Dict[str, Any], release_snapshot: Optional[Dict
         "release_snapshot": source,
         "recovery_command": [str(Path(sys.executable).resolve()), "-I", "-B", str(canonical_tool),
                              "recover", "--state-root", str(state_root)],
-    }
+    })
+    bundle.preparation_guard = preparation_guard
+    return bundle
 
 
 class C1LeaseAdapter:
@@ -1166,6 +1469,18 @@ def run_handshake(bundle: Dict[str, Any]) -> None:
 def publish_and_execute(bundle: Dict[str, Any], lease: Any, c1_inspect: Any,
                         registration_snapshot: Any, *, now: Optional[float] = None,
                         probe: Optional[Any] = None) -> Dict[str, Any]:
+    try:
+        return _publish_and_execute(
+            bundle, lease, c1_inspect, registration_snapshot, now=now, probe=probe
+        )
+    except BaseException:
+        _cleanup_preintent_bundle(bundle)
+        raise
+
+
+def _publish_and_execute(bundle: Dict[str, Any], lease: Any, c1_inspect: Any,
+                         registration_snapshot: Any, *, now: Optional[float],
+                         probe: Optional[Any]) -> Dict[str, Any]:
     """Revalidate under C1 exclusion, publish intent, and execute the prepared plan."""
     state_root = lease.root
     canonical = Path(bundle["canonical_root"])
@@ -1201,6 +1516,7 @@ def publish_and_execute(bundle: Dict[str, Any], lease: Any, c1_inspect: Any,
                 canonical / "admission.json", bundle["pending_admission"], None,
                 "intent-admission",
             )
+        bundle.preparation_guard.preserve()
         if (recovery.sha256_file(Path(bundle["canonical_tool"])) !=
                 bundle["loaded_recoverer"].__source_sha256__):
             raise LifecyclePlanningError("canonical recoverer changed after intent publication")
@@ -1223,13 +1539,13 @@ def status(state_root: Path, payload_root: Path, opencode_root: Path) -> Dict[st
 
 
 def _create_fixed_directory(path: Path) -> None:
+    if _observed_root(path) != path:
+        raise LifecyclePlanningError("installation root changed during observation")
     missing = []
     current = path
     while not current.exists():
         missing.append(current)
         current = current.parent
-    if current.is_symlink() or not current.is_dir() or current.resolve(strict=True) != current:
-        raise LifecyclePlanningError("installation root has an unsafe existing ancestor")
     for item in reversed(missing):
         _mkdir(item)
 
@@ -1294,11 +1610,15 @@ def execute_operation(kind: str, release_root: Optional[Path], state_root: Path,
             bundle = prepare_transaction(
                 preview, release, lease, transaction_id=transaction_id
             )
-            if recovery_command_sink is not None:
-                recovery_command_sink(list(bundle["recovery_command"]))
-            result = publish_and_execute(
-                bundle, lease, inspect, snapshot, now=now, probe=probe
-            )
+            try:
+                if recovery_command_sink is not None:
+                    recovery_command_sink(list(bundle["recovery_command"]))
+                result = publish_and_execute(
+                    bundle, lease, inspect, snapshot, now=now, probe=probe
+                )
+            except BaseException:
+                _cleanup_preintent_bundle(bundle)
+                raise
     result["recovery_command"] = bundle["recovery_command"]
     return result
 

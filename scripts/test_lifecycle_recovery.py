@@ -767,6 +767,19 @@ class LifecycleRecoveryTests(unittest.TestCase):
         self.assertIn("requires Python -I -B", nonisolated.stderr)
         self.assertEqual(fixture.snapshot(), before)
 
+    def test_immutable_control_writer_refuses_oversized_bytes_before_creation(self):
+        fixture = self.fixture()
+        path = fixture.transaction / "oversized.json"
+        before = fixture.snapshot()
+        with self.assertRaisesRegex(fixture.engine.RecoveryError, "1 MiB"):
+            fixture.engine._write_immutable(
+                path, b"x" * (fixture.engine.MAX_METADATA_BYTES + 1), None,
+                "oversized-control",
+            )
+        self.assertFalse(path.exists())
+        self.assertFalse(path.with_name(path.name + ".partial").exists())
+        self.assertEqual(fixture.snapshot(), before)
+
     def test_forward_recovery_commits_all_five_units_and_receipt_last(self):
         fixture = self.fixture()
         fixture.engine.check_plan(fixture.plan_path)
@@ -870,6 +883,42 @@ class LifecycleRecoveryTests(unittest.TestCase):
         self.assertEqual(result["status"], "uninstalled")
         self.assertFalse(stage.exists())
         fixture.assert_goal(self, "prior")
+
+    def test_unrelated_partial_name_is_never_engine_scratch(self):
+        fixture = self.fixture()
+        fixture.engine.check_plan(fixture.plan_path)
+        fixture.publish_intent()
+        stage = Path(fixture.units[1]["objects"]["stage"])
+        unrelated = stage.with_name(stage.name + ".partial")
+        write_file(unrelated, b"unrelated-user-file", 0o600)
+        fixture.engine.recover(fixture.state)
+        self.assertEqual(unrelated.read_bytes(), b"unrelated-user-file")
+        fixture.assert_goal(self, "target")
+
+    def test_plan_owned_partial_resumes_but_preintent_collision_is_preserved(self):
+        fixture = self.fixture()
+        fixture.engine.check_plan(fixture.plan_path)
+        fixture.publish_intent()
+
+        def stop_after_copy(event):
+            if event == "after:copy-file:opencode-plugin:target":
+                raise RuntimeError("synthetic external partial")
+
+        with self.assertRaisesRegex(RuntimeError, "external partial"):
+            fixture.engine.recover(fixture.state, failpoint=stop_after_copy)
+        partial = Path(fixture.units[1]["objects"]["partial"])
+        self.assertTrue(partial.is_file())
+        self.assertFalse(Path(fixture.units[1]["objects"]["stage"]).exists())
+        fixture.engine.recover(fixture.state)
+        self.assertFalse(partial.exists())
+        fixture.assert_goal(self, "target")
+
+        collision = self.fixture()
+        partial = Path(collision.units[1]["objects"]["partial"])
+        write_file(partial, b"pre-existing", 0o600)
+        with self.assertRaisesRegex(collision.engine.RecoveryError, "pre-intent partial"):
+            collision.engine.check_plan(collision.plan_path)
+        self.assertEqual(partial.read_bytes(), b"pre-existing")
 
     def test_unknown_destination_and_recovery_objects_fail_closed(self):
         fixture = self.fixture()
@@ -1392,6 +1441,55 @@ class LifecycleRecoveryTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(fixture2.engine.RecoveryError, "absent from the prior"):
             fixture2.engine.check_plan(fixture2.plan_path)
+
+    def test_terminal_admission_status_must_match_receipt_outcome(self):
+        committed = self.fixture()
+        committed.publish_intent()
+        committed.engine.recover(committed.state)
+        admission_path = committed.lifecycle / "admission.json"
+        admission = json.loads(admission_path.read_text())
+        admission["status"] = "uninstalled"
+        write_json(admission_path, admission)
+        with self.assertRaisesRegex(
+            committed.engine.RecoveryError, "outcome differs"
+        ):
+            committed.engine.inspect_terminal_ownership(
+                committed.state, committed.payload, committed.opencode
+            )
+
+        uninstalled = self.fixture()
+        uninstalled.publish_intent()
+        uninstalled.engine.recover(uninstalled.state)
+        uninstalled.prepare_managed_transaction("uninstall")
+        uninstalled.publish_intent()
+        uninstalled.engine.recover(uninstalled.state)
+        admission_path = uninstalled.lifecycle / "admission.json"
+        admission = json.loads(admission_path.read_text())
+        admission["status"] = "committed"
+        write_json(admission_path, admission)
+        with self.assertRaisesRegex(
+            uninstalled.engine.RecoveryError, "outcome differs"
+        ):
+            uninstalled.engine.inspect_terminal_ownership(
+                uninstalled.state, uninstalled.payload, uninstalled.opencode
+            )
+
+    def test_pending_admission_must_match_all_plan_roots_before_unit_work(self):
+        for root_name in ("payload", "opencode"):
+            fixture = self.fixture()
+            fixture.publish_intent()
+            admission_path = fixture.lifecycle / "admission.json"
+            admission = json.loads(admission_path.read_text())
+            admission["roots"][root_name] = str(
+                self.root / ("alternate-" + root_name)
+            )
+            write_json(admission_path, admission)
+            before = fixture.snapshot()
+            with self.subTest(root=root_name), self.assertRaisesRegex(
+                fixture.engine.RecoveryError, "roots differ"
+            ):
+                fixture.engine.recover(fixture.state)
+            self.assertEqual(fixture.snapshot(), before)
 
     def test_terminal_receipt_or_artifact_corruption_never_uses_progress_as_authority(self):
         fixture = self.fixture()

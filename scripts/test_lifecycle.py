@@ -15,6 +15,8 @@ from unittest import mock
 
 import council_lifecycle as lifecycle
 import council_recover as recovery
+from build_release import RUNTIME_FILES, identity
+from generate_protocol import normalized_stamps
 from test_lifecycle_recovery import Fixture, make_directory, write_file
 
 
@@ -35,16 +37,16 @@ def tree_snapshot(root: Path):
 def synthetic_release(root: Path, label: str = "target", *, preserved_plugin: bool = False) -> Path:
     release = root / ("release-" + label)
     make_directory(release)
-    payload = {
-        "SKILL.md": (label + " skill\n").encode(),
-        "scripts/runtime.py": ("VALUE = %r\n" % label).encode(),
-        "scripts/opencode_council_plugin.ts": (
-            b"preexisting-unowned\n" if preserved_plugin else (label + " plugin\n").encode()
-        ),
-        "scripts/council_protocol.ts": (label + " protocol\n").encode(),
-        "scripts/opencode_delivery_registry.ts": (label + " registry\n").encode(),
-        "scripts/tools/council.ts": (label + " tool\n").encode(),
-    }
+    payload = {"SKILL.md": (label + " skill\n").encode()}
+    for name in RUNTIME_FILES:
+        declaration = "export const " if name.endswith(".ts") else ""
+        payload[name] = (
+            declaration + 'PACKAGE_ID = "unstamped"\n' +
+            declaration + 'RUNTIME_COHORT = "unstamped"\n' +
+            "VALUE = %r\n" % (label + "-" + name)
+        ).encode()
+    if preserved_plugin:
+        payload["scripts/opencode_council_plugin.ts"] += b"preexisting-unowned\n"
     for relative, data in payload.items():
         write_file(release / "payload" / relative, data)
     for destination, source_name in recovery.OPENCODE_SOURCES.items():
@@ -60,20 +62,55 @@ def synthetic_release(root: Path, label: str = "target", *, preserved_plugin: bo
             artifacts[name] = hashlib.sha256(path.read_bytes()).hexdigest()
     manifest = {
         "format": 1,
-        "package_id": hashlib.sha256((label + " package").encode()).hexdigest(),
-        "runtime_cohort": hashlib.sha256((label + " cohort").encode()).hexdigest(),
-        "runtime_sources": [
-            "scripts/runtime.py",
-            "scripts/council_protocol.ts",
-            "scripts/opencode_council_plugin.ts",
-            "scripts/opencode_delivery_registry.ts",
-            "scripts/tools/council.ts",
-        ],
+        "package_id": "0" * 64,
+        "runtime_cohort": "0" * 64,
+        "runtime_sources": list(RUNTIME_FILES),
         "opencode_sources": recovery.OPENCODE_SOURCES,
         "artifacts": dict(sorted(artifacts.items())),
     }
-    write_file(release / "release_manifest.json", recovery.json_bytes(manifest))
+    _restamp_release(release, manifest)
     return release
+
+
+def _restamp_release(release: Path, manifest=None) -> None:
+    manifest_path = release / "release_manifest.json"
+    if manifest is None:
+        manifest = json.loads(manifest_path.read_text())
+    normalized = {}
+    payload = {}
+    for path in sorted((release / "payload").rglob("*")):
+        if path.is_file():
+            payload[str(path.relative_to(release / "payload").as_posix())] = path.read_bytes()
+    for name in RUNTIME_FILES:
+        normalized[name] = normalized_stamps(payload[name].decode()).encode()
+    package_inputs = dict(payload)
+    package_inputs.update(normalized)
+    package_id = identity(package_inputs)
+    runtime_cohort = identity(normalized)
+    for name in RUNTIME_FILES:
+        data = normalized[name].decode()
+        data = data.replace('PACKAGE_ID = "unstamped"', 'PACKAGE_ID = "' + package_id + '"')
+        data = data.replace('RUNTIME_COHORT = "unstamped"', 'RUNTIME_COHORT = "' + runtime_cohort + '"')
+        payload[name] = data.encode()
+        write_file(release / "payload" / name, payload[name])
+    for destination, source_name in recovery.OPENCODE_SOURCES.items():
+        write_file(release / "opencode" / destination, payload[source_name])
+    artifacts = {
+        "payload/" + name: hashlib.sha256(data).hexdigest()
+        for name, data in payload.items()
+    }
+    artifacts.update({
+        "opencode/" + destination: hashlib.sha256(payload[source]).hexdigest()
+        for destination, source in recovery.OPENCODE_SOURCES.items()
+    })
+    manifest.update(
+        package_id=package_id,
+        runtime_cohort=runtime_cohort,
+        runtime_sources=list(RUNTIME_FILES),
+        opencode_sources=recovery.OPENCODE_SOURCES,
+        artifacts=dict(sorted(artifacts.items())),
+    )
+    write_file(manifest_path, recovery.json_bytes(manifest))
 
 
 class LifecyclePlanningTests(unittest.TestCase):
@@ -134,13 +171,38 @@ class LifecyclePlanningTests(unittest.TestCase):
         release = synthetic_release(self.root)
         before = tree_snapshot(release)
         snapshot = lifecycle.validate_release(release)
-        self.assertEqual(snapshot["artifact_count"], 10)
+        self.assertEqual(snapshot["artifact_count"], 15)
         self.assertEqual(snapshot, lifecycle.validate_release(release))
         self.assertEqual(tree_snapshot(release), before)
         self.assertEqual(
             {item["unit_id"] for item in snapshot["artifacts"]},
             set(recovery.UNIT_IDS),
         )
+
+    def test_release_identity_is_derived_from_payload_and_embedded_stamps(self):
+        for mutation in ("package", "cohort", "runtime-sources", "embedded"):
+            with self.subTest(mutation=mutation):
+                release = self.actual_release("identity-" + mutation)
+                manifest_path = release / "release_manifest.json"
+                manifest = json.loads(manifest_path.read_text())
+                if mutation == "package":
+                    manifest["package_id"] = "0" * 64
+                elif mutation == "cohort":
+                    manifest["runtime_cohort"] = "0" * 64
+                elif mutation == "runtime-sources":
+                    manifest["runtime_sources"] = list(reversed(manifest["runtime_sources"]))
+                else:
+                    source = release / "payload/scripts/council.py"
+                    data = source.read_bytes().replace(
+                        manifest["package_id"].encode(), b"0" * 64, 1
+                    )
+                    write_file(source, data)
+                    manifest["artifacts"]["payload/scripts/council.py"] = hashlib.sha256(
+                        data
+                    ).hexdigest()
+                write_file(manifest_path, recovery.json_bytes(manifest))
+                with self.assertRaises(lifecycle.LifecyclePlanningError):
+                    lifecycle.validate_release(release)
 
     def test_release_missing_extra_changed_and_nonregular_content_refuses(self):
         cases = ("missing", "extra", "changed", "symlink", "hardlink")
@@ -156,13 +218,82 @@ class LifecyclePlanningTests(unittest.TestCase):
                     target.write_bytes(b"changed")
                 elif case == "symlink":
                     target.unlink()
-                    target.symlink_to("scripts/runtime.py")
+                    target.symlink_to("scripts/council.py")
                 else:
                     os.link(target, release / "payload/hardlink.txt")
                 before = tree_snapshot(release)
                 with self.assertRaises(recovery.RecoveryError):
                     lifecycle.validate_release(release)
                 self.assertEqual(tree_snapshot(release), before)
+
+    def test_large_release_artifact_streams_without_metadata_limit(self):
+        release = self.actual_release("large-artifact")
+        large = release / "payload/large.bin"
+        data = b"large-artifact\n" * 100000
+        write_file(large, data)
+        _restamp_release(release)
+        roots = (
+            self.root / "large/state",
+            self.root / "large/payload-parent/council",
+            self.root / "large/opencode",
+        )
+        result = lifecycle.execute_operation(
+            "install", release, *roots,
+            maintenance_window_confirmed=True,
+            transaction_id="txn-large-artifact",
+        )
+        self.assertEqual(result["status"], "committed")
+        self.assertEqual((roots[1] / "large.bin").read_bytes(), data)
+
+    def test_streamed_source_digest_change_refuses_and_cleans_preintent(self):
+        release = self.actual_release("stream-change")
+        changing = release / "payload/changing.bin"
+        write_file(changing, b"before")
+        _restamp_release(release)
+        snapshot = lifecycle.validate_release(release)
+        state, payload, opencode = self.roots("stream-change-")
+        preview = lifecycle.plan_ownership(
+            "install", snapshot, lifecycle.inspect_ownership(state, payload, opencode)
+        )
+        original = lifecycle._copy_file
+
+        def change_before_copy(source, destination, expected_sha256, mode=0o644):
+            if source == changing:
+                write_file(changing, b"after")
+            return original(source, destination, expected_sha256, mode)
+
+        with lifecycle.admission.acquire_writer_lease(state) as lease:
+            with mock.patch.object(lifecycle, "_copy_file", side_effect=change_before_copy):
+                with self.assertRaisesRegex(
+                    lifecycle.LifecyclePlanningError, "differs from its digest"
+                ):
+                    lifecycle.prepare_transaction(
+                        preview, snapshot, lease, transaction_id="txn-stream-change"
+                    )
+        self.assertFalse((state / ".council-lifecycle").exists())
+        self.assertFalse(any(payload.parent.glob(".council-lifecycle-txn-stream-change-*")))
+
+    def test_oversized_control_records_refuse_before_artifact_staging(self):
+        release = self.actual_release("oversized-control")
+        manifest = json.loads((release / "release_manifest.json").read_text())
+        for index in range(7000):
+            write_file(release / ("payload/bulk/%04d.txt" % index), b"x")
+        _restamp_release(release, manifest)
+        snapshot = lifecycle.validate_release(release)
+        state, payload, opencode = self.roots("oversized-")
+        preview = lifecycle.plan_ownership(
+            "install", snapshot, lifecycle.inspect_ownership(state, payload, opencode)
+        )
+        with lifecycle.admission.acquire_writer_lease(state) as lease:
+            with self.assertRaisesRegex(
+                lifecycle.LifecyclePlanningError, "1 MiB metadata limit"
+            ):
+                lifecycle.prepare_transaction(
+                    preview, snapshot, lease, transaction_id="txn-oversized-control"
+                )
+        self.assertFalse((state / ".council-lifecycle").exists())
+        self.assertFalse(any(payload.parent.glob(".council-lifecycle-txn-oversized-control-*")))
+        self.assertFalse(any(opencode.glob(".council-lifecycle-txn-oversized-control-*")))
 
     def test_runtime_sources_mapping_and_manifest_types_are_strict(self):
         release = synthetic_release(self.root)
@@ -381,12 +512,16 @@ class LifecyclePlanningTests(unittest.TestCase):
             uninstalled.state, uninstalled.payload, uninstalled.opencode
         )
         reinstall = lifecycle.plan_ownership("install", reinstall_release, ownership)
-        self.assertTrue(reinstall["eligible_for_integration"])
+        self.assertFalse(reinstall["eligible_for_integration"])
+        self.assertIn(
+            "unowned_change_requires_adoption",
+            {item["code"] for item in reinstall["blockers"]},
+        )
         plugin = next(
             item for item in reinstall["artifacts"]
             if item["unit_id"] == "opencode-plugin" and item["path"] == "."
         )
-        self.assertEqual(plugin["ownership"], "matching_preexisting_unowned")
+        self.assertEqual(plugin["ownership"], "unresolved")
 
     def test_terminal_wrapper_ignores_history_and_retained_state_but_uncertified_marker_blocks(self):
         fixture = Fixture(self.root / "history")
@@ -439,6 +574,22 @@ class LifecyclePlanningTests(unittest.TestCase):
         self.assertEqual(observed["management"]["status"], "legacy_unmanaged")
         self.assertEqual(tree_snapshot(self.root), before)
 
+    def test_absent_roots_below_symlinked_ancestor_refuse_without_access(self):
+        target = self.root / "ancestor-target"
+        make_directory(target)
+        sentinel = target / "sentinel"
+        write_file(sentinel, b"unchanged")
+        link = self.root / "ancestor-link"
+        link.symlink_to(target, target_is_directory=True)
+        before = tree_snapshot(target)
+        with self.assertRaisesRegex(
+            lifecycle.LifecyclePlanningError, "nonphysical ancestor"
+        ):
+            lifecycle.inspect_ownership(
+                link / "state", link / "payload-parent/council", link / "opencode"
+            )
+        self.assertEqual(tree_snapshot(target), before)
+
     def test_isolated_cli_contract_and_purge_refusal(self):
         source = Path(lifecycle.__file__).resolve()
         completed = subprocess.run(
@@ -480,10 +631,7 @@ class LifecyclePlanningTests(unittest.TestCase):
         write_file(policy_path, recovery.json_bytes(policy))
         manifest_path = release_root / "release_manifest.json"
         manifest = json.loads(manifest_path.read_text())
-        manifest["artifacts"][
-            "payload/scripts/fixtures/lifecycle/reader-support-v1.json"
-        ] = hashlib.sha256(policy_path.read_bytes()).hexdigest()
-        write_file(manifest_path, recovery.json_bytes(manifest))
+        _restamp_release(release_root, manifest)
         changed = lifecycle.validate_release(release_root)
         with self.assertRaisesRegex(
             lifecycle.LifecyclePlanningError, "policy is not qualified"
@@ -536,6 +684,13 @@ class LifecyclePlanningTests(unittest.TestCase):
             bundle = lifecycle.prepare_transaction(
                 preview, release, lease, transaction_id="txn-registration-change"
             )
+            plan = json.loads(Path(bundle["plan"]).read_text())
+            prepared_objects = [
+                Path(value)
+                for unit in plan["units"]
+                for name, value in unit["objects"].items()
+                if name in ("target", "prior")
+            ]
             make_directory(state / "registrations")
             write_file(state / "registrations/new.json", b"{}\n", 0o600)
             with self.assertRaisesRegex(
@@ -545,7 +700,144 @@ class LifecyclePlanningTests(unittest.TestCase):
                     bundle, lease, lifecycle.inspect, snapshot, now=2_000_000_000
                 )
         self.assertFalse((state / ".council-lifecycle").exists())
+        self.assertFalse(Path(bundle["control_root"]).exists())
+        self.assertFalse(any(path.exists() or path.is_symlink() for path in prepared_objects))
         self.assertFalse(payload.exists())
+
+    def test_recovery_command_failure_cleans_managed_preintent_preparation(self):
+        release = self.actual_release("sink-failure")
+        roots = (
+            self.root / "sink/state",
+            self.root / "sink/payload-parent/council",
+            self.root / "sink/opencode",
+        )
+        lifecycle.execute_operation(
+            "install", release, *roots, maintenance_window_confirmed=True,
+            transaction_id="txn-sink-install",
+        )
+        before = tree_snapshot(self.root)
+
+        def fail_sink(_command):
+            raise RuntimeError("synthetic sink failure")
+
+        with self.assertRaisesRegex(RuntimeError, "sink failure"):
+            lifecycle.execute_operation(
+                "upgrade", release, *roots,
+                transaction_id="txn-sink-upgrade",
+                recovery_command_sink=fail_sink,
+            )
+        self.assertEqual(tree_snapshot(self.root), before)
+
+    def test_internal_staging_failure_cleans_only_current_preparation(self):
+        release = lifecycle.validate_release(self.actual_release("copy-failure"))
+        state, payload, opencode = self.roots("copy-failure-")
+        preview = lifecycle.plan_ownership(
+            "install", release, lifecycle.inspect_ownership(state, payload, opencode)
+        )
+        original = lifecycle._copy_state
+        calls = {"count": 0}
+
+        def fail_after_copy(source, destination, expected):
+            original(source, destination, expected)
+            calls["count"] += 1
+            if calls["count"] == 1:
+                raise RuntimeError("synthetic copy failure")
+
+        with lifecycle.admission.acquire_writer_lease(state) as lease:
+            with mock.patch.object(lifecycle, "_copy_state", side_effect=fail_after_copy):
+                with self.assertRaisesRegex(RuntimeError, "copy failure"):
+                    lifecycle.prepare_transaction(
+                        preview, release, lease, transaction_id="txn-copy-failure"
+                    )
+        self.assertFalse((state / ".council-lifecycle").exists())
+        self.assertFalse(any(payload.parent.glob(".council-lifecycle-txn-copy-failure-*")))
+        self.assertFalse(any(opencode.glob(".council-lifecycle-txn-copy-failure-*")))
+
+    def test_postintent_failure_retains_recovery_evidence(self):
+        release = lifecycle.validate_release(self.actual_release("postintent"))
+        state, payload, opencode = self.roots("postintent-")
+        preview = lifecycle.plan_ownership(
+            "install", release, lifecycle.inspect_ownership(state, payload, opencode)
+        )
+        snapshot = lifecycle.inspect.snapshot_registrations(state)
+        with lifecycle.admission.acquire_writer_lease(state) as lease:
+            bundle = lifecycle.prepare_transaction(
+                preview, release, lease, transaction_id="txn-postintent"
+            )
+            with mock.patch.object(
+                bundle["loaded_recoverer"], "_execute_with_lease",
+                side_effect=RuntimeError("synthetic postintent failure"),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "postintent failure"):
+                    lifecycle.publish_and_execute(
+                        bundle, lease, lifecycle.inspect, snapshot,
+                        now=2_000_000_000,
+                    )
+        admission = json.loads(
+            (state / ".council-lifecycle/admission.json").read_text()
+        )
+        self.assertEqual(admission["status"], "recovery_required")
+        self.assertTrue(
+            (state / ".council-lifecycle/v1/transactions/txn-postintent/plan.json").is_file()
+        )
+        self.assertTrue(any(payload.parent.glob(".council-lifecycle-txn-postintent-*")))
+
+    def test_bootstrap_intent_sync_failure_preserves_published_recovery(self):
+        release = lifecycle.validate_release(self.actual_release("intent-sync"))
+        state, payload, opencode = self.roots("intent-sync-")
+        preview = lifecycle.plan_ownership(
+            "install", release, lifecycle.inspect_ownership(state, payload, opencode)
+        )
+        snapshot = lifecycle.inspect.snapshot_registrations(state)
+        with lifecycle.admission.acquire_writer_lease(state) as lease:
+            bundle = lifecycle.prepare_transaction(
+                preview, release, lease, transaction_id="txn-intent-sync"
+            )
+            original = lifecycle.recovery._sync_directory
+
+            def fail_intent_sync(path, failpoint, label):
+                if label == "bootstrap-intent":
+                    raise OSError("synthetic intent sync failure")
+                return original(path, failpoint, label)
+
+            with mock.patch.object(
+                lifecycle.recovery, "_sync_directory", side_effect=fail_intent_sync
+            ):
+                with self.assertRaisesRegex(OSError, "intent sync failure"):
+                    lifecycle.publish_and_execute(
+                        bundle, lease, lifecycle.inspect, snapshot,
+                        now=2_000_000_000,
+                    )
+        admission = json.loads(
+            (state / ".council-lifecycle/admission.json").read_text()
+        )
+        self.assertEqual(admission["status"], "recovery_required")
+        self.assertTrue(any(payload.parent.glob(".council-lifecycle-txn-intent-sync-*")))
+
+    def test_preintent_cleanup_preserves_unexpected_prepared_content(self):
+        release = lifecycle.validate_release(self.actual_release("cleanup-unknown"))
+        state, payload, opencode = self.roots("cleanup-unknown-")
+        preview = lifecycle.plan_ownership(
+            "install", release, lifecycle.inspect_ownership(state, payload, opencode)
+        )
+        snapshot = lifecycle.inspect.snapshot_registrations(state)
+        with lifecycle.admission.acquire_writer_lease(state) as lease:
+            bundle = lifecycle.prepare_transaction(
+                preview, release, lease, transaction_id="txn-cleanup-unknown"
+            )
+            unexpected = Path(bundle["plan"]).parent / "unexpected.txt"
+            write_file(unexpected, b"unowned")
+            make_directory(state / "registrations")
+            write_file(state / "registrations/new.json", b"{}\n", 0o600)
+            with self.assertRaisesRegex(
+                lifecycle.LifecyclePlanningError, "unexpected content"
+            ):
+                lifecycle.publish_and_execute(
+                    bundle, lease, lifecycle.inspect, snapshot,
+                    now=2_000_000_000,
+                )
+        self.assertEqual(unexpected.read_bytes(), b"unowned")
+        self.assertFalse((state / ".council-lifecycle").exists())
 
     def test_planning_case_catalog_records_current_boundary(self):
         catalog = json.loads(

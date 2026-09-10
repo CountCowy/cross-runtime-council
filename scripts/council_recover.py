@@ -457,6 +457,7 @@ def _unit_objects(destination: Path, transaction_id: str, unit_id: str) -> Dict[
         "prior": str(parent / (prefix + "-prior")),
         "backup": str(parent / (prefix + "-backup")),
         "stage": str(parent / (prefix + "-stage")),
+        "partial": str(parent / (prefix + "-partial")),
         "displaced": str(parent / (prefix + "-displaced")),
     }
 
@@ -896,6 +897,8 @@ def inspect_terminal_ownership(state_root: Path, payload_root: Path,
             "payload_cache": [],
         }
     receipt = _verify_terminal_receipt(state_root, summary)
+    if receipt["outcome"] != admission["status"]:
+        raise RecoveryError("terminal receipt outcome differs from admission status")
     states = _receipt_unit_states(receipt)
     caches = _terminal_states_match(roots, states)
     current, current_data = read_object(admission_path, "admission")
@@ -1126,7 +1129,7 @@ def _validate_unit(value: Any, index: int, plan: Dict[str, Any]) -> Dict[str, An
     objects = value["objects"]
     if not isinstance(objects, dict):
         raise RecoveryError("%s objects must be an object" % label)
-    exact_keys(objects, ("target", "prior", "backup", "stage", "displaced"), label + " objects")
+    exact_keys(objects, ("target", "prior", "backup", "stage", "partial", "displaced"), label + " objects")
     if objects != _unit_objects(destination, plan["transaction_id"], unit_id):
         raise RecoveryError("%s recovery object paths are not fixed" % label)
     return value
@@ -1417,7 +1420,7 @@ def validate_plan(plan_path: Path, *, pre_intent: bool,
         if pre_intent:
             if not state_matches(Path(unit["destination"]), unit["initial"]):
                 raise RecoveryError("%s changed before intent" % unit["unit_id"])
-            for name in ("backup", "stage", "displaced"):
+            for name in ("backup", "stage", "partial", "displaced"):
                 if Path(unit["objects"][name]).exists() or Path(unit["objects"][name]).is_symlink():
                     raise RecoveryError("%s pre-intent %s path is occupied" % (unit["unit_id"], name))
     if pre_intent:
@@ -1615,6 +1618,8 @@ def _atomic_json(path: Path, value: Any, failpoint: Failpoint, label: str) -> No
 
 
 def _write_immutable(path: Path, data: bytes, failpoint: Failpoint, label: str) -> None:
+    if not isinstance(data, bytes) or len(data) > MAX_METADATA_BYTES:
+        raise RecoveryError("%s exceeds the 1 MiB metadata limit" % label)
     try:
         existing = read_regular(path, label)
     except FileNotFoundError:
@@ -1692,24 +1697,15 @@ def _rename(parent: Path, source: Path, destination: Path, plan: Dict[str, Any],
 
 
 def _copy_file(source: Path, destination: Path, expected: Dict[str, Any], failpoint: Failpoint,
-               label: str) -> None:
-    partial = destination.with_name(destination.name + ".partial")
-    try:
-        details = partial.lstat()
-    except FileNotFoundError:
-        pass
-    else:
-        if not stat.S_ISREG(details.st_mode) or details.st_nlink != 1:
-            raise RecoveryError("owned partial path is not a regular file: %s" % partial)
-        _event(failpoint, "before:unlink-partial:" + label)
-        partial.unlink()
-        _event(failpoint, "after:unlink-partial:" + label)
-        _sync_directory(partial.parent, failpoint, label + ":partial-cleanup")
+               label: str, partial: Optional[Path] = None) -> None:
+    partial = partial or destination.with_name(destination.name + ".partial")
     source_descriptor = os.open(str(source), os.O_RDONLY | os.O_NOFOLLOW)
-    destination_descriptor = os.open(
-        str(partial), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, expected["mode"]
-    )
+    destination_descriptor = -1
     try:
+        destination_descriptor = os.open(
+            str(partial), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            expected["mode"],
+        )
         _event(failpoint, "before:copy-file:" + label)
         while True:
             chunk = os.read(source_descriptor, 1024 * 1024)
@@ -1726,7 +1722,8 @@ def _copy_file(source: Path, destination: Path, expected: Dict[str, Any], failpo
         _event(failpoint, "after:copy-file:" + label)
     finally:
         os.close(source_descriptor)
-        os.close(destination_descriptor)
+        if destination_descriptor >= 0:
+            os.close(destination_descriptor)
     _event(failpoint, "before:replace-materialized-file:" + label)
     os.replace(partial, destination)
     _event(failpoint, "after:replace-materialized-file:" + label)
@@ -1770,8 +1767,23 @@ def _clean_known_partials(stage: Path, expected: Dict[str, Any], failpoint: Fail
         _sync_directory(partial.parent, failpoint, label + ":partial-cleanup")
 
 
+def _remove_planned_partial(path: Path, plan: Dict[str, Any], lease: Any,
+                            failpoint: Failpoint, label: str) -> None:
+    if not (path.exists() or path.is_symlink()):
+        return
+    _guard(plan, lease)
+    details = path.lstat()
+    if not stat.S_ISREG(details.st_mode) or details.st_nlink != 1:
+        raise RecoveryError("planned partial path has unexpected content: %s" % path)
+    _event(failpoint, "before:unlink-planned-partial:" + label)
+    path.unlink()
+    _event(failpoint, "after:unlink-planned-partial:" + label)
+    _sync_directory(path.parent, failpoint, label + ":planned-partial-cleanup")
+
+
 def _materialize(source: Path, stage: Path, expected: Dict[str, Any], plan: Dict[str, Any],
-                 lease: Any, failpoint: Failpoint, label: str) -> None:
+                 lease: Any, failpoint: Failpoint, label: str,
+                 partial: Optional[Path] = None) -> None:
     _guard(plan, lease)
     if not state_matches(source, expected):
         raise RecoveryError("recovery source changed: %s" % source)
@@ -1780,7 +1792,7 @@ def _materialize(source: Path, stage: Path, expected: Dict[str, Any], plan: Dict
             if state_matches(stage, expected):
                 return
             raise RecoveryError("stage file contains unknown bytes")
-        _copy_file(source, stage, expected, failpoint, label)
+        _copy_file(source, stage, expected, failpoint, label, partial)
         return
     if stage.exists() or stage.is_symlink():
         if state_matches(stage, expected):
@@ -1865,6 +1877,12 @@ def _validate_unit_auxiliaries(unit: Dict[str, Any], goal: str) -> None:
         )
         if not desired_known and not prior_can_discard_target:
             raise RecoveryError("%s stage contains unknown content" % unit["unit_id"])
+    partial = objects["partial"]
+    if partial.exists() or partial.is_symlink():
+        details = partial.lstat()
+        if (unit["target"]["kind"] != "file" or
+                not stat.S_ISREG(details.st_mode) or details.st_nlink != 1):
+            raise RecoveryError("%s planned partial contains unknown content" % unit["unit_id"])
 
 
 def _remove_owned_stage(stage: Path, expected: Dict[str, Any], plan: Dict[str, Any],
@@ -1914,6 +1932,11 @@ def _ensure_unit(unit: Dict[str, Any], goal: str, plan: Dict[str, Any], lease: A
     objects = {name: Path(value) for name, value in unit["objects"].items()}
     _guard(plan, lease)
     _validate_unit_auxiliaries(unit, goal)
+    if desired["kind"] == "file":
+        _remove_planned_partial(
+            objects["partial"], plan, lease, failpoint,
+            unit_id + ":planned-partial",
+        )
     stage_is_desired = desired["exists"] and (
         state_matches(objects["stage"], desired) or (
             desired["kind"] == "directory" and _partial_tree_is_known(objects["stage"], desired)
@@ -1947,7 +1970,10 @@ def _ensure_unit(unit: Dict[str, Any], goal: str, plan: Dict[str, Any], lease: A
     if desired["exists"]:
         source = objects[goal]
         stage = objects["stage"]
-        _materialize(source, stage, desired, plan, lease, failpoint, unit_id + ":" + goal)
+        _materialize(
+            source, stage, desired, plan, lease, failpoint, unit_id + ":" + goal,
+            objects["partial"] if desired["kind"] == "file" else None,
+        )
         _rename(parent, stage, destination, plan, lease, failpoint, unit_id + ":activate-" + goal)
     if not state_matches(destination, desired):
         raise RecoveryError("%s did not reach its selected state" % unit_id)
@@ -2050,6 +2076,8 @@ def _execute_with_lease(state_root: Path, lease_adapter: Any, *, abort: bool = F
     plan, plan_data, _receipt, _receipt_data = validate_plan(plan_path, pre_intent=False)
     if plan["transaction_id"] != transaction_id or plan["prior_admission"]["committed"] != current["committed"]:
         raise RecoveryError("pending admission does not bind the prepared plan")
+    if current["roots"] != plan["roots"]:
+        raise RecoveryError("pending admission roots differ from the prepared plan")
     if plan["root_identities"]["state"] != facts["root_identity"] or plan["lock_identity"] != facts["lock_identity"]:
         raise RecoveryError("held recovery lease differs from the plan")
     progress_path = _progress_path(plan_path)
