@@ -77,13 +77,14 @@ from council_protocol import (
     EVIDENCE_REQUIRED_CONCESSION_BASES as EVIDENCE_REQUIRED_CONCESSION_BASES,
     RESOLUTION_COSTS as RESOLUTION_COSTS,
     ERROR_REASONS as ERROR_REASONS,
+    BIND_COMMIT_STATUSES as BIND_COMMIT_STATUSES,
     REQUEST_SUBMISSION_KINDS,
     SYNTHESIS_REQUIRED_FIELDS,
 )
 import council_protocol
 
-PACKAGE_ID = "43aaa33e1832f19cf836332468cebc8ffd684613edd657f0139cca476d178090"
-RUNTIME_COHORT = "5cf4b1fb64603e9fc30a584c6c5085cc46e07a46f4e288b01e4e39b81f80ab49"
+PACKAGE_ID = "d846905beab8f42c779b52c57f371d1e863bbdb113f6d819f9580efdd398670c"
+RUNTIME_COHORT = "c14b024542e9d7c410f208a4967b378192382e12f6638da9c4bf5b61041eeeb4"
 if RUNTIME_COHORT != council_protocol.RUNTIME_COHORT or RUNTIME_COHORT != council_admission.RUNTIME_COHORT:
     raise RuntimeError("Council broker/helper cohort mismatch; refresh the complete runtime set")
 
@@ -437,7 +438,11 @@ class CouncilError(Exception):
     """User-facing error; a reason describes cause, not a prior commit outcome."""
 
     def __init__(
-        self, *args: Any, reason: Any = "unknown", error_kind: str = "error"
+        self,
+        *args: Any,
+        reason: Any = "unknown",
+        error_kind: str = "error",
+        commit_status: Any = None,
     ):
         super().__init__(*args)
         self.reason = (
@@ -446,13 +451,23 @@ class CouncilError(Exception):
         self.error_kind = (
             error_kind if error_kind in ("rejected", "error", "internal") else "error"
         )
+        self.commit_status = (
+            commit_status if commit_status in BIND_COMMIT_STATUSES else None
+        )
 
 
 class CouncilRequestRejected(CouncilError):
     """The current request was rejected; an earlier attempt may have committed."""
 
-    def __init__(self, *args: Any, reason: Any = "unknown"):
-        super().__init__(*args, reason=reason, error_kind="rejected")
+    def __init__(
+        self, *args: Any, reason: Any = "unknown", commit_status: Any = None
+    ):
+        super().__init__(
+            *args,
+            reason=reason,
+            error_kind="rejected",
+            commit_status=commit_status,
+        )
 
 
 def validate_extension_result(result: Any, dialogue_id: str) -> Dict[str, Any]:
@@ -1770,7 +1785,12 @@ class CouncilBroker:
         binding_capability: Optional[str] = None,
         previous_capability: Optional[str] = None,
         _request_cohort=RUNTIME_COHORT,
+        _commit_state: Optional[Dict[str, bool]] = None,
     ) -> Dict[str, Any]:
+        def mark_commit_started() -> None:
+            if _commit_state is not None:
+                _commit_state["started"] = True
+
         runtime, participant, label, project, lease_minutes = validate_bind_arguments(
             runtime, participant, label, project, lease_minutes
         )
@@ -1873,6 +1893,7 @@ class CouncilBroker:
                                 "idempotent OpenCode bind does not match its exact session"
                             )
                         self._require_cohort(_request_cohort)
+                        mark_commit_started()
                         current["relay_path"] = registration["relay_path"]
                         current["transport"] = registration["transport"]
                         current["transport_ready"] = True
@@ -1880,6 +1901,7 @@ class CouncilBroker:
                             "_relay_capability"
                         ]
                     self._require_cohort(_request_cohort)
+                    mark_commit_started()
                     current["runtime_cohort"] = _request_cohort
                     self._persist_registration(current)
                     self._clear_registration_restore_error(participant)
@@ -1967,6 +1989,7 @@ class CouncilBroker:
                             % existing_participant
                         )
             self._require_cohort(_request_cohort)
+            mark_commit_started()
             self.registrations[participant] = registration
             self._persist_registration(registration)
             self._clear_registration_restore_error(participant)
@@ -5069,6 +5092,7 @@ class CouncilBroker:
         arguments = dict(arguments)
         # Transport metadata cannot be supplied as model-visible arguments.
         arguments.pop("_request_cohort", None)
+        arguments.pop("_commit_state", None)
         cohort = request.get("runtime_cohort")
         participant_fields = {
             "unbind": "participant",
@@ -5103,14 +5127,27 @@ class CouncilBroker:
         if not method:
             raise CouncilError("unknown action: %s" % action)
         if action == "bind":
-            runtime = arguments.get("runtime")
-            if trusted_mcp_runtime != runtime:
-                raise CouncilError(
-                    "participant bootstrap requires a matching signed-runtime MCP process"
-                )
-            binding_capability = arguments.get("binding_capability")
-            capability_hash(binding_capability)
-            arguments["_request_cohort"] = cohort
+            commit_state = {"started": False}
+            try:
+                runtime = arguments.get("runtime")
+                if trusted_mcp_runtime != runtime:
+                    raise CouncilError(
+                        "participant bootstrap requires a matching signed-runtime MCP process"
+                    )
+                binding_capability = arguments.get("binding_capability")
+                capability_hash(binding_capability)
+                arguments["_request_cohort"] = cohort
+                arguments["_commit_state"] = commit_state
+                return method(**arguments)
+            except (
+                CouncilError,
+                ValueError,
+                TypeError,
+                json.JSONDecodeError,
+            ) as error:
+                if not commit_state["started"]:
+                    error.commit_status = "precommit"
+                raise
         elif action in participant_fields:
             with self.changed:
                 participant = arguments.get(participant_fields[action])
@@ -5209,6 +5246,8 @@ class BrokerRequestHandler(socketserver.StreamRequestHandler):
                     "error_kind": "rejected",
                     "reason": error.reason if isinstance(error, (CouncilError, AdmissionError)) else "invalid_request",
                 }
+                if getattr(error, "commit_status", None) == "precommit":
+                    response["commit_status"] = "precommit"
             except Exception as error:
                 response = {
                     "ok": False,
@@ -5487,7 +5526,15 @@ class CouncilClient:
             if not isinstance(error, str) or not error:
                 error = "broker request failed"
             if response.get("error_kind") == "rejected":
-                raise CouncilRequestRejected(error, reason=response.get("reason"))
+                raise CouncilRequestRejected(
+                    error,
+                    reason=response.get("reason"),
+                    commit_status=(
+                        response.get("commit_status")
+                        if response.get("commit_status") == "precommit"
+                        else None
+                    ),
+                )
             raise CouncilError(
                 error, reason=response.get("reason"),
                 error_kind=response.get("error_kind", "error"),

@@ -5393,6 +5393,122 @@ class CouncilBrokerTests(unittest.TestCase):
                 body = json.loads(result["content"][0]["text"])
                 self.assertEqual((body["error_kind"], body["reason"]), (kind, reason))
 
+    def test_bind_commit_status_survives_real_broker_client_and_bridge(self):
+        import council_opencode
+
+        relay_dir = Path(self.temporary.name) / "opencode-bind-relay"
+        relay_dir.mkdir()
+        relay = FakeClaudeInbox(relay_dir)
+        relay_capability = "relay-capability-" + "r" * 40
+        alpha_capability = "alpha-binding-" + "a" * 40
+        beta_capability = "beta-binding-" + "b" * 40
+        gamma_capability = "gamma-binding-" + "g" * 40
+        self.broker.bind(
+            "opencode",
+            "alpha",
+            "Alpha",
+            "test",
+            relay_path=relay.path,
+            relay_capability=relay_capability,
+            relay_pid=os.getpid(),
+            target_session_id="session-alpha",
+            binding_capability=alpha_capability,
+        )
+        beta_arguments = {
+            "runtime": "opencode",
+            "participant": "beta",
+            "label": "Beta",
+            "project": "test",
+            "relay_path": relay.path,
+            "relay_capability": relay_capability,
+            "relay_pid": os.getpid(),
+            "target_session_id": "session-alpha",
+            "binding_capability": beta_capability,
+        }
+        corrupt = self.root / "outbox/gamma/broken.json"
+        corrupt.parent.mkdir(parents=True)
+        corrupt.write_text("{")
+        gamma_arguments = {
+            "runtime": "opencode",
+            "participant": "gamma",
+            "label": "Gamma",
+            "project": "test",
+            "relay_path": relay.path,
+            "relay_capability": relay_capability,
+            "relay_pid": os.getpid(),
+            "target_session_id": "session-gamma",
+            "binding_capability": gamma_capability,
+        }
+        owner = self
+
+        class WireClient:
+            def request(self, action, **arguments):
+                raw = owner._broker_wire_response(
+                    owner.broker,
+                    {"action": action, "arguments": arguments},
+                )
+                return owner._decode_wire_response(raw)
+
+        try:
+            with mock.patch(
+                "council.trusted_mcp_runtime", return_value="opencode"
+            ):
+                for arguments, expected in (
+                    (beta_arguments, "precommit"),
+                    (gamma_arguments, None),
+                ):
+                    with self.subTest(expected=expected):
+                        raw = self._broker_wire_response(
+                            self.broker,
+                            {"action": "bind", "arguments": arguments},
+                        )
+                        with self.assertRaises(CouncilRequestRejected) as caught:
+                            self._decode_wire_response(raw)
+                        self.assertEqual(
+                            getattr(caught.exception, "commit_status", None),
+                            expected,
+                        )
+
+                self.assertNotIn("beta", self.broker.registrations)
+                self.assertIn("gamma", self.broker.registrations)
+                self.assertEqual(
+                    self.broker.registrations["gamma"]["capability_hash"],
+                    capability_hash(gamma_capability),
+                )
+
+                for arguments, expected in (
+                    (beta_arguments, "precommit"),
+                    (gamma_arguments, None),
+                ):
+                    with self.subTest(bridge_expected=expected):
+                        output = io.StringIO()
+                        request = current_request(
+                            {"action": "bind", "arguments": arguments}
+                        )
+                        with (
+                            mock.patch(
+                                "council_opencode.CouncilClient",
+                                return_value=WireClient(),
+                            ),
+                            mock.patch(
+                                "council_opencode.sys.stdin",
+                                mock.Mock(
+                                    buffer=io.BytesIO(
+                                        json.dumps(request).encode() + b"\n"
+                                    )
+                                ),
+                            ),
+                            contextlib.redirect_stdout(output),
+                        ):
+                            self.assertEqual(council_opencode.main(), 2)
+                        response = json.loads(output.getvalue())
+                        self.assertEqual(
+                            response.get("commit_status"),
+                            expected,
+                        )
+        finally:
+            relay.close()
+
     def test_broker_framing_errors_do_not_become_definitive_rejections(self):
         for raw, reason in [(b"", "request_timeout"), (b"x" * (1024 * 1024 + 1), "request_too_large")]:
             handler = BrokerRequestHandler.__new__(BrokerRequestHandler)

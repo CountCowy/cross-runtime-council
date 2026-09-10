@@ -134,17 +134,41 @@ test("loaded plugin origin, bounded mismatch startup and pending operation conse
   const requests: Request[] = []
   let failAction = "bind"
   let errorKind = "rejected"
+  let commitStatus: "precommit" | undefined
   let reason = "transport_lost"
+  let failBindSpawn = false
+  let failNextSpawn = false
+  let writeFailureAction = ""
   let daemonSpawns = 0
   globals.Bun = {
     spawn: (command: string[]) => {
       if (command.includes("daemon")) { daemonSpawns += 1; throw new Error("unexpected daemon spawn") }
+      if (failNextSpawn) {
+        failNextSpawn = false
+        throw new Error("fixture spawn failure")
+      }
       let request: Request
       return {
-        stdin: { write: (line: string) => { request = JSON.parse(line); requests.push(request) }, end: () => {} },
+        stdin: {
+          write: (line: string) => {
+            request = JSON.parse(line)
+            requests.push(request)
+            if (request.action === writeFailureAction) {
+              throw new Error("fixture write failure")
+            }
+          },
+          end: () => {},
+        },
         get stdout() {
+          if (request.action === "ping" && failBindSpawn) failNextSpawn = true
           const response = request.action === failAction
-            ? { ok: false, error: "fixture failure", error_kind: errorKind, reason }
+            ? {
+                ok: false,
+                error: "fixture failure",
+                error_kind: errorKind,
+                reason,
+                ...(commitStatus ? { commit_status: commitStatus } : {}),
+              }
             : { ok: true, result: request.action === "extend"
                 ? { dialogue_id: "dlg-pending", phase: "collecting_exchange", authorized_rounds: 2, current_round: 1, duplicate: true }
                 : {} }
@@ -196,8 +220,64 @@ test("loaded plugin origin, bounded mismatch startup and pending operation conse
     assert.equal(daemonSpawns, 0)
 
     const bindRequests = () => requests.filter((request) => request.action === "bind")
+    failAction = ""
+    failBindSpawn = true
+    for (let index = 0; index < 40; index += 1) {
+      await assert.rejects(
+        wrapper.bind.execute(
+          { participant: `spawn-${index}`, label: "Spawn", project: "fixture" },
+          { sessionID: `spawn-session-${index}` } as never,
+        ),
+        /child was not created/,
+      )
+    }
+    failBindSpawn = false
+    await wrapper.bind.execute(
+      { participant: "after-spawn", label: "After", project: "fixture" },
+      { sessionID: "after-spawn-session" } as never,
+    )
+
+    failAction = "ping"
+    errorKind = "error"
+    reason = "version_mismatch"
+    for (let index = 0; index < 40; index += 1) {
+      await assert.rejects(
+        wrapper.bind.execute(
+          { participant: `presend-${index}`, label: "Presend", project: "fixture" },
+          { sessionID: `presend-session-${index}` } as never,
+        ),
+        /fixture failure/,
+      )
+    }
+    failAction = ""
+    await wrapper.bind.execute(
+      { participant: "after-presend", label: "After", project: "fixture" },
+      { sessionID: "after-presend-session" } as never,
+    )
+
     failAction = "bind"
+    errorKind = "rejected"
+    commitStatus = "precommit"
     reason = "invalid_request"
+    for (let index = 0; index < 40; index += 1) {
+      await assert.rejects(
+        wrapper.bind.execute(
+          { participant: `definite-${index}`, label: "Definite", project: "fixture" },
+          { sessionID: "pending-session" } as never,
+        ),
+        /fixture failure/,
+      )
+    }
+    failAction = ""
+    commitStatus = undefined
+    await wrapper.bind.execute(
+      { participant: "after-definite", label: "After", project: "fixture" },
+      { sessionID: "after-definite-session" } as never,
+    )
+
+    failAction = "bind"
+    errorKind = "error"
+    reason = "transport_lost"
     for (let index = 0; index < 32; index += 1) {
       await assert.rejects(
         wrapper.bind.execute(
@@ -231,11 +311,14 @@ test("loaded plugin origin, bounded mismatch startup and pending operation conse
       (request) => request.arguments.binding_capability,
     )).size, 1)
 
-    errorKind = "error"
+    commitStatus = undefined
     reason = "transport_lost"
-    await assert.rejects(wrapper.bind.execute(binding, context), /fixture failure/)
+    writeFailureAction = "bind"
+    await assert.rejects(wrapper.bind.execute(binding, context), /fixture write failure/)
+    writeFailureAction = ""
     const ambiguousRenewal = bindRequests().at(-1)!
     errorKind = "rejected"
+    commitStatus = "precommit"
     reason = "invalid_request"
     await assert.rejects(wrapper.bind.execute(binding, context), /fixture failure/)
     const definiteRenewal = bindRequests().at(-1)!
@@ -247,6 +330,23 @@ test("loaded plugin origin, bounded mismatch startup and pending operation conse
       definiteRenewal.arguments.previous_capability,
       confirmedCapability,
     )
+    const beforePresendRetry = bindRequests().length
+    failAction = "ping"
+    errorKind = "error"
+    commitStatus = undefined
+    reason = "version_mismatch"
+    await assert.rejects(wrapper.bind.execute(binding, context), /fixture failure/)
+    assert.equal(bindRequests().length, beforePresendRetry)
+    failAction = "bind"
+    errorKind = "rejected"
+    commitStatus = "precommit"
+    reason = "invalid_request"
+    await assert.rejects(wrapper.bind.execute(binding, context), /fixture failure/)
+    assert.equal(
+      bindRequests().at(-1)!.arguments.binding_capability,
+      ambiguousRenewal.arguments.binding_capability,
+    )
+    commitStatus = undefined
 
     const beforeInvalid = bindRequests().length
     for (const [candidate, message] of [
@@ -291,6 +391,248 @@ test("loaded plugin origin, bounded mismatch startup and pending operation conse
     )
     assert.equal(bindRequests().length, beforeRestart + 1)
   } finally {
+    await hooks?.dispose?.()
+    delete globals[TOOL_REGISTRY_KEY]
+    if (priorBun === undefined) delete globals.Bun
+    else globals.Bun = priorBun
+    homedir.mock.restore()
+    syncBuiltinESMExports()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test("OpenCode bind cleanup is attempt-aware across concurrency and extension state", async () => {
+  const directory = mkdtempSync("/tmp/cpc-")
+  const homedir = mock.method(os, "homedir", () => directory)
+  syncBuiltinESMExports()
+  const globals = globalThis as unknown as Record<string | symbol, unknown>
+  const priorBun = globals.Bun
+  type Request = { action: string; arguments: Record<string, unknown> }
+  type Response = {
+    ok: boolean
+    result?: Record<string, unknown>
+    error?: string
+    error_kind?: string
+    reason?: string
+    commit_status?: string
+  }
+  const requests: Request[] = []
+  const deferred = () => {
+    let resolve!: (value: Response) => void
+    const promise = new Promise<Response>((done) => {
+      resolve = done
+    })
+    return { promise, resolve }
+  }
+  const sharedFirst = deferred()
+  const sharedSecond = deferred()
+  const replacementOld = deferred()
+  const replacementSuccess = deferred()
+  const replacementRenewal = deferred()
+  let sharedOrdinal = 0
+  let replacementOrdinal = 0
+  const rejected = (
+    reason: string,
+    commitStatus?: "precommit",
+  ): Response => ({
+    ok: false,
+    error: "fixture failure",
+    error_kind: commitStatus ? "rejected" : "error",
+    reason,
+    ...(commitStatus ? { commit_status: commitStatus } : {}),
+  })
+  const responseFor = (request: Request): Response | Promise<Response> => {
+    if (request.action === "ping") return { ok: true, result: {} }
+    if (request.action === "extend") return rejected("transport_lost")
+    if (request.action !== "bind") return { ok: true, result: {} }
+    const participant = request.arguments.participant
+    if (participant === "owner" || participant === "unrelated") {
+      return { ok: true, result: {} }
+    }
+    if (participant === "unused") return rejected("invalid_request", "precommit")
+    if (participant === "shared") {
+      sharedOrdinal += 1
+      if (sharedOrdinal === 1) return sharedFirst.promise
+      if (sharedOrdinal === 2) return sharedSecond.promise
+      return rejected("invalid_request", "precommit")
+    }
+    if (participant === "replacement") {
+      replacementOrdinal += 1
+      if (replacementOrdinal === 1) return replacementOld.promise
+      if (replacementOrdinal === 2) return replacementSuccess.promise
+      if (replacementOrdinal === 3) return replacementRenewal.promise
+      return rejected("invalid_request", "precommit")
+    }
+    throw new Error(`unexpected bind participant: ${String(participant)}`)
+  }
+  const stream = (response: Response | Promise<Response>) => (
+    new ReadableStream<Uint8Array>({
+      async start(controller) {
+        const body = JSON.stringify(await response)
+        controller.enqueue(new TextEncoder().encode(body))
+        controller.close()
+      },
+    })
+  )
+  globals.Bun = {
+    spawn: (command: string[]) => {
+      if (command.includes("daemon")) throw new Error("unexpected daemon spawn")
+      let request: Request
+      return {
+        stdin: {
+          write: (line: string) => {
+            request = JSON.parse(line)
+            requests.push(request)
+          },
+          end: () => {},
+        },
+        get stdout() {
+          return stream(responseFor(request))
+        },
+        get stderr() {
+          return new Blob([]).stream()
+        },
+        exited: Promise.resolve(0),
+      }
+    },
+  }
+  const bindRequests = (participant: string) => requests.filter(
+    (request) => request.action === "bind"
+      && request.arguments.participant === participant,
+  )
+  const waitForBindCount = async (participant: string, count: number) => {
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      if (bindRequests(participant).length >= count) return
+      await new Promise<void>((resolve) => setImmediate(resolve))
+    }
+    assert.fail(`timed out waiting for ${participant} bind ${count}`)
+  }
+  let hooks: Awaited<
+    ReturnType<typeof import("./opencode_council_plugin.ts").CouncilPlugin>
+  > | undefined
+  try {
+    const { CouncilPlugin } = await import(
+      new URL("./opencode_council_plugin.ts?bind-precommit-concurrency", import.meta.url).href
+    )
+    hooks = await CouncilPlugin({ client: {} } as never)
+    const ownerContext = { sessionID: "owner-session" } as never
+    await wrapper.bind.execute(
+      { participant: "owner", label: "Owner", project: "fixture" },
+      ownerContext,
+    )
+    const extension = {
+      participant: "owner",
+      dialogue_id: "dlg-pending",
+      additional_rounds: 1,
+    }
+    await assert.rejects(
+      wrapper.extend.execute(extension, ownerContext),
+      /fixture failure/,
+    )
+    await assert.rejects(
+      wrapper.bind.execute(
+        { participant: "unused", label: "Unused", project: "fixture" },
+        { sessionID: "unused-session" } as never,
+      ),
+      /fixture failure/,
+    )
+    await wrapper.bind.execute(
+      { participant: "unrelated", label: "Unrelated", project: "fixture" },
+      { sessionID: "unrelated-session" } as never,
+    )
+    await assert.rejects(
+      wrapper.extend.execute(
+        { ...extension, additional_rounds: 2 },
+        ownerContext,
+      ),
+      /original round count/,
+    )
+
+    const sharedBinding = {
+      participant: "shared",
+      label: "Shared",
+      project: "fixture",
+    }
+    const sharedContext = { sessionID: "shared-session" } as never
+    const first = wrapper.bind.execute(sharedBinding, sharedContext)
+    await waitForBindCount("shared", 1)
+    const second = wrapper.bind.execute(sharedBinding, sharedContext)
+    await waitForBindCount("shared", 2)
+    const sharedCapability = bindRequests("shared")[0].arguments.binding_capability
+    assert.equal(
+      bindRequests("shared")[1].arguments.binding_capability,
+      sharedCapability,
+    )
+    sharedFirst.resolve(rejected("invalid_request", "precommit"))
+    await assert.rejects(first, /fixture failure/)
+    await assert.rejects(
+      wrapper.bind.execute(sharedBinding, sharedContext),
+      /fixture failure/,
+    )
+    assert.equal(
+      bindRequests("shared")[2].arguments.binding_capability,
+      sharedCapability,
+    )
+    sharedSecond.resolve(rejected("transport_lost"))
+    await assert.rejects(second, /fixture failure/)
+    await assert.rejects(
+      wrapper.bind.execute(sharedBinding, sharedContext),
+      /fixture failure/,
+    )
+    await assert.rejects(
+      wrapper.bind.execute(sharedBinding, sharedContext),
+      /fixture failure/,
+    )
+    assert.equal(
+      new Set(bindRequests("shared").map(
+        (request) => request.arguments.binding_capability,
+      )).size,
+      1,
+    )
+
+    const replacementBinding = {
+      participant: "replacement",
+      label: "Replacement",
+      project: "fixture",
+    }
+    const replacementContext = { sessionID: "replacement-session" } as never
+    const old = wrapper.bind.execute(replacementBinding, replacementContext)
+    await waitForBindCount("replacement", 1)
+    const winner = wrapper.bind.execute(replacementBinding, replacementContext)
+    await waitForBindCount("replacement", 2)
+    const oldCapability = bindRequests("replacement")[0].arguments.binding_capability
+    replacementSuccess.resolve({ ok: true, result: {} })
+    await winner
+    const renewal = wrapper.bind.execute(replacementBinding, replacementContext)
+    await waitForBindCount("replacement", 3)
+    const renewalCapability = bindRequests("replacement")[2].arguments.binding_capability
+    assert.notEqual(renewalCapability, oldCapability)
+    replacementOld.resolve(rejected("invalid_request", "precommit"))
+    await assert.rejects(old, /fixture failure/)
+    await assert.rejects(
+      wrapper.bind.execute(replacementBinding, replacementContext),
+      /fixture failure/,
+    )
+    assert.equal(
+      bindRequests("replacement")[3].arguments.binding_capability,
+      renewalCapability,
+    )
+    replacementRenewal.resolve(rejected("transport_lost"))
+    await assert.rejects(renewal, /fixture failure/)
+    await assert.rejects(
+      wrapper.bind.execute(replacementBinding, replacementContext),
+      /fixture failure/,
+    )
+    assert.equal(
+      bindRequests("replacement").at(-1)!.arguments.binding_capability,
+      renewalCapability,
+    )
+  } finally {
+    sharedFirst.resolve(rejected("transport_lost"))
+    sharedSecond.resolve(rejected("transport_lost"))
+    replacementOld.resolve(rejected("transport_lost"))
+    replacementSuccess.resolve(rejected("transport_lost"))
+    replacementRenewal.resolve(rejected("transport_lost"))
     await hooks?.dispose?.()
     delete globals[TOOL_REGISTRY_KEY]
     if (priorBun === undefined) delete globals.Bun

@@ -1,8 +1,8 @@
 import { ERROR_REASONS, MAX_LINE_BYTES, RUNTIME_COHORT as PROTOCOL_COHORT } from "./council_protocol.ts"
 import type { ToolDefinition } from "@opencode-ai/plugin"
 
-export const PACKAGE_ID = "43aaa33e1832f19cf836332468cebc8ffd684613edd657f0139cca476d178090"
-export const RUNTIME_COHORT = "5cf4b1fb64603e9fc30a584c6c5085cc46e07a46f4e288b01e4e39b81f80ab49"
+export const PACKAGE_ID = "d846905beab8f42c779b52c57f371d1e863bbdb113f6d819f9580efdd398670c"
+export const RUNTIME_COHORT = "c14b024542e9d7c410f208a4967b378192382e12f6638da9c4bf5b61041eeeb4"
 if (RUNTIME_COHORT !== PROTOCOL_COHORT) {
   throw new Error("Council registry/definitions cohort mismatch; refresh the complete runtime set")
 }
@@ -227,11 +227,14 @@ export class OpenCodeDeliveryRegistry {
   }
 
   retain(sessionID: string, participant: string) {
+    const identity = this.key(sessionID, participant)
+    const previous = this.states.get(identity)
     const state = this.state(sessionID, participant)
     if (state.expiryTimer) clearTimeout(state.expiryTimer)
     state.expiryTimer = undefined
     state.expiresAt = undefined
     state.clearWhenIdle = false
+    return previous === state
   }
 
   discard(sessionID: string, participant: string) {

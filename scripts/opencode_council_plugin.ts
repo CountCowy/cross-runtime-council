@@ -2,6 +2,7 @@ import {
   ENVELOPE_PREAMBLE, RELAY_ENVELOPE_KINDS as PROTOCOL_RELAY_KINDS,
   DEFAULT_LEASE_MINUTES, DEFAULT_ROUNDS, DEFAULT_MINIMUM_ROUNDS,
   DEFAULT_MAX_ROUNDS, DEFAULT_ACTIVE_CLAIM_CEILING, openCodeToolArgs,
+  BIND_COMMIT_STATUSES,
   MAX_LEASE_MINUTES, MAX_TEXT_BYTES, RUNTIME_COHORT as PROTOCOL_COHORT,
   SAFE_NAME_PATTERN,
 } from "./council_protocol.ts"
@@ -33,6 +34,7 @@ type BridgeResponse = {
   error?: string
   error_kind?: "rejected" | "error" | "internal"
   reason?: unknown
+  commit_status?: unknown
 }
 
 type DaemonStartupStatus = {
@@ -41,8 +43,8 @@ type DaemonStartupStatus = {
   retryable: boolean
 }
 
-const PACKAGE_ID = "43aaa33e1832f19cf836332468cebc8ffd684613edd657f0139cca476d178090"
-const RUNTIME_COHORT = "5cf4b1fb64603e9fc30a584c6c5085cc46e07a46f4e288b01e4e39b81f80ab49"
+const PACKAGE_ID = "d846905beab8f42c779b52c57f371d1e863bbdb113f6d819f9580efdd398670c"
+const RUNTIME_COHORT = "c14b024542e9d7c410f208a4967b378192382e12f6638da9c4bf5b61041eeeb4"
 const DAEMON_STARTUP_TIMEOUT_MS = 3000
 const MAX_DAEMON_STARTUP_STATUS_BYTES = 1024
 const MAX_PENDING_BINDING_ROTATIONS = 32
@@ -63,12 +65,20 @@ type PendingRotation = {
   capability: string
   previousCapability?: string
   relayCapability: string
+  inFlight: number
+  uncertain: boolean
+  deliveryStateWasPresent?: boolean
 }
 
 class BridgeError extends Error {
   readonly reason: ErrorReason
 
-  constructor(message: string, readonly kind?: string, reason?: unknown) {
+  constructor(
+    message: string,
+    readonly kind?: string,
+    reason?: unknown,
+    readonly commitStatus?: typeof BIND_COMMIT_STATUSES[number],
+  ) {
     super(message)
     this.reason = normalizeErrorReason(reason)
   }
@@ -157,13 +167,32 @@ function validateBindInputs(
 }
 
 async function rawBridge(action: string, args: Record<string, unknown>) {
-  const child = Bun.spawn(["python3", bridgePath], {
-    stdin: "pipe",
-    stdout: "pipe",
-    stderr: "pipe",
-  })
-  child.stdin.write(JSON.stringify({ action, arguments: args, runtime_cohort: RUNTIME_COHORT }) + "\n")
-  child.stdin.end()
+  let child: CouncilBunSubprocess
+  try {
+    child = Bun.spawn(["python3", bridgePath], {
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+  } catch {
+    throw new BridgeError(
+      "OpenCode Council bridge child was not created",
+      "internal",
+      "broker_unavailable",
+      "precommit",
+    )
+  }
+  try {
+    child.stdin.write(JSON.stringify(
+      { action, arguments: args, runtime_cohort: RUNTIME_COHORT },
+    ) + "\n")
+    child.stdin.end()
+  } catch (error) {
+    try {
+      child.kill()
+    } catch {}
+    throw error
+  }
   const [stdout, stderr, exitCode] = await Promise.all([
     new Response(child.stdout).text(),
     new Response(child.stderr).text(),
@@ -185,7 +214,9 @@ async function rawBridge(action: string, args: Record<string, unknown>) {
   if (response.ok === false) {
     throw new BridgeError(
       typeof response.error === "string" ? response.error : `bridge exited ${exitCode}`,
-      response.error_kind, response.reason,
+      response.error_kind,
+      response.reason,
+      response.commit_status === "precommit" ? "precommit" : undefined,
     )
   }
   if (response.result === null || typeof response.result !== "object" || Array.isArray(response.result)) {
@@ -522,6 +553,26 @@ export const CouncilPlugin: Plugin = async ({ client }) => {
     }
   }
 
+  function releaseUncommittedRotation(
+    identity: string,
+    sessionID: string,
+    participant: string,
+    pending: PendingRotation,
+  ) {
+    if (
+      pendingRotations.get(identity) !== pending
+      || pending.uncertain
+      || pending.inFlight !== 0
+    ) return
+    pendingRotations.delete(identity)
+    if (pending.previousCapability) return
+    if (pending.deliveryStateWasPresent) {
+      deliveryRegistry.clear(sessionID, participant)
+    } else if (pending.deliveryStateWasPresent === false) {
+      deliveryRegistry.discard(sessionID, participant)
+    }
+  }
+
   const hooks = {
     dispose: async () => {
       for (const socket of relaySockets) socket.destroy()
@@ -565,12 +616,27 @@ export const CouncilPlugin: Plugin = async ({ client }) => {
               capability: capability(),
               previousCapability: confirmed?.capability,
               relayCapability: capability(),
+              inFlight: 0,
+              uncertain: false,
             }
             pendingRotations.set(identity, pending)
           }
-          deliveryRegistry.retain(context.sessionID, args.participant)
+          pending.inFlight += 1
+          let precommitFailure = false
           try {
-            const result = await bridge("bind", {
+            try {
+              await ensureBroker()
+            } catch (error) {
+              precommitFailure = true
+              throw error
+            }
+            const deliveryStateWasPresent = deliveryRegistry.retain(
+              context.sessionID, args.participant,
+            )
+            if (pending.deliveryStateWasPresent === undefined) {
+              pending.deliveryStateWasPresent = deliveryStateWasPresent
+            }
+            const result = await rawBridge("bind", {
               runtime: "opencode",
               participant: args.participant,
               label: args.label,
@@ -611,8 +677,21 @@ export const CouncilPlugin: Plugin = async ({ client }) => {
             pendingRotations.delete(identity)
             return safeResult(result)
           } catch (error) {
-            // Retain potentially committed rotations across every failed retry.
+            if (!precommitFailure) {
+              precommitFailure = (
+                error instanceof BridgeError
+                && error.commitStatus === "precommit"
+              )
+            }
+            if (!precommitFailure) pending.uncertain = true
             throw error
+          } finally {
+            pending.inFlight -= 1
+            if (precommitFailure) {
+              releaseUncommittedRotation(
+                identity, context.sessionID, args.participant, pending,
+              )
+            }
           }
         },
       }),
