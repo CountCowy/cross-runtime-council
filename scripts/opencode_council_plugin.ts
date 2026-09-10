@@ -43,8 +43,8 @@ type DaemonStartupStatus = {
   retryable: boolean
 }
 
-const PACKAGE_ID = "d846905beab8f42c779b52c57f371d1e863bbdb113f6d819f9580efdd398670c"
-const RUNTIME_COHORT = "c14b024542e9d7c410f208a4967b378192382e12f6638da9c4bf5b61041eeeb4"
+const PACKAGE_ID = "8f13e3cff57876d8933fde07b0347be867f615f4e3517bf7a3042afd692b8d3b"
+const RUNTIME_COHORT = "ea9204df57eb53f5959c176f33d8469b1256ab7e228254a38f876f6be7dce960"
 const DAEMON_STARTUP_TIMEOUT_MS = 3000
 const MAX_DAEMON_STARTUP_STATUS_BYTES = 1024
 const MAX_PENDING_BINDING_ROTATIONS = 32
@@ -649,32 +649,34 @@ export const CouncilPlugin: Plugin = async ({ client }) => {
               binding_capability: pending.capability,
               previous_capability: pending.previousCapability,
             })
-            for (const [existingIdentity, existing] of bindings) {
-              if (
-                existingIdentity !== identity &&
-                existing.participant === args.participant
-              ) {
-                bindings.delete(existingIdentity)
-                pendingRotations.delete(existingIdentity)
-                deliveryRegistry.discard(existing.sessionID, existing.participant)
+            if (pendingRotations.get(identity) === pending) {
+              for (const [existingIdentity, existing] of bindings) {
+                if (
+                  existingIdentity !== identity &&
+                  existing.participant === args.participant
+                ) {
+                  bindings.delete(existingIdentity)
+                  pendingRotations.delete(existingIdentity)
+                  deliveryRegistry.discard(existing.sessionID, existing.participant)
+                }
               }
-            }
-            for (const pendingIdentity of pendingRotations.keys()) {
-              const separator = pendingIdentity.indexOf("\u0000")
-              if (
-                pendingIdentity !== identity &&
-                pendingIdentity.slice(separator + 1) === args.participant
-              ) {
-                pendingRotations.delete(pendingIdentity)
+              for (const pendingIdentity of pendingRotations.keys()) {
+                const separator = pendingIdentity.indexOf("\u0000")
+                if (
+                  pendingIdentity !== identity &&
+                  pendingIdentity.slice(separator + 1) === args.participant
+                ) {
+                  pendingRotations.delete(pendingIdentity)
+                }
               }
+              bindings.set(identity, {
+                participant: args.participant,
+                sessionID: context.sessionID,
+                capability: pending.capability,
+                relayCapability: pending.relayCapability,
+              })
+              pendingRotations.delete(identity)
             }
-            bindings.set(identity, {
-              participant: args.participant,
-              sessionID: context.sessionID,
-              capability: pending.capability,
-              relayCapability: pending.relayCapability,
-            })
-            pendingRotations.delete(identity)
             return safeResult(result)
           } catch (error) {
             if (!precommitFailure) {

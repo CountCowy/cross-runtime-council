@@ -429,8 +429,11 @@ test("OpenCode bind cleanup is attempt-aware across concurrency and extension st
   const replacementOld = deferred()
   const replacementSuccess = deferred()
   const replacementRenewal = deferred()
+  const staleSuccessFirst = deferred()
+  const staleSuccessRenewal = deferred()
   let sharedOrdinal = 0
   let replacementOrdinal = 0
+  let staleSuccessBrokerCapability: unknown
   const rejected = (
     reason: string,
     commitStatus?: "precommit",
@@ -462,6 +465,22 @@ test("OpenCode bind cleanup is attempt-aware across concurrency and extension st
       if (replacementOrdinal === 2) return replacementSuccess.promise
       if (replacementOrdinal === 3) return replacementRenewal.promise
       return rejected("invalid_request", "precommit")
+    }
+    if (participant === "stale-success") {
+      const capability = request.arguments.binding_capability
+      const previous = request.arguments.previous_capability
+      if (staleSuccessBrokerCapability === undefined) {
+        staleSuccessBrokerCapability = capability
+        return staleSuccessFirst.promise
+      }
+      if (capability === staleSuccessBrokerCapability) {
+        return { ok: true, result: {} }
+      }
+      if (previous === staleSuccessBrokerCapability) {
+        staleSuccessBrokerCapability = capability
+        return staleSuccessRenewal.promise
+      }
+      return rejected("not_authorized", "precommit")
     }
     throw new Error(`unexpected bind participant: ${String(participant)}`)
   }
@@ -627,12 +646,55 @@ test("OpenCode bind cleanup is attempt-aware across concurrency and extension st
       bindRequests("replacement").at(-1)!.arguments.binding_capability,
       renewalCapability,
     )
+
+    const staleSuccessBinding = {
+      participant: "stale-success",
+      label: "Stale success",
+      project: "fixture",
+    }
+    const staleSuccessContext = { sessionID: "stale-success-session" } as never
+    const staleFirst = wrapper.bind.execute(
+      staleSuccessBinding, staleSuccessContext,
+    )
+    await waitForBindCount("stale-success", 1)
+    const staleWinner = wrapper.bind.execute(
+      staleSuccessBinding, staleSuccessContext,
+    )
+    await waitForBindCount("stale-success", 2)
+    await staleWinner
+    const staleP1 = bindRequests(
+      "stale-success",
+    )[0].arguments.binding_capability
+    assert.equal(
+      bindRequests("stale-success")[1].arguments.binding_capability,
+      staleP1,
+    )
+    const staleRenewal = wrapper.bind.execute(
+      staleSuccessBinding, staleSuccessContext,
+    )
+    await waitForBindCount("stale-success", 3)
+    const staleP2 = bindRequests(
+      "stale-success",
+    )[2].arguments.binding_capability
+    assert.notEqual(staleP2, staleP1)
+    assert.equal(staleSuccessBrokerCapability, staleP2)
+    staleSuccessFirst.resolve({ ok: true, result: {} })
+    await staleFirst
+    staleSuccessRenewal.resolve(rejected("transport_lost"))
+    await assert.rejects(staleRenewal, /fixture failure/)
+    await wrapper.bind.execute(staleSuccessBinding, staleSuccessContext)
+    assert.equal(
+      bindRequests("stale-success")[3].arguments.binding_capability,
+      staleP2,
+    )
   } finally {
     sharedFirst.resolve(rejected("transport_lost"))
     sharedSecond.resolve(rejected("transport_lost"))
     replacementOld.resolve(rejected("transport_lost"))
     replacementSuccess.resolve(rejected("transport_lost"))
     replacementRenewal.resolve(rejected("transport_lost"))
+    staleSuccessFirst.resolve(rejected("transport_lost"))
+    staleSuccessRenewal.resolve(rejected("transport_lost"))
     await hooks?.dispose?.()
     delete globals[TOOL_REGISTRY_KEY]
     if (priorBun === undefined) delete globals.Bun
