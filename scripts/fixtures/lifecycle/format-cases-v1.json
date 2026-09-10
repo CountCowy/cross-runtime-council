@@ -1,0 +1,24 @@
+{
+  "format": 1,
+  "supported": [
+    "exact-preintent-plan",
+    "five-unit-forward-recovery",
+    "sticky-prior-abort",
+    "matching-preexisting-unowned-preservation",
+    "payload-absent-external-recovery",
+    "borrowed-validated-lease"
+  ],
+  "refused": [
+    "boolean-number",
+    "case-or-unicode-path-collision",
+    "duplicate-json-key",
+    "hard-linked-managed-file",
+    "malformed-or-oversized-metadata",
+    "native-or-configuration-operation",
+    "nonexact-tool-or-python",
+    "nonterminal-or-mixed-artifact-set",
+    "retained-state-change",
+    "symlink-or-nonregular-artifact",
+    "unknown-destination-bytes"
+  ]
+}
