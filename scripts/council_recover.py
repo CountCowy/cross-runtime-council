@@ -526,7 +526,12 @@ def validate_reader_support(value: Any) -> Dict[str, Any]:
 def validate_release_manifest(value: Any) -> Dict[str, Any]:
     if not isinstance(value, dict):
         raise RecoveryError("source manifest must be an object")
-    exact_keys(value, ("format", "package_id", "runtime_cohort", "artifacts", "opencode_sources"), "source manifest")
+    exact_keys(
+        value,
+        ("format", "package_id", "runtime_cohort", "runtime_sources", "artifacts",
+         "opencode_sources"),
+        "source manifest",
+    )
     if exact_int(value["format"], "source manifest format", 1) != 1:
         raise RecoveryError("unsupported source manifest format")
     checked_hash(value["package_id"], "manifest package_id")
@@ -544,6 +549,16 @@ def validate_release_manifest(value: Any) -> Dict[str, Any]:
     _validate_collision_free(paths, "manifest artifacts")
     if value["opencode_sources"] != OPENCODE_SOURCES:
         raise RecoveryError("manifest OpenCode source mapping is unsupported")
+    runtime_sources = value["runtime_sources"]
+    if (not isinstance(runtime_sources, list) or not runtime_sources or
+            len(runtime_sources) > MAX_ARTIFACTS):
+        raise RecoveryError("manifest runtime_sources must be a bounded nonempty list")
+    checked_sources = [checked_relative(item, "manifest runtime source") for item in runtime_sources]
+    if len(checked_sources) != len(set(checked_sources)):
+        raise RecoveryError("manifest runtime_sources must be unique")
+    _validate_collision_free(checked_sources, "manifest runtime_sources")
+    if any("payload/" + item not in artifacts for item in checked_sources):
+        raise RecoveryError("manifest runtime source is absent from payload artifacts")
     external = {name for name in artifacts if name.startswith("opencode/")}
     if external != set(EXTERNAL_MANIFEST_PATHS.values()):
         raise RecoveryError("manifest must contain exactly four OpenCode artifacts")
@@ -739,6 +754,37 @@ def _receipt_unit_states(receipt: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     return states
 
 
+def _payload_without_known_caches(state_value: Dict[str, Any]) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
+    caches = []
+    artifacts = []
+    for item in state_value["artifacts"]:
+        if "__pycache__" in PurePosixPath(item["path"]).parts:
+            if item["kind"] == "file" and not item["path"].endswith((".pyc", ".pyo")):
+                raise RecoveryError("payload cache contains an unknown file type")
+            caches.append(item)
+        else:
+            artifacts.append(item)
+    cleaned = {
+        "exists": state_value["exists"],
+        "kind": state_value["kind"],
+        "sha256": _inventory_digest(artifacts) if state_value["exists"] else None,
+        "mode": state_value["mode"],
+        "artifacts": artifacts,
+    }
+    return cleaned, caches
+
+
+def _terminal_states_match(roots: Dict[str, str], states: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
+    actual_payload = capture_state(Path(roots["payload"]), "directory")
+    clean_payload, caches = _payload_without_known_caches(actual_payload)
+    if clean_payload != states["payload"]:
+        raise RecoveryError("terminal artifact set is not coherent: payload")
+    for unit_id in UNIT_IDS[1:]:
+        if not state_matches(_unit_destination(roots, unit_id), states[unit_id]):
+            raise RecoveryError("terminal artifact set is not coherent: %s" % unit_id)
+    return caches
+
+
 def _validate_receipt_provenance(state_root: Path, receipt: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     receipt_id = receipt["receipt_id"]
     manifest_path, support_path = _receipt_provenance_paths(state_root, receipt_id)
@@ -787,9 +833,7 @@ def _verify_terminal_receipt(state_root: Path, summary: Dict[str, Any]) -> Dict[
         raise RecoveryError("terminal receipt broker.lock identity changed")
     manifest, _support = _validate_receipt_provenance(state_root, receipt)
     states = _receipt_unit_states(receipt)
-    for unit_id, expected in states.items():
-        if not state_matches(_unit_destination(roots, unit_id), expected):
-            raise RecoveryError("terminal artifact set is not coherent: %s" % unit_id)
+    _terminal_states_match(roots, states)
     if receipt["outcome"] == "committed":
         payload_files = {
             "payload/" + item["path"]: item["sha256"]
@@ -807,6 +851,65 @@ def _verify_terminal_receipt(state_root: Path, summary: Dict[str, Any]) -> Dict[
                     states[unit_id]["sha256"] != manifest["artifacts"][manifest_name]):
                 raise RecoveryError("terminal external artifact differs from source manifest")
     return receipt
+
+
+def inspect_terminal_ownership(state_root: Path, payload_root: Path,
+                               opencode_root: Path) -> Dict[str, Any]:
+    """Read-only receipt-backed ownership view; final execution still revalidates under lease."""
+    state_root = Path(state_root).resolve(strict=True)
+    opencode_root = Path(opencode_root).resolve(strict=True)
+    payload_input = Path(payload_root)
+    payload_parent = payload_input.parent.resolve(strict=True)
+    payload_root = payload_parent / payload_input.name
+    if payload_root.is_symlink():
+        raise RecoveryError("payload root must not be a symlink")
+    roots = validate_roots(
+        {"state": str(state_root), "payload": str(payload_root), "opencode": str(opencode_root)}
+    )
+    lifecycle = state_root / ".council-lifecycle"
+    if not lifecycle.exists() and not lifecycle.is_symlink():
+        return {
+            "status": "legacy_unmanaged",
+            "certified": False,
+            "reason": "lifecycle namespace is absent",
+            "roots": roots,
+            "summary": None,
+            "receipt": None,
+            "payload_cache": [],
+        }
+    if lifecycle.is_symlink() or not lifecycle.is_dir():
+        raise RecoveryError("lifecycle namespace must be a real directory")
+    admission_path = lifecycle / "admission.json"
+    admission, admission_data = read_object(admission_path, "admission")
+    admission = validate_admission(admission, roots)
+    if admission["status"] == "recovery_required":
+        raise RecoveryError("ownership planning is blocked while recovery is required")
+    summary = admission["committed"]
+    if summary is None:
+        return {
+            "status": admission["status"],
+            "certified": False,
+            "reason": "terminal lifecycle marker has no certifying ownership receipt",
+            "roots": roots,
+            "summary": None,
+            "receipt": None,
+            "payload_cache": [],
+        }
+    receipt = _verify_terminal_receipt(state_root, summary)
+    states = _receipt_unit_states(receipt)
+    caches = _terminal_states_match(roots, states)
+    current, current_data = read_object(admission_path, "admission")
+    if current_data != admission_data or validate_admission(current, roots) != admission:
+        raise RecoveryError("admission changed during ownership inspection")
+    return {
+        "status": admission["status"],
+        "certified": True,
+        "reason": None,
+        "roots": roots,
+        "summary": summary,
+        "receipt": receipt,
+        "payload_cache": caches,
+    }
 
 
 def validate_receipt(value: Any, plan: Dict[str, Any], goal: str = "target") -> Dict[str, Any]:

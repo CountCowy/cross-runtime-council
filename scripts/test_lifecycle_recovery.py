@@ -182,6 +182,7 @@ class Fixture:
             "format": 1,
             "package_id": self.package_id,
             "runtime_cohort": self.runtime_cohort,
+            "runtime_sources": ["scripts/runtime.py"],
             "artifacts": dict(sorted(artifacts.items())),
             "opencode_sources": source.OPENCODE_SOURCES,
         }
@@ -216,6 +217,7 @@ class Fixture:
                 "format": 1,
                 "package_id": self.package_id,
                 "runtime_cohort": self.runtime_cohort,
+                "runtime_sources": ["scripts/runtime.py"],
                 "artifacts": dict(sorted(prior_manifest_artifacts.items())),
                 "opencode_sources": source.OPENCODE_SOURCES,
             }
@@ -535,6 +537,7 @@ class Fixture:
             "format": 1,
             "package_id": self.package_id,
             "runtime_cohort": self.runtime_cohort,
+            "runtime_sources": ["scripts/runtime.py"],
             "artifacts": dict(sorted(artifacts.items())),
             "opencode_sources": source.OPENCODE_SOURCES,
         }
@@ -1090,6 +1093,19 @@ class LifecycleRecoveryTests(unittest.TestCase):
             (Path(fixture.units[0]["objects"]["backup"])
              / "scripts/__pycache__/runtime.cpython-39.pyc").is_file()
         )
+        cache = fixture.payload / "scripts/__pycache__/runtime.cpython-39.pyc"
+        make_directory(cache.parent)
+        cache.write_bytes(b"later-runtime-cache")
+        cache.chmod(0o600)
+        self.assertEqual(fixture.engine.recover(fixture.state), result)
+        inspected = fixture.engine.inspect_terminal_ownership(
+            fixture.state, fixture.payload, fixture.opencode
+        )
+        self.assertTrue(inspected["certified"])
+        self.assertEqual([item["path"] for item in inspected["payload_cache"]], [
+            "scripts/__pycache__",
+            "scripts/__pycache__/runtime.cpython-39.pyc",
+        ])
 
     def test_every_forward_durability_boundary_recovers_after_process_exit(self):
         for initial in (False, True):

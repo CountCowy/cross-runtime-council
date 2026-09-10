@@ -1,0 +1,24 @@
+{
+  "deferred": [
+    "c1-admission-and-liveness",
+    "external-check-plan-handshake",
+    "recovery-object-staging",
+    "transaction-publication"
+  ],
+  "format": 1,
+  "refused": [
+    "local-owned-artifact-change",
+    "payload-clone-or-unowned-content",
+    "pending-recovery",
+    "release-closure-or-hash-mismatch",
+    "unowned-external-change-or-removal"
+  ],
+  "supported": [
+    "actual-build-release",
+    "certified-managed-upgrade-preview",
+    "deterministic-non-executable-preview",
+    "fresh-install-preview",
+    "matching-unowned-external-preservation",
+    "receipt-backed-uninstall-preview"
+  ]
+}
