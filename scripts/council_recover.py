@@ -1048,12 +1048,19 @@ def _validate_progress(value: Any, plan: Dict[str, Any], plan_digest: str) -> Di
     return value
 
 
-def retained_state_fingerprint(state_root: Path) -> Dict[str, Any]:
+def retained_state_fingerprint(state_root: Path,
+                               control_root: Optional[Path] = None) -> Dict[str, Any]:
+    ignored = ".council-lifecycle"
+    if control_root is not None:
+        control_root = Path(control_root)
+        if control_root.parent != state_root:
+            raise RecoveryError("retained-state control root is outside state root")
+        ignored = control_root.name
     records = []
     for parent, dirs, files in os.walk(state_root, topdown=True, followlinks=False):
         relative_parent = Path(parent).relative_to(state_root)
         if relative_parent == Path("."):
-            dirs[:] = sorted(name for name in dirs if name != ".council-lifecycle")
+            dirs[:] = sorted(name for name in dirs if name != ignored)
             files = sorted(name for name in files if name not in VOLATILE_STATE_NAMES)
         else:
             dirs.sort()
@@ -1152,7 +1159,7 @@ def _manifest_target_matches(plan: Dict[str, Any]) -> None:
 def _root_identity_checks(plan: Dict[str, Any]) -> None:
     roots = {name: Path(value) for name, value in plan["roots"].items()}
     expected = plan["root_identities"]
-    lifecycle = roots["state"] / ".council-lifecycle"
+    lifecycle = Path(plan.get("_control_root", roots["state"] / ".council-lifecycle"))
     transaction = lifecycle / "v1/transactions" / plan["transaction_id"]
     actual = {
         "state": directory_identity(roots["state"], "state root"),
@@ -1199,11 +1206,18 @@ def validate_plan(plan_path: Path, *, pre_intent: bool,
     if plan["kind"] not in KINDS:
         raise RecoveryError("unsupported transaction kind")
     plan["roots"] = validate_roots(plan["roots"])
-    expected_plan_path = (Path(plan["roots"]["state"]) / ".council-lifecycle/v1/transactions" /
-                          transaction_id / "plan.json")
-    if plan_path != expected_plan_path:
+    canonical_lifecycle = Path(plan["roots"]["state"]) / ".council-lifecycle"
+    prepared_lifecycle = Path(plan["roots"]["state"]) / (
+        ".council-lifecycle.prepare-" + transaction_id
+    )
+    actual_lifecycle = plan_path.parent.parent.parent.parent
+    if actual_lifecycle not in (canonical_lifecycle, prepared_lifecycle):
         raise RecoveryError("plan is outside its fixed transaction path")
-    lifecycle_root = Path(plan["roots"]["state"]) / ".council-lifecycle"
+    expected_actual_plan = actual_lifecycle / "v1/transactions" / transaction_id / "plan.json"
+    if plan_path != expected_actual_plan:
+        raise RecoveryError("plan is outside its fixed transaction path")
+    plan["_control_root"] = str(actual_lifecycle)
+    lifecycle_root = actual_lifecycle
     for path, label in (
         (lifecycle_root, "lifecycle root"),
         (lifecycle_root / "v1", "lifecycle v1 root"),
@@ -1296,10 +1310,11 @@ def validate_plan(plan_path: Path, *, pre_intent: bool,
     if exact_int(recovery["format"], "recovery format", 1) != RECOVERY_FORMAT:
         raise RecoveryError("unsupported recovery format")
     checked_hash(recovery["tool_sha256"], "recovery tool_sha256")
-    expected_tool = Path(plan["roots"]["state"]) / ".council-lifecycle/v1/recovery" / (recovery["tool_sha256"] + ".py")
-    if checked_absolute(recovery["tool_path"], "recovery tool_path") != expected_tool:
+    canonical_tool = canonical_lifecycle / "v1/recovery" / (recovery["tool_sha256"] + ".py")
+    actual_tool = actual_lifecycle / "v1/recovery" / (recovery["tool_sha256"] + ".py")
+    if checked_absolute(recovery["tool_path"], "recovery tool_path") != canonical_tool:
         raise RecoveryError("recovery tool path is not fixed by its digest")
-    if Path(__file__).resolve(strict=True) != expected_tool or sha256_file(expected_tool) != recovery["tool_sha256"]:
+    if Path(__file__).resolve(strict=True) != actual_tool or sha256_file(actual_tool) != recovery["tool_sha256"]:
         raise RecoveryError("the executing recovery tool does not match the plan")
     if checked_absolute(recovery["python_path"], "recovery python_path") != Path(sys.executable).resolve(strict=True):
         raise RecoveryError("the executing Python does not match the plan")
@@ -1383,7 +1398,9 @@ def validate_plan(plan_path: Path, *, pre_intent: bool,
     lock_path = Path(plan["roots"]["state"]) / "broker.lock"
     if lock_path_identity(lock_path) != plan["lock_identity"]:
         raise RecoveryError("broker.lock identity changed")
-    actual_retained = retained_state_fingerprint(Path(plan["roots"]["state"]))
+    actual_retained = retained_state_fingerprint(
+        Path(plan["roots"]["state"]), actual_lifecycle
+    )
     if actual_retained != plan["retained_state"]:
         raise RecoveryError("retained state changed since plan preparation")
     progress = None
@@ -1404,10 +1421,19 @@ def validate_plan(plan_path: Path, *, pre_intent: bool,
                 if Path(unit["objects"][name]).exists() or Path(unit["objects"][name]).is_symlink():
                     raise RecoveryError("%s pre-intent %s path is occupied" % (unit["unit_id"], name))
     if pre_intent:
-        admission_path = Path(plan["roots"]["state"]) / ".council-lifecycle/admission.json"
-        admission, _ = read_object(admission_path, "admission")
-        if validate_admission(admission, plan["roots"]) != plan["prior_admission"]:
-            raise RecoveryError("admission changed before intent")
+        if actual_lifecycle == canonical_lifecycle:
+            admission, _ = read_object(canonical_lifecycle / "admission.json", "admission")
+            if validate_admission(admission, plan["roots"]) != plan["prior_admission"]:
+                raise RecoveryError("admission changed before intent")
+        else:
+            if canonical_lifecycle.exists() or canonical_lifecycle.is_symlink():
+                raise RecoveryError("canonical lifecycle namespace appeared during bootstrap")
+            pending, _ = read_object(actual_lifecycle / "admission.json", "prepared admission")
+            pending = validate_admission(pending, plan["roots"])
+            if (pending["status"] != "recovery_required" or
+                    pending["transaction_id"] != transaction_id or
+                    pending["committed"] != plan["prior_admission"]["committed"]):
+                raise RecoveryError("prepared admission does not bind the bootstrap plan")
         if progress is None or progress["sequence"] != 0 or progress["goal"] != "target" or any(
             unit["phase"] != "pending" for unit in progress["units"]
         ):

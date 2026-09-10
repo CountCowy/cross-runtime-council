@@ -159,15 +159,19 @@ def classify_registration(record, now, probe=probe_process):
     route = record[3]
     if not isinstance(route, dict):
         return "unknown"
+    try:
+        normalized = admission.validate_persisted_registration(route)
+    except admission.AdmissionError:
+        return "unknown"
     expiry = route.get("lease_expires_epoch")
     if not admission.finite_number(now) or not admission.finite_number(expiry):
         return "unknown"
     if expiry <= now:
         return "expired"
     # Legacy Codex has no holder identity; never invent one from unrelated data.
-    if route.get("runtime") not in ("claude", "opencode"):
+    if normalized.get("runtime") not in ("claude", "opencode"):
         return "unknown"
-    pid = route.get("relay_pid")
+    pid = normalized.get("relay_pid")
     if type(pid) is not int or pid <= 1:
         return "unknown"
     try:
@@ -178,7 +182,7 @@ def classify_registration(record, now, probe=probe_process):
         return "unknown"
     if evidence.status == "absent":
         return "dead"
-    expected = route.get("relay_process_start_epoch")
+    expected = normalized.get("relay_process_start_epoch")
     if (
         evidence.status == "present"
         and type(expected) is int
@@ -287,9 +291,11 @@ def artifact_schema_fields(relative, value):
     parts = relative.parts
     if len(parts) == 3 and parts[0] == "outbox":
         envelope = value.get("envelope")
-        if isinstance(envelope, dict):
-            return (("schema_version", protocol.SCHEMA_VERSION, envelope),)
-        return ()
+        return ((
+            "schema_version",
+            protocol.SCHEMA_VERSION,
+            envelope if isinstance(envelope, dict) else {},
+        ),)
     if parts and parts[0] == "dialogues":
         if len(parts) == 3 and parts[2] in ("manifest.json", "final.json"):
             return (
@@ -385,9 +391,7 @@ def inspect_state(
                         relative, value
                     ):
                         schema = subject.get(key)
-                        if schema is not None and (
-                            type(schema) is not int or schema != expected
-                        ):
+                        if schema is None or type(schema) is not int or schema != expected:
                             artifacts["unsupported_schema_count"] += 1
             except (OSError, ValueError, UnicodeError):
                 artifacts["malformed_count"] += 1

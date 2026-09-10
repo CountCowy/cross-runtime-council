@@ -93,6 +93,18 @@ class LifecyclePlanningTests(unittest.TestCase):
         write_file(lock, b"stable", 0o600)
         return state, payload_parent / "council", opencode
 
+    def actual_release(self, label):
+        output = self.root / (label + "-release")
+        completed = subprocess.run(
+            [sys.executable, "-B", "scripts/build_release.py", "--output", str(output)],
+            cwd=Path(__file__).resolve().parent.parent,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        return output
+
     def test_actual_build_release_output_is_a_positive_oracle(self):
         output = self.root / "actual-release"
         completed = subprocess.run(
@@ -343,7 +355,7 @@ class LifecyclePlanningTests(unittest.TestCase):
         fixture = Fixture(self.root / "rollback")
         fixture.publish_intent()
         fixture.engine.recover(fixture.state)
-        release = lifecycle.validate_release(synthetic_release(self.root, "rollback-target"))
+        release = lifecycle.retained_release(fixture.state, fixture.receipt_id)
         ownership = lifecycle.inspect_ownership(
             fixture.state, fixture.payload, fixture.opencode
         )
@@ -410,6 +422,71 @@ class LifecyclePlanningTests(unittest.TestCase):
         self.assertIn("uncertified_lifecycle_marker", {
             item["code"] for item in preview["blockers"]
         })
+
+    def test_absent_root_plan_and_status_are_read_only(self):
+        release = lifecycle.validate_release(synthetic_release(self.root, "absent-roots"))
+        roots = (
+            self.root / "missing/state",
+            self.root / "missing/payload-parent/council",
+            self.root / "missing/opencode",
+        )
+        before = tree_snapshot(self.root)
+        ownership = lifecycle.inspect_ownership(*roots)
+        preview = lifecycle.plan_ownership("install", release, ownership)
+        observed = lifecycle.status(*roots)
+        self.assertTrue(preview["eligible_for_integration"])
+        self.assertEqual(observed["management"]["status"], "legacy_unmanaged")
+        self.assertEqual(tree_snapshot(self.root), before)
+
+    def test_actual_release_install_update_rollback_and_uninstall(self):
+        release = self.actual_release("integration")
+        roots = (
+            self.root / "integration/state",
+            self.root / "integration/payload-parent/council",
+            self.root / "integration/opencode",
+        )
+        outcomes = []
+        cases = (
+            ("install", release, {"maintenance_window_confirmed": True,
+                                  "transaction_id": "txn-integration-install"}),
+            ("upgrade", release, {"transaction_id": "txn-integration-upgrade"}),
+            ("rollback", None, {"receipt_id": "receipt-integration-install",
+                                "transaction_id": "txn-integration-rollback"}),
+            ("uninstall", None, {"transaction_id": "txn-integration-uninstall"}),
+        )
+        for kind, source_root, arguments in cases:
+            result = lifecycle.execute_operation(kind, source_root, *roots, **arguments)
+            outcomes.append(result["status"])
+            self.assertEqual(result["recovery_command"][1:3], ["-I", "-B"])
+        self.assertEqual(outcomes, ["committed", "committed", "committed", "uninstalled"])
+        terminal = lifecycle.status(*roots)
+        self.assertTrue(terminal["management"]["certified"])
+        self.assertEqual(terminal["management"]["status"], "uninstalled")
+        self.assertTrue((roots[0] / ".council-lifecycle").is_dir())
+        self.assertTrue((roots[0] / "broker.lock").is_file())
+        self.assertFalse(roots[1].exists())
+
+    def test_retained_state_change_cannot_publish_bootstrap_intent(self):
+        release = lifecycle.validate_release(self.actual_release("blocked"))
+        state, payload, opencode = self.roots("blocked-")
+        preview = lifecycle.plan_ownership(
+            "install", release, lifecycle.inspect_ownership(state, payload, opencode)
+        )
+        snapshot = lifecycle.inspect.snapshot_registrations(state)
+        with lifecycle.admission.acquire_writer_lease(state) as lease:
+            bundle = lifecycle.prepare_transaction(
+                preview, release, lease, transaction_id="txn-registration-change"
+            )
+            make_directory(state / "registrations")
+            write_file(state / "registrations/new.json", b"{}\n", 0o600)
+            with self.assertRaisesRegex(
+                lifecycle.LifecyclePlanningError, "retained state changed"
+            ):
+                lifecycle.publish_and_execute(
+                    bundle, lease, lifecycle.inspect, snapshot, now=2_000_000_000
+                )
+        self.assertFalse((state / ".council-lifecycle").exists())
+        self.assertFalse(payload.exists())
 
     def test_planning_case_catalog_records_current_boundary(self):
         catalog = json.loads(
