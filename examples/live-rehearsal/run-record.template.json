@@ -6,7 +6,11 @@
   "created_utc": null,
   "completed_utc": null,
   "tier": null,
-  "claim": null,
+  "claim": {
+    "kind": null,
+    "required_gates": [],
+    "description": null
+  },
   "overall_result": "unobserved",
   "limitations": [
     "Unexecuted template; no release or compatibility claim."
@@ -20,6 +24,7 @@
     "kind": null,
     "account_ref": null,
     "host_inventory_ref": null,
+    "shared_service_refs": [],
     "evidence_refs": []
   },
   "tested_tuple": {
@@ -49,7 +54,8 @@
         "transport": null,
         "sdk_version": null,
         "executable_pin_ref": null,
-        "seat_refs": []
+        "seat_refs": [],
+        "identity_evidence_refs": []
       }
     ],
     "private_roster_ref": null
@@ -57,16 +63,19 @@
   "preflight": {
     "installed_compatibility": {
       "result": "unobserved",
-      "evidence_refs": []
+      "evidence_refs": [],
+      "limitation": "Unresolved template field."
     },
     "loaded_component_identities": {
       "result": "unobserved",
-      "evidence_refs": []
+      "evidence_refs": [],
+      "limitation": "Unresolved template field."
     },
     "exact_seat_readiness": [],
     "aggregate_restoration_health": {
       "result": "unobserved",
-      "evidence_refs": []
+      "evidence_refs": [],
+      "limitation": "Unresolved template field."
     }
   },
   "declared_plan": {
@@ -113,6 +122,7 @@
     "actor_ref": null,
     "required": null,
     "applicable": null,
+    "skip_reason": null,
     "targets": {
       "dialogue_ref": null,
       "envelope_ref": null,
@@ -123,10 +133,11 @@
     },
     "precondition_evidence_refs": [],
     "window": {
-      "start_utc": null,
+      "planned_start_utc": null,
       "deadline_utc": null,
       "quiet_until_utc": null,
-      "end_utc": null,
+      "retry_eligibility_utc": null,
+      "delivery_allowance_end_utc": null,
       "timer_config_ref": null
     },
     "interventions": [],

@@ -28,6 +28,12 @@ WALKTHROUGH = (
     / "core-walkthrough"
     / "walkthrough.py"
 )
+RECORD_TEMPLATE = (
+    Path(__file__).parent.parent
+    / "examples"
+    / "live-rehearsal"
+    / "run-record.template.json"
+)
 
 
 def literal_json(name):
@@ -262,6 +268,150 @@ class RecordValidationTests(unittest.TestCase):
             diagnostics = rehearsal.scan_verified_g3_contradictions(root)
             self.assertEqual(diagnostics[0]["verified_lower_bound"], 2)
             self.assertEqual(diagnostics[0]["expected_count"], 1)
+
+
+class TemplateScaffoldTests(unittest.TestCase):
+    def setUp(self):
+        self.template = json.loads(RECORD_TEMPLATE.read_text(encoding="utf-8"))
+        self.literal_run = literal_json("named-g1-pass.fixture.json")
+
+    def assert_same_keys(self, scaffold, literal):
+        self.assertEqual(set(scaffold), set(literal))
+
+    def test_template_fields_agree_with_independent_literal_record(self):
+        rehearsal.validate_record_structure(self.template, allow_template=True)
+        self.assertEqual(
+            set(self.template) - {"case_template", "evidence_item_template"},
+            set(self.literal_run),
+        )
+        for scaffold, literal in (
+            (self.template["claim"], self.literal_run["claim"]),
+            (self.template["authorization"], self.literal_run["authorization"]),
+            (self.template["isolation"], self.literal_run["isolation"]),
+            (self.template["tested_tuple"], self.literal_run["tested_tuple"]),
+            (self.template["tested_tuple"]["os"], self.literal_run["tested_tuple"]["os"]),
+            (
+                self.template["tested_tuple"]["python"],
+                self.literal_run["tested_tuple"]["python"],
+            ),
+            (
+                self.template["tested_tuple"]["hosts"][0],
+                self.literal_run["tested_tuple"]["hosts"][0],
+            ),
+            (self.template["preflight"], self.literal_run["preflight"]),
+            (
+                self.template["preflight"]["installed_compatibility"],
+                self.literal_run["preflight"]["installed_compatibility"],
+            ),
+            (
+                self.template["preflight"]["loaded_component_identities"],
+                self.literal_run["preflight"]["loaded_component_identities"],
+            ),
+            (
+                self.template["preflight"]["aggregate_restoration_health"],
+                self.literal_run["preflight"]["aggregate_restoration_health"],
+            ),
+            (self.template["declared_plan"], self.literal_run["declared_plan"]),
+            (self.template["gates"][0], self.literal_run["gates"][0]),
+            (
+                self.template["case_template"],
+                self.literal_run["gates"][0]["cases"][0],
+            ),
+            (
+                self.template["case_template"]["targets"],
+                self.literal_run["gates"][0]["cases"][0]["targets"],
+            ),
+            (
+                self.template["case_template"]["window"],
+                self.literal_run["gates"][0]["cases"][0]["window"],
+            ),
+            (
+                self.template["case_template"]["observer"],
+                self.literal_run["gates"][0]["cases"][0]["observer"],
+            ),
+            (self.template["evidence_item_template"], self.literal_run["evidence"][0]),
+            (self.template["retention"], self.literal_run["retention"]),
+            (self.template["cleanup"], self.literal_run["cleanup"]),
+        ):
+            self.assert_same_keys(scaffold, literal)
+        self.assertEqual(self.template["record_kind"], "template")
+        self.assertEqual(self.template["overall_result"], "unobserved")
+        self.assertIsNone(self.template["case_template"]["expected"])
+        self.assertIsNone(self.template["case_template"]["observed"])
+        self.assertEqual(self.template["preflight"]["exact_seat_readiness"], [])
+        self.assertEqual([gate["gate_id"] for gate in self.template["gates"]], list(rehearsal.GATE_IDS))
+        self.assertTrue(all(gate["cases"] == [] for gate in self.template["gates"]))
+
+    def test_actual_init_accepts_template_and_freeze_refuses_unresolved_declaration(self):
+        with tempfile.TemporaryDirectory(prefix="rehearsal-template-") as temporary:
+            parent = Path(temporary)
+            run_root = parent / "run"
+            plan_path = parent / "plan.json"
+            checkpoint_path = parent / "freeze.json"
+            template = copy.deepcopy(self.template)
+            template["run_id"] = "template-init-check"
+            write_json(
+                plan_path,
+                {
+                    "format": "rehearsal-plan/v1",
+                    "context_kind": "fixture",
+                    "run_id": "template-init-check",
+                    "record": template,
+                },
+            )
+            initialized = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "init",
+                    "--private-root",
+                    str(run_root),
+                    "--plan",
+                    str(plan_path),
+                ],
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            self.assertEqual(initialized.returncode, 0, initialized.stderr)
+            self.assertEqual(json.loads(initialized.stdout)["result"], "initialized")
+            write_json(
+                checkpoint_path,
+                {
+                    "format": "rehearsal-checkpoint/v1",
+                    "checkpoint_id": "template-freeze-refusal",
+                    "transition": "freeze_plan",
+                    "expected_previous_digest": None,
+                    "at_utc": "2026-09-10T06:30:00Z",
+                    "actor_ref": "maintainer-one",
+                    "case_id": None,
+                    "evidence_refs": [],
+                    "details": {},
+                },
+            )
+            refused = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "checkpoint",
+                    "--run",
+                    str(run_root),
+                    "--input",
+                    str(checkpoint_path),
+                ],
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            self.assertEqual(refused.returncode, 2, refused.stderr)
+            refusal = json.loads(refused.stdout)
+            self.assertEqual(refusal["error"]["code"], "invalid-opaque-ref")
+            self.assertEqual(refusal["error"]["field"], "record.operator_ref")
+            self.assertEqual(rehearsal.load_state(run_root)["state"], "draft")
+            self.assertFalse((run_root / "frozen-plan.json").exists())
+            self.assertEqual(list((run_root / "checkpoints").iterdir()), [])
 
 
 class GateDecisionTests(unittest.TestCase):
