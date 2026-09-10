@@ -25,10 +25,12 @@ from rehearsal_evidence import (
     assert_no_private_markers,
     assess_arrival_count,
     atomic_write_private,
+    c2_installed_compatibility,
     canonical_json_bytes,
     empty_private_index,
     import_evidence,
     is_nonnegative_int,
+    is_sha256,
     load_private_index,
     normalized_arrivals,
     read_imported_json,
@@ -102,6 +104,12 @@ def _object_id(value, field):
     if not isinstance(value, str) or re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", value) is None:
         raise RehearsalError("invalid-source-object-id", field)
     return value
+
+
+def _artifact_identity(value, field):
+    if is_sha256(value):
+        return value
+    return require_ref(value, field)
 
 
 def _optional_utc(value, field):
@@ -231,8 +239,8 @@ def _validate_tested_tuple(value):
         require_ref(value["captured_diff_ref"], "tested_tuple.captured_diff_ref")
     if value["dirty"] and value["captured_diff_ref"] is None:
         raise RehearsalError("dirty-source-requires-captured-diff", "tested_tuple")
-    require_ref(value["package_id"], "tested_tuple.package_id")
-    require_ref(value["runtime_cohort"], "tested_tuple.runtime_cohort")
+    _artifact_identity(value["package_id"], "tested_tuple.package_id")
+    _artifact_identity(value["runtime_cohort"], "tested_tuple.runtime_cohort")
     _refs(
         value["artifact_identity_evidence_refs"],
         "tested_tuple.artifact_identity_evidence_refs",
@@ -327,6 +335,78 @@ def _validate_preflight(value, seats):
         value["aggregate_restoration_health"],
         "preflight.aggregate_restoration_health",
     )
+
+
+def _live_preflight_evidence(record, run_root, context_kind, verified_index):
+    """Require fixed evidence for live preflight claims this component understands."""
+    if context_kind != "live":
+        return
+    by_ref = {item["ref"]: item for item in verified_index["items"]}
+    installed = record["preflight"]["installed_compatibility"]
+    if installed["result"] == "pass":
+        matching = []
+        for reference in installed["evidence_refs"]:
+            item = by_ref.get(reference)
+            if item is None or item["content_kind"] != "c2_lifecycle_evidence":
+                continue
+            evidence_record = read_imported_json(
+                run_root,
+                reference,
+                "c2_lifecycle_evidence",
+                verified_index,
+            )
+            decision = c2_installed_compatibility(evidence_record)
+            tested = record["tested_tuple"]
+            if (
+                decision["result"] == "pass"
+                and decision["release_manifest_sha256"]
+                == tested["release_manifest_sha256"]
+                and decision["package_id"] == tested["package_id"]
+                and decision["runtime_cohort"] == tested["runtime_cohort"]
+                and reference in tested["artifact_identity_evidence_refs"]
+            ):
+                matching.append(reference)
+        if not matching:
+            raise RehearsalError(
+                "fixed-c2-installed-evidence-required",
+                "preflight.installed_compatibility.evidence_refs",
+            )
+
+    stronger = [
+        (
+            "loaded_component_identities",
+            record["preflight"]["loaded_component_identities"],
+        ),
+        (
+            "aggregate_restoration_health",
+            record["preflight"]["aggregate_restoration_health"],
+        ),
+    ]
+    stronger.extend(
+        (
+            "exact_seat_readiness[%d]" % position,
+            item,
+        )
+        for position, item in enumerate(record["preflight"]["exact_seat_readiness"])
+    )
+    for name, claim in stronger:
+        if claim["result"] != "pass":
+            continue
+        kinds = {
+            by_ref[reference]["content_kind"]
+            for reference in claim["evidence_refs"]
+            if reference in by_ref
+        }
+        if "c2_lifecycle_evidence" in kinds:
+            raise RehearsalError(
+                "c2-artifact-evidence-cannot-support-stronger-preflight",
+                "preflight.%s.evidence_refs" % name,
+            )
+        if kinds and kinds <= {"support_record"}:
+            raise RehearsalError(
+                "generic-support-record-cannot-support-live-preflight",
+                "preflight.%s.evidence_refs" % name,
+            )
 
 
 def _validate_declared_plan(value, seats):
@@ -1317,6 +1397,7 @@ def validate_run(run_root, assess=False):
     context_kind = state["context_kind"]
     validate_record_structure(record)
     verified = verify_evidence(run_root, record["evidence"])
+    _live_preflight_evidence(record, run_root, context_kind, verified["index"])
     assessment = assess_record(
         record,
         run_root=run_root,
@@ -1877,6 +1958,9 @@ def _transition_state(state, checkpoint, record, run_root):
         if case["required"] and case["observer"]["completeness_result"] != "pass":
             raise RehearsalError("required-observer-unqualified", "checkpoint.case_id")
         verified = verify_evidence(run_root, record["evidence"])
+        _live_preflight_evidence(
+            record, run_root, state["context_kind"], verified["index"]
+        )
         known_refs = {item["ref"] for item in verified["index"]["items"]}
         armed_refs = set(case["precondition_evidence_refs"])
         armed_refs.update(case["observer"]["validation_evidence_refs"])
@@ -1942,6 +2026,9 @@ def _transition_state(state, checkpoint, record, run_root):
         if not required.issubset(set(state["completed_cases"])):
             raise RehearsalError("required-cases-not-sealed")
         verified = verify_evidence(run_root, record["evidence"])
+        _live_preflight_evidence(
+            record, run_root, state["context_kind"], verified["index"]
+        )
         assess_record(
             record,
             run_root=run_root,
@@ -2162,6 +2249,7 @@ def export_run(
         raise RehearsalError("fixture-artifacts-require-fixture-context")
     record = strict_load_json(run_root / "record.json", "record")
     verified = verify_evidence(run_root, record["evidence"])
+    _live_preflight_evidence(record, run_root, context_kind, verified["index"])
     assessment = assess_record(
         record,
         run_root=run_root,

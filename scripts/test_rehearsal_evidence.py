@@ -83,6 +83,97 @@ class StrictJsonTests(unittest.TestCase):
             evidence.validate_collector_result(result)
 
 
+class C2LifecycleEvidenceTests(unittest.TestCase):
+    def setUp(self):
+        self.record = literal_json("c2-lifecycle-evidence-v1.json")
+
+    def test_literal_fixture_binds_fixed_c2_interface_and_supports_installed_only(self):
+        self.assertEqual(evidence.validate_c2_lifecycle_evidence(self.record), self.record)
+        decision = evidence.c2_installed_compatibility(self.record)
+        self.assertEqual(decision["result"], "pass")
+        self.assertEqual(decision["release_manifest_sha256"], evidence.C2_RELEASE_MANIFEST_SHA256)
+        self.assertEqual(decision["package_id"], evidence.C2_PACKAGE_ID)
+        self.assertEqual(decision["runtime_cohort"], evidence.C2_RUNTIME_COHORT)
+        self.assertNotIn("roots", decision)
+        self.assertNotIn("source", decision)
+
+    def test_interface_source_format_unit_and_identity_drift_refuse(self):
+        mutations = (
+            ("source-commit", lambda value: value["source"].update(commit="0" * 40)),
+            (
+                "interface-packet",
+                lambda value: value["source"].update(interface_packet_sha256="0" * 64),
+            ),
+            (
+                "source-hash",
+                lambda value: value["source"]["source_sha256"].update(
+                    {"scripts/council_recover.py": "0" * 64}
+                ),
+            ),
+            (
+                "recovery-format",
+                lambda value: value["recovery_description"].update(recovery_format=2),
+            ),
+            (
+                "operation-omission",
+                lambda value: value["recovery_description"]["required_operations"].pop(),
+            ),
+            ("unit-omission", lambda value: value["status"]["units"].pop()),
+            (
+                "receipt-binding",
+                lambda value: value["status"]["management"]["summary"].update(
+                    receipt_sha256="2" * 64
+                ),
+            ),
+            (
+                "manifest-identity",
+                lambda value: value["manifest_identity"].update(sha256="2" * 64),
+            ),
+            (
+                "receipt-provenance",
+                lambda value: value["artifact_inspection"].update(
+                    provenance="manifest_observed"
+                ),
+            ),
+        )
+        for name, mutate in mutations:
+            with self.subTest(name=name):
+                changed = copy.deepcopy(self.record)
+                mutate(changed)
+                with self.assertRaises(EvidenceError):
+                    evidence.validate_c2_lifecycle_evidence(changed)
+
+    def test_uninstalled_incomplete_and_mismatched_artifacts_never_pass(self):
+        uninstalled = copy.deepcopy(self.record)
+        uninstalled["status"]["management"]["status"] = "uninstalled"
+        uninstalled["receipt_identity"]["outcome"] = "uninstalled"
+        self.assertEqual(
+            evidence.c2_installed_compatibility(uninstalled)["result"], "fail"
+        )
+
+        incomplete = copy.deepcopy(self.record)
+        for key in ("status", "receipt_identity"):
+            incomplete[key]["units"][0].update(exists=False, sha256=None)
+        self.assertEqual(
+            evidence.c2_installed_compatibility(incomplete)["result"], "fail"
+        )
+
+        mismatched = copy.deepcopy(self.record)
+        mismatched["artifact_inspection"].update(
+            verified_count=evidence.C2_ARTIFACT_COUNT - 1,
+            mismatch_count=1,
+            artifact_cohort_compatible=False,
+        )
+        self.assertEqual(
+            evidence.c2_installed_compatibility(mismatched)["result"], "fail"
+        )
+
+        recovery_required = copy.deepcopy(self.record)
+        recovery_required["status"]["management"]["status"] = "recovery_required"
+        with self.assertRaisesRegex(EvidenceError, "unsupported-c2-management-status"):
+            evidence.validate_c2_lifecycle_evidence(recovery_required)
+
+
 class CollectorQualificationTests(unittest.TestCase):
     def setUp(self):
         self.result = literal_json("collector-result.fixture.json")
@@ -362,6 +453,32 @@ class PrivateEvidenceTests(unittest.TestCase):
         with self.assertRaises(EvidenceError):
             evidence.import_evidence(self.root, self.spec(invalid, "collector_result"))
         self.assertEqual(list((self.root / "objects").iterdir()), [])
+
+    def test_c2_import_requires_complete_fixed_bundle_before_copy(self):
+        source = FIXTURES / "c2-lifecycle-evidence-v1.json"
+        imported = evidence.import_evidence(
+            self.root, self.spec(source, "c2_lifecycle_evidence")
+        )
+        self.assertEqual(len(imported), 1)
+        self.assertNotIn("/Users/fixture", json.dumps(imported))
+        value = evidence.read_imported_json(
+            self.root, imported[0]["ref"], "c2_lifecycle_evidence"
+        )
+        self.assertEqual(evidence.c2_installed_compatibility(value)["result"], "pass")
+
+        other = Path(self.temporary.name) / "other-run"
+        private_dir(other)
+        private_dir(other / "objects")
+        private_file(other / "private-index.json", evidence.empty_private_index())
+        description = Path(self.temporary.name) / "description-only.json"
+        description.write_bytes(
+            evidence.canonical_json_bytes(literal_json("c2-lifecycle-evidence-v1.json")["recovery_description"])
+        )
+        with self.assertRaises(EvidenceError):
+            evidence.import_evidence(
+                other, self.spec(description, "c2_lifecycle_evidence")
+            )
+        self.assertEqual(list((other / "objects").iterdir()), [])
 
 
 class NoLiveSurfaceTests(unittest.TestCase):

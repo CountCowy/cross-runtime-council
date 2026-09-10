@@ -414,6 +414,151 @@ class TemplateScaffoldTests(unittest.TestCase):
             self.assertEqual(list((run_root / "checkpoints").iterdir()), [])
 
 
+class C2PreflightEvidenceTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="rehearsal-c2-preflight-")
+        self.root = Path(self.temporary.name) / "run"
+        self.root.mkdir(mode=0o700)
+        (self.root / "objects").mkdir(mode=0o700)
+        write_json(self.root / "private-index.json", evidence.empty_private_index())
+        self.c2_path = FIXTURES / "c2-lifecycle-evidence-v1.json"
+
+    def tearDown(self):
+        self.temporary.cleanup()
+
+    def import_item(self, source, kind):
+        spec = {
+            "format": "rehearsal-import/v1",
+            "collected_utc": "2026-09-08T20:00:00Z",
+            "items": [
+                {
+                    "source": str(source),
+                    "source_identity": "explicit-c2-fixture",
+                    "classification": "redacted_record",
+                    "content_kind": kind,
+                    "transformations": ["none"],
+                    "qualification_refs": [],
+                    "selection_scope": "test_dialogue",
+                    "reviewed_safe": True,
+                }
+            ],
+        }
+        return evidence.import_evidence(self.root, spec)[0]
+
+    def record_for(self, imported):
+        record = literal_json("named-g1-pass.fixture.json")
+        record = replace_ref(record, "ev-a", imported["ref"])
+        record["evidence"] = [imported]
+        record["tested_tuple"].update(
+            release_manifest_sha256=evidence.C2_RELEASE_MANIFEST_SHA256,
+            package_id=evidence.C2_PACKAGE_ID,
+            runtime_cohort=evidence.C2_RUNTIME_COHORT,
+        )
+        record["preflight"]["loaded_component_identities"] = {
+            "result": "unobserved",
+            "evidence_refs": [],
+            "limitation": "C2 artifact evidence does not observe loaded host bytes.",
+        }
+        record["preflight"]["aggregate_restoration_health"] = {
+            "result": "unobserved",
+            "evidence_refs": [],
+            "limitation": "C2 artifact evidence does not observe host restoration.",
+        }
+        record["preflight"]["exact_seat_readiness"][0].update(
+            result="unobserved",
+            evidence_refs=[],
+            limitation="C2 artifact evidence does not authenticate a seat.",
+        )
+        return record
+
+    def test_fixed_c2_record_supports_only_matching_installed_compatibility(self):
+        imported = self.import_item(self.c2_path, "c2_lifecycle_evidence")
+        record = self.record_for(imported)
+        rehearsal.validate_record_structure(record)
+        verified = evidence.verify_evidence(self.root, record["evidence"])
+        rehearsal._live_preflight_evidence(
+            record, self.root, "live", verified["index"]
+        )
+
+        for field, value in (
+            ("release_manifest_sha256", "0" * 64),
+            ("package_id", "1" * 64),
+            ("runtime_cohort", "2" * 64),
+        ):
+            with self.subTest(field=field):
+                changed = copy.deepcopy(record)
+                changed["tested_tuple"][field] = value
+                with self.assertRaisesRegex(
+                    RehearsalError, "fixed-c2-installed-evidence-required"
+                ):
+                    rehearsal._live_preflight_evidence(
+                        changed, self.root, "live", verified["index"]
+                    )
+
+    def test_c2_record_cannot_promote_loaded_restoration_or_seat_claims(self):
+        imported = self.import_item(self.c2_path, "c2_lifecycle_evidence")
+        record = self.record_for(imported)
+        verified = evidence.verify_evidence(self.root, record["evidence"])
+        claims = (
+            "loaded_component_identities",
+            "aggregate_restoration_health",
+            "exact_seat_readiness",
+        )
+        for name in claims:
+            with self.subTest(claim=name):
+                changed = copy.deepcopy(record)
+                target = (
+                    changed["preflight"]["exact_seat_readiness"][0]
+                    if name == "exact_seat_readiness"
+                    else changed["preflight"][name]
+                )
+                target.update(
+                    result="pass", evidence_refs=[imported["ref"]], limitation=None
+                )
+                with self.assertRaisesRegex(
+                    RehearsalError,
+                    "c2-artifact-evidence-cannot-support-stronger-preflight",
+                ):
+                    rehearsal._live_preflight_evidence(
+                        changed, self.root, "live", verified["index"]
+                    )
+
+    def test_generic_support_record_cannot_supply_live_installed_claim(self):
+        source = Path(self.temporary.name) / "generic.json"
+        source.write_text('{"self_declared":true}\n', encoding="utf-8")
+        c2_imported = self.import_item(self.c2_path, "c2_lifecycle_evidence")
+        imported = self.import_item(source, "support_record")
+        record = self.record_for(c2_imported)
+        record["evidence"].append(imported)
+        record["preflight"]["installed_compatibility"]["evidence_refs"] = [
+            imported["ref"]
+        ]
+        record["tested_tuple"]["artifact_identity_evidence_refs"] = [imported["ref"]]
+        verified = evidence.verify_evidence(self.root, record["evidence"])
+        with self.assertRaisesRegex(
+            RehearsalError, "fixed-c2-installed-evidence-required"
+        ):
+            rehearsal._live_preflight_evidence(
+                record, self.root, "live", verified["index"]
+            )
+
+        record["preflight"]["installed_compatibility"]["evidence_refs"] = [
+            c2_imported["ref"]
+        ]
+        record["tested_tuple"]["artifact_identity_evidence_refs"] = [
+            c2_imported["ref"]
+        ]
+        record["preflight"]["loaded_component_identities"].update(
+            result="pass", evidence_refs=[imported["ref"]], limitation=None
+        )
+        with self.assertRaisesRegex(
+            RehearsalError, "generic-support-record-cannot-support-live-preflight"
+        ):
+            rehearsal._live_preflight_evidence(
+                record, self.root, "live", verified["index"]
+            )
+
+
 class GateDecisionTests(unittest.TestCase):
     def test_g1_chain_and_negative_controls(self):
         chain = {
@@ -852,6 +997,85 @@ class RunLifecycleTests(unittest.TestCase):
             rehearsal.import_run_evidence(self.run_root, spec)
         self.assertEqual(list((self.run_root / "objects").iterdir()), [])
 
+    def test_generic_support_record_cannot_arm_a_live_case(self):
+        self.plan["context_kind"] = "live"
+        write_json(self.plan_path, self.plan)
+        self.prepare_imported_run(classification="redacted_record")
+        frozen = rehearsal.checkpoint_run(
+            self.run_root, self.checkpoint("freeze_plan", None)
+        )
+        previous = frozen["state"]["previous_checkpoint_digest"]
+        authorized = rehearsal.checkpoint_run(
+            self.run_root, self.checkpoint("record_authorization", previous)
+        )
+        previous = authorized["state"]["previous_checkpoint_digest"]
+        with self.assertRaisesRegex(
+            RehearsalError, "fixed-c2-installed-evidence-required"
+        ):
+            rehearsal.checkpoint_run(
+                self.run_root,
+                self.checkpoint(
+                    "arm_case",
+                    previous,
+                    "case-g1",
+                    {"intervention_action": "observe-wake"},
+                ),
+            )
+        self.assertEqual(rehearsal.load_state(self.run_root)["state"], "authorized_preflight")
+
+    def test_c2_artifact_record_cannot_arm_stronger_live_preflight(self):
+        self.plan["context_kind"] = "live"
+        write_json(self.plan_path, self.plan)
+        rehearsal.init_run(self.run_root, self.plan_path)
+        source = FIXTURES / "c2-lifecycle-evidence-v1.json"
+        spec = {
+            "format": "rehearsal-import/v1",
+            "collected_utc": "2026-09-08T19:58:00Z",
+            "items": [
+                {
+                    "source": str(source),
+                    "source_identity": "explicit-c2-fixture",
+                    "classification": "redacted_record",
+                    "content_kind": "c2_lifecycle_evidence",
+                    "transformations": ["none"],
+                    "qualification_refs": [],
+                    "selection_scope": "test_dialogue",
+                    "reviewed_safe": True,
+                }
+            ],
+        }
+        imported = rehearsal.import_run_evidence(self.run_root, spec)[0]
+        record = replace_ref(copy.deepcopy(self.record), "ev-a", imported["ref"])
+        record["evidence"] = [imported]
+        record["tested_tuple"].update(
+            release_manifest_sha256=evidence.C2_RELEASE_MANIFEST_SHA256,
+            package_id=evidence.C2_PACKAGE_ID,
+            runtime_cohort=evidence.C2_RUNTIME_COHORT,
+        )
+        write_json(self.run_root / "record.json", record)
+        frozen = rehearsal.checkpoint_run(
+            self.run_root, self.checkpoint("freeze_plan", None)
+        )
+        previous = frozen["state"]["previous_checkpoint_digest"]
+        authorized = rehearsal.checkpoint_run(
+            self.run_root, self.checkpoint("record_authorization", previous)
+        )
+        previous = authorized["state"]["previous_checkpoint_digest"]
+        with self.assertRaisesRegex(
+            RehearsalError,
+            "c2-artifact-evidence-cannot-support-stronger-preflight",
+        ):
+            rehearsal.checkpoint_run(
+                self.run_root,
+                self.checkpoint(
+                    "arm_case",
+                    previous,
+                    "case-g1",
+                    {"intervention_action": "observe-wake"},
+                ),
+            )
+        self.assertEqual(rehearsal.load_state(self.run_root)["state"], "authorized_preflight")
+
     def test_deliberate_skip_checkpoint_preserves_reason_and_completes_case(self):
         record, _imported = self.prepare_imported_run()
         frozen = rehearsal.checkpoint_run(
@@ -964,7 +1188,12 @@ class RunLifecycleTests(unittest.TestCase):
         self.assertTrue(json.loads(nonpassing.stdout)["record_valid"])
 
     def test_live_export_then_separate_cleanup_checkpoint(self):
-        record, imported, previous = self.advance_to_assessment_ready(context_kind="live")
+        # This test isolates export/cleanup ordering. Fixed loaded-host and seat
+        # evidence readers remain in the D-dependent integration slice.
+        with mock.patch.object(rehearsal, "_live_preflight_evidence"):
+            record, imported, previous = self.advance_to_assessment_ready(
+                context_kind="live"
+            )
         destination = self.base / "export"
         with self.assertRaisesRegex(
             RehearsalError, "fixture-artifacts-require-fixture-context"
@@ -974,7 +1203,8 @@ class RunLifecycleTests(unittest.TestCase):
                 self.base / "wrong-fixture-export",
                 allow_fixture_artifacts=True,
             )
-        exported = rehearsal.export_run(self.run_root, destination)
+        with mock.patch.object(rehearsal, "_live_preflight_evidence"):
+            exported = rehearsal.export_run(self.run_root, destination)
         self.assertEqual(exported["result"], "pass")
         self.assertFalse((destination / "private-index.json").exists())
         self.assertNotIn("private-session-fixture", (destination / "summary.json").read_text())

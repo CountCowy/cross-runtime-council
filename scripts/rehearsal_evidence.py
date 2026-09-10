@@ -30,6 +30,59 @@ PRIVATE_INDEX_FORMAT = "rehearsal-private-index/v1"
 IMPORT_FORMAT = "rehearsal-import/v1"
 COLLECTOR_RESULT_FORMAT = "collector-result/v1"
 COLLECTOR_QUALIFICATION_FORMAT = "collector-qualification/v1"
+C2_LIFECYCLE_EVIDENCE_FORMAT = "c2-lifecycle-evidence/v1"
+
+C2_SOURCE_COMMIT = "453acae08d4e95ccff8a7b8d72bf14fa97f19bdf"
+C2_INTERFACE_PACKET_SHA256 = (
+    "9f21554b3d3b771681ce15d35049f8c17399c9b580fc5174aad41f30ce0f78fe"
+)
+C2_RELEASE_MANIFEST_SHA256 = (
+    "83b73cff12f5e10599497efc5d29e3887faae3ac33cb106752027e94c1b98ef2"
+)
+C2_PACKAGE_ID = "fdf7ec2fbe4d9198c16b7b578d3b92f46265d421d2634e36820db07197cd2622"
+C2_RUNTIME_COHORT = "8181ae63906b42e4af670df1613dede4d194c48991594e3b8ea9b961877831b5"
+C2_ARTIFACT_COUNT = 89
+C2_SOURCE_SHA256 = {
+    "scripts/council_admission.py": (
+        "ed47cfc644cf255f53ef3cf9f576f9ee01c9ecb24978670fd66b2021a53afc33"
+    ),
+    "scripts/council_inspect.py": (
+        "07d4d6cd9f141a51d09eed133cb61c5649f7273ae6aa0d497938fa9eb7a68908"
+    ),
+    "scripts/council_lifecycle.py": (
+        "843b4dc9bc015e551f4e9daab069596ccbcfc69882e711b7bfa8b44c5b7248f0"
+    ),
+    "scripts/council_recover.py": (
+        "ab81f83ff2abd217d96fa9a114624f903ab941d617ae24b4d9457be403251c2b"
+    ),
+}
+C2_UNIT_IDS = (
+    "payload",
+    "opencode-plugin",
+    "opencode-protocol",
+    "opencode-registry",
+    "opencode-tool",
+)
+C2_REQUIRED_OPERATIONS = (
+    "classify-filesystem-v1",
+    "preserve-initial-v1",
+    "materialize-selected-v1",
+    "activate-five-units-v1",
+    "verify-receipt-v1",
+    "publish-admission-v1",
+)
+C2_RUNTIME_SOURCES = (
+    "scripts/council_admission.py",
+    "scripts/council_inspect.py",
+    "scripts/council_protocol.py",
+    "scripts/council_protocol.ts",
+    "scripts/council.py",
+    "scripts/council_mcp.py",
+    "scripts/council_opencode.py",
+    "scripts/opencode_council_plugin.ts",
+    "scripts/opencode_delivery_registry.ts",
+    "scripts/tools/council.ts",
+)
 
 RESULTS = {"pass", "fail", "unobserved", "skipped"}
 CLASSIFICATIONS = {"redacted_record", "private_capture"}
@@ -38,6 +91,7 @@ CONTENT_KINDS = {
     "support_record",
     "collector_result",
     "collector_qualification",
+    "c2_lifecycle_evidence",
     "roster_mapping",
     "redacted_record",
 }
@@ -572,6 +626,10 @@ def import_evidence(run_root, spec):
                 validate_collector_result(strict_load_json(source, field + ".source"))
             elif item["content_kind"] == "collector_qualification":
                 validate_collector_qualification(strict_load_json(source, field + ".source"))
+            elif item["content_kind"] == "c2_lifecycle_evidence":
+                validate_c2_lifecycle_evidence(
+                    strict_load_json(source, field + ".source")
+                )
             reference = _new_evidence_ref(existing_refs)
             existing_refs.add(reference)
             new_refs.add(reference)
@@ -689,6 +747,360 @@ def read_imported_json(run_root, reference, expected_kind, verified_index=None):
     if item["content_kind"] != expected_kind:
         raise EvidenceError("evidence-kind-mismatch", "evidence_ref")
     return strict_load_json(Path(run_root) / "objects" / item["object_name"], "evidence_object")
+
+
+def _c2_source(value):
+    require_keys(
+        value,
+        ("commit", "interface_packet_sha256", "source_sha256"),
+        field="c2_lifecycle.source",
+    )
+    if value["commit"] != C2_SOURCE_COMMIT:
+        raise EvidenceError("c2-source-commit-mismatch", "c2_lifecycle.source.commit")
+    if value["interface_packet_sha256"] != C2_INTERFACE_PACKET_SHA256:
+        raise EvidenceError(
+            "c2-interface-packet-mismatch",
+            "c2_lifecycle.source.interface_packet_sha256",
+        )
+    sources = value["source_sha256"]
+    if not isinstance(sources, dict) or sources != C2_SOURCE_SHA256:
+        raise EvidenceError("c2-source-identity-mismatch", "c2_lifecycle.source.source_sha256")
+
+
+def _c2_recovery_description(value):
+    expected = {
+        "interface": "council-lifecycle-recovery",
+        "recovery_format": 1,
+        "formats": {
+            "admission": [1],
+            "plan": [1],
+            "journal": [1],
+            "receipt": [1],
+        },
+        "metadata_limit_bytes": 1048576,
+        "id_pattern": "[A-Za-z0-9][A-Za-z0-9_-]{0,95}",
+        "python_minimum": [3, 9],
+        "required_python_flags": ["-I", "-B"],
+        "unit_ids": list(C2_UNIT_IDS),
+        "required_operations": list(C2_REQUIRED_OPERATIONS),
+        "goals": ["target", "prior"],
+    }
+    if value != expected:
+        raise EvidenceError(
+            "c2-recovery-description-mismatch",
+            "c2_lifecycle.recovery_description",
+        )
+
+
+def _c2_fixed_roots(value):
+    require_keys(value, ("state", "payload", "opencode"), field="c2_lifecycle.status.roots")
+    suffixes = {
+        "state": (".claude", "peer-consults"),
+        "payload": (".claude", "skills", "council"),
+        "opencode": (".config", "opencode"),
+    }
+    prefixes = []
+    for name, suffix in suffixes.items():
+        field = "c2_lifecycle.status.roots." + name
+        root = require_string(value[name], field, limit=4096)
+        path = Path(root)
+        if not path.is_absolute() or str(path) != root:
+            raise EvidenceError("c2-root-not-normalized-absolute", field)
+        parts = path.parts
+        if len(parts) <= len(suffix) or tuple(parts[-len(suffix) :]) != suffix:
+            raise EvidenceError("c2-root-layout-mismatch", field)
+        prefixes.append(parts[: -len(suffix)])
+    if prefixes[1:] != prefixes[:-1]:
+        raise EvidenceError("c2-root-home-mismatch", "c2_lifecycle.status.roots")
+
+
+def _c2_summary(value, field):
+    require_keys(
+        value,
+        ("receipt_id", "receipt_sha256", "package_id", "runtime_cohort"),
+        field=field,
+    )
+    require_ref(value["receipt_id"], field + ".receipt_id")
+    for name in ("receipt_sha256", "package_id", "runtime_cohort"):
+        require_sha256(value[name], field + "." + name)
+
+
+def _c2_units(value, field):
+    units = require_list(value, field, len(C2_UNIT_IDS))
+    if len(units) != len(C2_UNIT_IDS):
+        raise EvidenceError("c2-unit-inventory-mismatch", field)
+    result = []
+    for position, expected_id in enumerate(C2_UNIT_IDS):
+        unit_field = "%s[%d]" % (field, position)
+        unit = require_keys(
+            units[position], ("unit_id", "exists", "sha256"), field=unit_field
+        )
+        if unit["unit_id"] != expected_id:
+            raise EvidenceError("c2-unit-inventory-mismatch", unit_field + ".unit_id")
+        require_bool(unit["exists"], unit_field + ".exists")
+        if unit["sha256"] is not None:
+            require_sha256(unit["sha256"], unit_field + ".sha256")
+        if unit["exists"] != (unit["sha256"] is not None):
+            raise EvidenceError("c2-unit-state-mismatch", unit_field)
+        result.append(
+            {
+                "unit_id": unit["unit_id"],
+                "exists": unit["exists"],
+                "sha256": unit["sha256"],
+            }
+        )
+    return result
+
+
+def _c2_status(value):
+    require_keys(
+        value,
+        ("status_format", "roots", "management", "payload_cache_count", "units"),
+        field="c2_lifecycle.status",
+    )
+    if require_nonnegative_int(
+        value["status_format"], "c2_lifecycle.status.status_format"
+    ) != 1:
+        raise EvidenceError("unsupported-format", "c2_lifecycle.status.status_format")
+    _c2_fixed_roots(value["roots"])
+    management = require_keys(
+        value["management"],
+        ("status", "certified", "reason", "summary"),
+        field="c2_lifecycle.status.management",
+    )
+    if management["status"] not in {"committed", "uninstalled"}:
+        raise EvidenceError(
+            "unsupported-c2-management-status",
+            "c2_lifecycle.status.management.status",
+        )
+    if management["certified"] is not True or management["reason"] is not None:
+        raise EvidenceError(
+            "c2-terminal-state-not-receipt-certified",
+            "c2_lifecycle.status.management",
+        )
+    if not isinstance(management["summary"], dict):
+        raise EvidenceError(
+            "c2-terminal-summary-required",
+            "c2_lifecycle.status.management.summary",
+        )
+    _c2_summary(management["summary"], "c2_lifecycle.status.management.summary")
+    require_nonnegative_int(
+        value["payload_cache_count"], "c2_lifecycle.status.payload_cache_count"
+    )
+    return _c2_units(value["units"], "c2_lifecycle.status.units")
+
+
+def _c2_receipt_identity(value):
+    require_keys(
+        value,
+        (
+            "receipt_format",
+            "receipt_id",
+            "receipt_sha256",
+            "outcome",
+            "package_id",
+            "runtime_cohort",
+            "source_manifest_sha256",
+            "reader_support_sha256",
+            "recovery",
+            "artifact_count",
+            "units",
+        ),
+        field="c2_lifecycle.receipt_identity",
+    )
+    if require_nonnegative_int(
+        value["receipt_format"], "c2_lifecycle.receipt_identity.receipt_format"
+    ) != 1:
+        raise EvidenceError(
+            "unsupported-format", "c2_lifecycle.receipt_identity.receipt_format"
+        )
+    require_ref(value["receipt_id"], "c2_lifecycle.receipt_identity.receipt_id")
+    for name in (
+        "receipt_sha256",
+        "package_id",
+        "runtime_cohort",
+        "source_manifest_sha256",
+        "reader_support_sha256",
+    ):
+        require_sha256(value[name], "c2_lifecycle.receipt_identity." + name)
+    if value["outcome"] not in {"committed", "uninstalled"}:
+        raise EvidenceError(
+            "unsupported-c2-receipt-outcome", "c2_lifecycle.receipt_identity.outcome"
+        )
+    recovery = require_keys(
+        value["recovery"],
+        ("format", "tool_sha256"),
+        field="c2_lifecycle.receipt_identity.recovery",
+    )
+    if require_nonnegative_int(
+        recovery["format"], "c2_lifecycle.receipt_identity.recovery.format"
+    ) != 1:
+        raise EvidenceError(
+            "unsupported-format", "c2_lifecycle.receipt_identity.recovery.format"
+        )
+    require_sha256(
+        recovery["tool_sha256"], "c2_lifecycle.receipt_identity.recovery.tool_sha256"
+    )
+    require_nonnegative_int(
+        value["artifact_count"], "c2_lifecycle.receipt_identity.artifact_count"
+    )
+    return _c2_units(value["units"], "c2_lifecycle.receipt_identity.units")
+
+
+def _c2_manifest_identity(value):
+    require_keys(
+        value,
+        (
+            "format",
+            "sha256",
+            "package_id",
+            "runtime_cohort",
+            "artifact_count",
+            "runtime_sources",
+        ),
+        field="c2_lifecycle.manifest_identity",
+    )
+    if require_nonnegative_int(value["format"], "c2_lifecycle.manifest_identity.format") != 1:
+        raise EvidenceError("unsupported-format", "c2_lifecycle.manifest_identity.format")
+    for name in ("sha256", "package_id", "runtime_cohort"):
+        require_sha256(value[name], "c2_lifecycle.manifest_identity." + name)
+    require_nonnegative_int(
+        value["artifact_count"], "c2_lifecycle.manifest_identity.artifact_count"
+    )
+    runtime_sources = require_list(
+        value["runtime_sources"],
+        "c2_lifecycle.manifest_identity.runtime_sources",
+        len(C2_RUNTIME_SOURCES),
+    )
+    if runtime_sources != list(C2_RUNTIME_SOURCES):
+        raise EvidenceError(
+            "c2-runtime-source-inventory-mismatch",
+            "c2_lifecycle.manifest_identity.runtime_sources",
+        )
+
+
+def _c2_artifact_inspection(value):
+    require_keys(
+        value,
+        (
+            "provenance",
+            "verified_count",
+            "mismatch_count",
+            "artifact_cohort_compatible",
+            "package_id",
+            "runtime_cohort",
+        ),
+        field="c2_lifecycle.artifact_inspection",
+    )
+    if value["provenance"] != "managed_receipt_manifest":
+        raise EvidenceError(
+            "c2-artifact-provenance-not-receipt-backed",
+            "c2_lifecycle.artifact_inspection.provenance",
+        )
+    for name in ("verified_count", "mismatch_count"):
+        require_nonnegative_int(value[name], "c2_lifecycle.artifact_inspection." + name)
+    require_bool(
+        value["artifact_cohort_compatible"],
+        "c2_lifecycle.artifact_inspection.artifact_cohort_compatible",
+    )
+    for name in ("package_id", "runtime_cohort"):
+        require_sha256(value[name], "c2_lifecycle.artifact_inspection." + name)
+
+
+def validate_c2_lifecycle_evidence(record):
+    """Validate the fixed C2 artifact-only evidence projection without invoking C2."""
+    require_keys(
+        record,
+        (
+            "format",
+            "source",
+            "recovery_description",
+            "status",
+            "receipt_identity",
+            "manifest_identity",
+            "artifact_inspection",
+        ),
+        field="c2_lifecycle",
+    )
+    if record["format"] != C2_LIFECYCLE_EVIDENCE_FORMAT:
+        raise EvidenceError("unsupported-format", "c2_lifecycle.format")
+    _c2_source(record["source"])
+    _c2_recovery_description(record["recovery_description"])
+    status_units = _c2_status(record["status"])
+    receipt_units = _c2_receipt_identity(record["receipt_identity"])
+    _c2_manifest_identity(record["manifest_identity"])
+    _c2_artifact_inspection(record["artifact_inspection"])
+
+    status = record["status"]
+    summary = status["management"]["summary"]
+    receipt = record["receipt_identity"]
+    manifest = record["manifest_identity"]
+    inspection = record["artifact_inspection"]
+    if status["management"]["status"] != receipt["outcome"]:
+        raise EvidenceError("c2-outcome-mismatch", "c2_lifecycle.receipt_identity.outcome")
+    if summary != {
+        "receipt_id": receipt["receipt_id"],
+        "receipt_sha256": receipt["receipt_sha256"],
+        "package_id": receipt["package_id"],
+        "runtime_cohort": receipt["runtime_cohort"],
+    }:
+        raise EvidenceError("c2-receipt-summary-mismatch", "c2_lifecycle.receipt_identity")
+    if status_units != receipt_units:
+        raise EvidenceError("c2-receipt-unit-mismatch", "c2_lifecycle.receipt_identity.units")
+    identities = (
+        manifest["package_id"],
+        receipt["package_id"],
+        inspection["package_id"],
+        manifest["runtime_cohort"],
+        receipt["runtime_cohort"],
+        inspection["runtime_cohort"],
+    )
+    if identities != (
+        C2_PACKAGE_ID,
+        C2_PACKAGE_ID,
+        C2_PACKAGE_ID,
+        C2_RUNTIME_COHORT,
+        C2_RUNTIME_COHORT,
+        C2_RUNTIME_COHORT,
+    ):
+        raise EvidenceError("c2-release-identity-mismatch", "c2_lifecycle")
+    if (
+        manifest["sha256"] != C2_RELEASE_MANIFEST_SHA256
+        or receipt["source_manifest_sha256"] != manifest["sha256"]
+        or manifest["artifact_count"] != C2_ARTIFACT_COUNT
+        or receipt["artifact_count"] != manifest["artifact_count"]
+    ):
+        raise EvidenceError("c2-manifest-identity-mismatch", "c2_lifecycle.manifest_identity")
+    return record
+
+
+def c2_installed_compatibility(record):
+    """Return the one preflight claim the fixed C2 evidence may support."""
+    record = validate_c2_lifecycle_evidence(record)
+    status = record["status"]
+    receipt = record["receipt_identity"]
+    manifest = record["manifest_identity"]
+    inspection = record["artifact_inspection"]
+    if status["management"]["status"] != "committed":
+        limitation = "c2-lifecycle-state-is-not-committed"
+    elif not all(unit["exists"] for unit in status["units"]):
+        limitation = "c2-five-unit-installation-is-incomplete"
+    elif (
+        inspection["verified_count"] != manifest["artifact_count"]
+        or inspection["mismatch_count"] != 0
+        or inspection["artifact_cohort_compatible"] is not True
+    ):
+        limitation = "c2-artifact-verification-is-not-complete"
+    else:
+        limitation = None
+    return {
+        "result": "pass" if limitation is None else "fail",
+        "release_manifest_sha256": manifest["sha256"],
+        "package_id": manifest["package_id"],
+        "runtime_cohort": manifest["runtime_cohort"],
+        "receipt_id": receipt["receipt_id"],
+        "limitation": limitation,
+    }
 
 
 def _validate_runtime(value, field):
