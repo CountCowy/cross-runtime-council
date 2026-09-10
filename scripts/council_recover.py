@@ -61,7 +61,7 @@ REQUIRED_OPERATIONS = (
     "publish-admission-v1",
 )
 KINDS = {"install", "upgrade", "rollback", "uninstall"}
-OWNERSHIP = {"created", "already_owned", "matching_preexisting_unowned"}
+OWNERSHIP = {"absent", "created", "already_owned", "matching_preexisting_unowned"}
 VOLATILE_STATE_NAMES = {"broker.lock", "broker.sock", "broker.log"}
 
 
@@ -488,8 +488,6 @@ def validate_admission(value: Any, roots: Optional[Dict[str, str]] = None) -> Di
             checked_hash(committed[name], "committed %s" % name)
     if status_value == "committed" and committed is None:
         raise RecoveryError("committed admission requires a receipt summary")
-    if status_value == "uninstalled" and committed is not None:
-        raise RecoveryError("uninstalled admission cannot claim installed artifacts")
     return value
 
 
@@ -566,13 +564,13 @@ def _leaf_state(state_value: Dict[str, Any], relative: str) -> Dict[str, Any]:
     return {"exists": True, "sha256": artifact["sha256"], "mode": artifact["mode"], "kind": artifact["kind"]}
 
 
-def _receipt_artifact_keys(units: List[Dict[str, Any]]) -> List[Tuple[str, str]]:
+def _receipt_artifact_keys(units: List[Dict[str, Any]], goal: str = "target") -> List[Tuple[str, str]]:
     keys = []
     for unit in units:
         relatives = {"."}
         if unit["unit_id"] == "payload":
             relatives.update(item["path"] for item in unit["initial"]["artifacts"])
-            relatives.update(item["path"] for item in unit["target"]["artifacts"])
+            relatives.update(item["path"] for item in unit[goal]["artifacts"])
         keys.extend((unit["unit_id"], relative) for relative in sorted(relatives))
     return keys
 
@@ -602,8 +600,9 @@ def validate_receipt_shape(value: Any, label: str = "receipt") -> Dict[str, Any]
         raise RecoveryError("%s must be an object" % label)
     exact_keys(
         value,
-        ("receipt_format", "receipt_id", "transaction_id", "roots", "package_id",
-         "runtime_cohort", "source_manifest_sha256", "prior_receipt", "recovery",
+        ("receipt_format", "receipt_id", "transaction_id", "outcome", "roots",
+         "root_identities", "lock_identity", "package_id", "runtime_cohort",
+         "source_manifest_sha256", "prior_receipt", "recovery",
          "reader_support_sha256", "artifacts"),
         label,
     )
@@ -611,7 +610,16 @@ def validate_receipt_shape(value: Any, label: str = "receipt") -> Dict[str, Any]
         raise RecoveryError("unsupported receipt format")
     checked_id(value["receipt_id"], label + " receipt_id")
     checked_id(value["transaction_id"], label + " transaction_id")
+    if value["outcome"] not in ("committed", "uninstalled"):
+        raise RecoveryError("%s outcome is unsupported" % label)
     validate_roots(value["roots"])
+    root_identities = value["root_identities"]
+    if not isinstance(root_identities, dict):
+        raise RecoveryError("%s root_identities must be an object" % label)
+    exact_keys(root_identities, ("state", "payload_parent", "opencode"), label + " root_identities")
+    for name in root_identities:
+        validate_identity(root_identities[name], "%s %s identity" % (label, name))
+    validate_identity(value["lock_identity"], label + " lock_identity")
     for name in ("package_id", "runtime_cohort", "source_manifest_sha256", "reader_support_sha256"):
         checked_hash(value[name], "%s %s" % (label, name))
     prior = value["prior_receipt"]
@@ -646,6 +654,14 @@ def validate_receipt_shape(value: Any, label: str = "receipt") -> Dict[str, Any]
         _validate_leaf(artifact["intended"], item_label + " intended")
         if artifact["ownership"] not in OWNERSHIP or artifact["local_change"] != "none":
             raise RecoveryError("%s has unsupported ownership/local-change disposition" % item_label)
+        if artifact["ownership"] == "absent" and (
+            artifact["prior"]["exists"] or artifact["intended"]["exists"]
+        ):
+            raise RecoveryError("%s absent disposition contains an artifact" % item_label)
+        if artifact["ownership"] == "created" and (
+            artifact["prior"]["exists"] or not artifact["intended"]["exists"]
+        ):
+            raise RecoveryError("%s created disposition is inconsistent" % item_label)
         seen.append((unit_order[artifact["unit_id"]], relative))
     if seen != sorted(seen) or len(seen) != len(set(seen)):
         raise RecoveryError("%s artifacts must be in fixed unique order" % label)
@@ -655,13 +671,163 @@ def validate_receipt_shape(value: Any, label: str = "receipt") -> Dict[str, Any]
     return value
 
 
-def validate_receipt(value: Any, plan: Dict[str, Any]) -> Dict[str, Any]:
+def _receipt_provenance_paths(state_root: Path, receipt_id: str) -> Tuple[Path, Path]:
+    receipts = state_root / ".council-lifecycle/v1/receipts"
+    return (
+        receipts / (receipt_id + ".manifest.json"),
+        receipts / (receipt_id + ".reader-support.json"),
+    )
+
+
+def _receipt_unit_states(receipt: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    roots = validate_roots(receipt["roots"])
+    grouped = {unit_id: [] for unit_id in UNIT_IDS}
+    for artifact in receipt["artifacts"]:
+        grouped[artifact["unit_id"]].append(artifact)
+    states = {}
+    for unit_id in UNIT_IDS:
+        records = grouped[unit_id]
+        roots_found = [item for item in records if item["path"] == "."]
+        if len(roots_found) != 1:
+            raise RecoveryError("terminal receipt must contain one root record per unit")
+        destination = _unit_destination(roots, unit_id)
+        for item in records:
+            expected_destination = destination if item["path"] == "." else destination / item["path"]
+            if item["destination"] != str(expected_destination):
+                raise RecoveryError("terminal receipt artifact escapes its fixed unit")
+            if item["ownership"] == "matching_preexisting_unowned":
+                if unit_id == "payload" or item["prior"] != item["intended"] or not item["intended"]["exists"]:
+                    raise RecoveryError("terminal receipt has invalid unowned preservation")
+            elif receipt["outcome"] == "uninstalled" and item["intended"]["exists"]:
+                raise RecoveryError("uninstalled receipt retains an owned artifact")
+        root = roots_found[0]["intended"]
+        kind = "directory" if unit_id == "payload" else "file"
+        if root["kind"] not in (kind, None):
+            raise RecoveryError("terminal receipt unit kind is invalid")
+        if unit_id != "payload":
+            if len(records) != 1:
+                raise RecoveryError("external terminal unit must have one artifact record")
+            states[unit_id] = (
+                {"exists": True, "kind": "file", "sha256": root["sha256"],
+                 "mode": root["mode"], "artifacts": []}
+                if root["exists"] else absent_state("file")
+            )
+            continue
+        if not root["exists"]:
+            if any(item["intended"]["exists"] for item in records[1:]):
+                raise RecoveryError("absent payload receipt contains present children")
+            states[unit_id] = absent_state("directory")
+            continue
+        artifacts = []
+        for item in records:
+            if item["path"] == "." or not item["intended"]["exists"]:
+                continue
+            leaf = item["intended"]
+            artifacts.append(
+                {"path": item["path"], "kind": leaf["kind"],
+                 "sha256": leaf["sha256"], "mode": leaf["mode"]}
+            )
+        artifacts.sort(key=lambda item: item["path"])
+        states[unit_id] = {
+            "exists": True,
+            "kind": "directory",
+            "sha256": _inventory_digest(artifacts),
+            "mode": root["mode"],
+            "artifacts": artifacts,
+        }
+        validate_state(states[unit_id], "terminal payload", "directory", clean=True)
+    return states
+
+
+def _validate_receipt_provenance(state_root: Path, receipt: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    receipt_id = receipt["receipt_id"]
+    manifest_path, support_path = _receipt_provenance_paths(state_root, receipt_id)
+    manifest, manifest_data = read_object(manifest_path, "terminal source manifest")
+    support, support_data = read_object(support_path, "terminal reader support")
+    if sha256_bytes(manifest_data) != receipt["source_manifest_sha256"]:
+        raise RecoveryError("terminal source manifest digest mismatch")
+    if sha256_bytes(support_data) != receipt["reader_support_sha256"]:
+        raise RecoveryError("terminal reader support digest mismatch")
+    manifest = validate_release_manifest(manifest)
+    support = validate_reader_support(support)
+    if (manifest["package_id"] != receipt["package_id"] or
+            manifest["runtime_cohort"] != receipt["runtime_cohort"] or
+            support["package_id"] != receipt["package_id"] or
+            support["runtime_cohort"] != receipt["runtime_cohort"]):
+        raise RecoveryError("terminal provenance identity differs from receipt")
+    tool_path = state_root / ".council-lifecycle/v1/recovery" / (
+        receipt["recovery"]["tool_sha256"] + ".py"
+    )
+    if sha256_file(tool_path) != receipt["recovery"]["tool_sha256"]:
+        raise RecoveryError("terminal recovery tool digest mismatch")
+    return manifest, support
+
+
+def _verify_terminal_receipt(state_root: Path, summary: Dict[str, Any]) -> Dict[str, Any]:
+    receipt_id = summary["receipt_id"]
+    receipt_path = state_root / ".council-lifecycle/v1/receipts" / (receipt_id + ".json")
+    receipt, receipt_data = read_object(receipt_path, "terminal receipt")
+    validate_receipt_shape(receipt, "terminal receipt")
+    if sha256_bytes(receipt_data) != summary["receipt_sha256"]:
+        raise RecoveryError("terminal receipt digest mismatch")
+    if (receipt["receipt_id"] != receipt_id or receipt["package_id"] != summary["package_id"]
+            or receipt["runtime_cohort"] != summary["runtime_cohort"]):
+        raise RecoveryError("terminal receipt summary mismatch")
+    roots = validate_roots(receipt["roots"])
+    if roots["state"] != str(state_root):
+        raise RecoveryError("terminal receipt belongs to another state root")
+    actual_identities = {
+        "state": directory_identity(state_root, "state root"),
+        "payload_parent": directory_identity(Path(roots["payload"]).parent, "payload parent"),
+        "opencode": directory_identity(Path(roots["opencode"]), "OpenCode root"),
+    }
+    if actual_identities != receipt["root_identities"]:
+        raise RecoveryError("terminal receipt root identity changed")
+    if lock_path_identity(state_root / "broker.lock") != receipt["lock_identity"]:
+        raise RecoveryError("terminal receipt broker.lock identity changed")
+    manifest, _support = _validate_receipt_provenance(state_root, receipt)
+    states = _receipt_unit_states(receipt)
+    for unit_id, expected in states.items():
+        if not state_matches(_unit_destination(roots, unit_id), expected):
+            raise RecoveryError("terminal artifact set is not coherent: %s" % unit_id)
+    if receipt["outcome"] == "committed":
+        payload_files = {
+            "payload/" + item["path"]: item["sha256"]
+            for item in states["payload"]["artifacts"]
+            if item["kind"] == "file"
+        }
+        manifest_payload = {
+            name: value for name, value in manifest["artifacts"].items()
+            if name.startswith("payload/")
+        }
+        if payload_files != manifest_payload:
+            raise RecoveryError("terminal payload differs from source manifest")
+        for unit_id, manifest_name in EXTERNAL_MANIFEST_PATHS.items():
+            if (not states[unit_id]["exists"] or
+                    states[unit_id]["sha256"] != manifest["artifacts"][manifest_name]):
+                raise RecoveryError("terminal external artifact differs from source manifest")
+    return receipt
+
+
+def validate_receipt(value: Any, plan: Dict[str, Any], goal: str = "target") -> Dict[str, Any]:
     validate_receipt_shape(value, "receipt")
     receipt_id = value["receipt_id"]
-    if receipt_id != plan["target_receipt_id"] or value["transaction_id"] != plan["transaction_id"]:
+    expected_id = (
+        plan["target_receipt_id"] if goal == "target"
+        else plan["outcomes"]["prior"]["committed"]["receipt_id"]
+    )
+    if receipt_id != expected_id or value["transaction_id"] != plan["transaction_id"]:
         raise RecoveryError("receipt identity differs from plan")
+    if value["outcome"] != plan["outcomes"][goal]["status"]:
+        raise RecoveryError("receipt outcome differs from plan")
     if validate_roots(value["roots"]) != plan["roots"]:
         raise RecoveryError("receipt roots differ from plan")
+    expected_root_identities = {
+        name: plan["root_identities"][name]
+        for name in ("state", "payload_parent", "opencode")
+    }
+    if value["root_identities"] != expected_root_identities or value["lock_identity"] != plan["lock_identity"]:
+        raise RecoveryError("receipt root/lock identities differ from plan")
     manifest = plan["_manifest"]
     if value["package_id"] != manifest["package_id"] or value["runtime_cohort"] != manifest["runtime_cohort"]:
         raise RecoveryError("receipt package identity differs from source manifest")
@@ -680,7 +846,7 @@ def validate_receipt(value: Any, plan: Dict[str, Any]) -> Dict[str, Any]:
     if recovery != {"format": RECOVERY_FORMAT, "tool_sha256": plan["recovery"]["tool_sha256"]}:
         raise RecoveryError("receipt recovery identity differs from plan")
     artifacts = value["artifacts"]
-    expected_keys = _receipt_artifact_keys(plan["units"])
+    expected_keys = _receipt_artifact_keys(plan["units"], goal)
     if not isinstance(artifacts, list) or len(artifacts) != len(expected_keys):
         raise RecoveryError("receipt artifact closure differs from plan")
     unit_map = {unit["unit_id"]: unit for unit in plan["units"]}
@@ -695,7 +861,7 @@ def validate_receipt(value: Any, plan: Dict[str, Any]) -> Dict[str, Any]:
         if artifact["destination"] != str(destination):
             raise RecoveryError("%s destination differs from the fixed unit path" % label)
         prior_leaf = _leaf_state(unit["initial"], relative)
-        target_leaf = _leaf_state(unit["target"], relative)
+        target_leaf = _leaf_state(unit[goal], relative)
         if artifact["prior"] != prior_leaf or artifact["intended"] != target_leaf:
             raise RecoveryError("%s state differs from the plan" % label)
         if artifact["ownership"] not in OWNERSHIP or artifact["local_change"] != "none":
@@ -704,6 +870,8 @@ def validate_receipt(value: Any, plan: Dict[str, Any]) -> Dict[str, Any]:
             raise RecoveryError("%s cannot call an existing artifact created" % label)
         if artifact["ownership"] == "created" and not target_leaf["exists"]:
             raise RecoveryError("%s cannot create an absent artifact" % label)
+        if artifact["ownership"] == "absent" and (prior_leaf["exists"] or target_leaf["exists"]):
+            raise RecoveryError("%s absent disposition contains an artifact" % label)
         if artifact["ownership"] == "matching_preexisting_unowned" and prior_leaf != target_leaf:
             raise RecoveryError("%s would mutate an unowned artifact" % label)
         if artifact["ownership"] == "matching_preexisting_unowned" and unit_id == "payload":
@@ -737,7 +905,12 @@ def _validate_prior_ownership(plan: Dict[str, Any], prior_receipt: Optional[Dict
     for key in _receipt_artifact_keys(plan["units"]):
         current = _leaf_state(unit_map[key[0]]["initial"], key[1])
         if current["exists"] and key not in previous:
-            raise RecoveryError("current artifact is absent from the prior ownership receipt")
+            cache_path = PurePosixPath(key[1])
+            known_cache = key[0] == "payload" and (
+                "__pycache__" in cache_path.parts or key[1].endswith((".pyc", ".pyo"))
+            )
+            if not known_cache:
+                raise RecoveryError("current artifact is absent from the prior ownership receipt")
         if key not in previous:
             continue
         old_ownership = previous[key]["ownership"]
@@ -913,7 +1086,8 @@ def validate_plan(plan_path: Path, *, pre_intent: bool,
         plan,
         ("plan_format", "transaction_id", "kind", "roots", "root_identities", "lock_identity",
          "prior_admission", "outcomes", "target_receipt_id", "source_manifest", "proposed_receipt",
-         "recovery", "required_operations", "allowed_goals", "units", "retained_state", "reader_support"),
+         "proposed_prior_receipt", "recovery", "required_operations", "allowed_goals", "units",
+         "retained_state", "reader_support"),
         "plan",
     )
     if exact_int(plan["plan_format"], "plan format", 1) != PLAN_FORMAT:
@@ -962,6 +1136,7 @@ def validate_plan(plan_path: Path, *, pre_intent: bool,
                 prior_receipt.get("package_id") != prior_committed["package_id"] or
                 prior_receipt.get("runtime_cohort") != prior_committed["runtime_cohort"]):
             raise RecoveryError("prior receipt summary mismatch")
+        _validate_receipt_provenance(Path(plan["roots"]["state"]), prior_receipt)
         prior_receipt_value = prior_receipt
     outcomes = plan["outcomes"]
     if not isinstance(outcomes, dict):
@@ -1003,6 +1178,14 @@ def validate_plan(plan_path: Path, *, pre_intent: bool,
     if proposed["path"] != "receipt.json":
         raise RecoveryError("proposed receipt path is not fixed")
     checked_hash(proposed["sha256"], "proposed receipt sha256")
+    prior_proposed = plan["proposed_prior_receipt"]
+    if prior_proposed is not None:
+        if not isinstance(prior_proposed, dict):
+            raise RecoveryError("proposed_prior_receipt must be an object or null")
+        exact_keys(prior_proposed, ("path", "sha256"), "proposed_prior_receipt")
+        if prior_proposed["path"] != "prior-receipt.json":
+            raise RecoveryError("proposed prior receipt path is not fixed")
+        checked_hash(prior_proposed["sha256"], "proposed prior receipt sha256")
     recovery = plan["recovery"]
     if not isinstance(recovery, dict):
         raise RecoveryError("recovery must be an object")
@@ -1048,6 +1231,10 @@ def validate_plan(plan_path: Path, *, pre_intent: bool,
     if sha256_bytes(support_data) != support_reference["sha256"]:
         raise RecoveryError("reader support digest mismatch")
     plan["_reader_support"] = validate_reader_support(support_value)
+    plan["_provenance_data"] = {
+        "manifest": manifest_data,
+        "reader_support": support_data,
+    }
     if plan["_reader_support"]["package_id"] != plan["_manifest"]["package_id"] or plan["_reader_support"]["runtime_cohort"] != plan["_manifest"]["runtime_cohort"]:
         raise RecoveryError("reader evidence differs from source manifest identity")
     _manifest_target_matches(plan)
@@ -1058,17 +1245,37 @@ def validate_plan(plan_path: Path, *, pre_intent: bool,
     validate_receipt(receipt, plan)
     _validate_prior_ownership(plan, prior_receipt_value, receipt)
     target = outcomes["target"]
-    if target["status"] == "committed":
-        expected_summary = {
-            "receipt_id": plan["target_receipt_id"],
-            "receipt_sha256": proposed["sha256"],
+    expected_summary = {
+        "receipt_id": plan["target_receipt_id"],
+        "receipt_sha256": proposed["sha256"],
+        "package_id": plan["_manifest"]["package_id"],
+        "runtime_cohort": plan["_manifest"]["runtime_cohort"],
+    }
+    if target["committed"] != expected_summary:
+        raise RecoveryError("target admission summary differs from proposed receipt")
+    plan["_receipt_data"] = {"target": receipt_data, "prior": None}
+    if outcomes["prior"] is None:
+        if prior_proposed is not None:
+            raise RecoveryError("plan has a prior receipt without a prior outcome")
+    elif prior_proposed is not None:
+        prior_candidate, prior_candidate_data = read_object(
+            plan_path.parent / prior_proposed["path"], "proposed prior receipt"
+        )
+        if sha256_bytes(prior_candidate_data) != prior_proposed["sha256"]:
+            raise RecoveryError("proposed prior receipt digest mismatch")
+        validate_receipt(prior_candidate, plan, "prior")
+        prior_summary = outcomes["prior"]["committed"]
+        expected_prior_summary = {
+            "receipt_id": prior_candidate["receipt_id"],
+            "receipt_sha256": prior_proposed["sha256"],
             "package_id": plan["_manifest"]["package_id"],
             "runtime_cohort": plan["_manifest"]["runtime_cohort"],
         }
-        if target["committed"] != expected_summary:
-            raise RecoveryError("target admission summary differs from proposed receipt")
-    elif target["committed"] is not None:
-        raise RecoveryError("uninstalled target has an installed summary")
+        if prior_summary != expected_prior_summary:
+            raise RecoveryError("prior admission summary differs from proposed prior receipt")
+        plan["_receipt_data"]["prior"] = prior_candidate_data
+    elif outcomes["prior"] != plan["prior_admission"] or outcomes["prior"]["committed"] is None:
+        raise RecoveryError("prior outcome lacks immutable receipt evidence")
     _root_identity_checks(plan)
     lock_path = Path(plan["roots"]["state"]) / "broker.lock"
     if lock_path_identity(lock_path) != plan["lock_identity"]:
@@ -1627,43 +1834,49 @@ def _update_progress(path: Path, progress: Dict[str, Any], failpoint: Failpoint,
     _atomic_json(path, progress, failpoint, label)
 
 
+def _publish_terminal_receipt(plan: Dict[str, Any], goal: str, state_root: Path,
+                              failpoint: Failpoint) -> None:
+    outcome = plan["outcomes"][goal]
+    summary = outcome["committed"]
+    if summary is None:
+        raise RecoveryError("terminal outcome lacks a certifying receipt summary")
+    receipt_data = plan["_receipt_data"][goal]
+    if receipt_data is None:
+        _verify_terminal_receipt(state_root, summary)
+        return
+    receipt = parse_json_bytes(receipt_data, "%s receipt" % goal)
+    receipt_id = receipt["receipt_id"]
+    manifest_path, support_path = _receipt_provenance_paths(state_root, receipt_id)
+    _write_immutable(
+        manifest_path, plan["_provenance_data"]["manifest"], failpoint,
+        "%s-source-manifest" % goal,
+    )
+    _write_immutable(
+        support_path, plan["_provenance_data"]["reader_support"], failpoint,
+        "%s-reader-support" % goal,
+    )
+    receipt_path = state_root / ".council-lifecycle/v1/receipts" / (receipt_id + ".json")
+    _write_immutable(receipt_path, receipt_data, failpoint, "%s-receipt" % goal)
+    if sha256_file(receipt_path) != summary["receipt_sha256"]:
+        raise RecoveryError("published %s receipt verification failed" % goal)
+    _verify_terminal_receipt(state_root, summary)
+
+
 def _terminal_result(admission: Dict[str, Any], state_root: Path, abort: bool,
                      lease_adapter: Any, failpoint: Failpoint = None) -> Dict[str, Any]:
     if abort:
         raise RecoveryError("a terminal transaction cannot be changed to prior")
     _lease_facts(lease_adapter, state_root)
-    if admission["status"] == "uninstalled":
-        _sync_directory(
-            state_root / ".council-lifecycle", failpoint, "terminal-admission-reconcile"
-        )
-        return {"status": "uninstalled", "state_root": str(state_root), "verified": True}
     summary = admission["committed"]
-    receipt_path = state_root / ".council-lifecycle/v1/receipts" / (summary["receipt_id"] + ".json")
-    receipt, receipt_data = read_object(receipt_path, "committed receipt")
-    if sha256_bytes(receipt_data) != summary["receipt_sha256"]:
-        raise RecoveryError("committed receipt digest mismatch")
-    if receipt.get("package_id") != summary["package_id"] or receipt.get("runtime_cohort") != summary["runtime_cohort"]:
-        raise RecoveryError("committed receipt summary mismatch")
-    transaction_id = checked_id(receipt.get("transaction_id"), "committed transaction_id")
-    plan_path = state_root / ".council-lifecycle/v1/transactions" / transaction_id / "plan.json"
-    plan, _plan_data, proposed, proposed_data = validate_plan(
-        plan_path, pre_intent=False, require_progress=False
-    )
-    if receipt != proposed or receipt_data != proposed_data:
-        raise RecoveryError("committed receipt differs from its immutable proposal")
-    if admission == plan["outcomes"]["target"]:
-        goal = "target"
-    elif admission == plan["outcomes"]["prior"]:
-        goal = "prior"
-    else:
-        raise RecoveryError("terminal admission is not an allowed plan outcome")
-    for unit in plan["units"]:
-        if not state_matches(Path(unit["destination"]), unit[goal]):
-            raise RecoveryError("terminal artifact set is not coherent")
+    if summary is None:
+        raise RecoveryError("terminal lifecycle marker has no certifying ownership receipt")
+    receipt = _verify_terminal_receipt(state_root, summary)
+    if receipt["outcome"] != admission["status"]:
+        raise RecoveryError("terminal receipt outcome differs from admission status")
     _sync_directory(
         state_root / ".council-lifecycle", failpoint, "terminal-admission-reconcile"
     )
-    return {"status": "committed", "state_root": str(state_root), "verified": True,
+    return {"status": admission["status"], "state_root": str(state_root), "verified": True,
             "receipt_id": summary["receipt_id"], "receipt_sha256": summary["receipt_sha256"]}
 
 
@@ -1679,7 +1892,7 @@ def _completed_outcome_result(outcome: Dict[str, Any], state_root: Path) -> Dict
 
 def check_plan(plan_path: Path) -> Dict[str, Any]:
     plan, plan_data, _receipt, receipt_data = validate_plan(plan_path, pre_intent=True)
-    return {
+    result = {
         "status": "plan-valid",
         "transaction_id": plan["transaction_id"],
         "plan_sha256": sha256_bytes(plan_data),
@@ -1687,6 +1900,9 @@ def check_plan(plan_path: Path) -> Dict[str, Any]:
         "units": list(UNIT_IDS),
         "allowed_goals": plan["allowed_goals"],
     }
+    if plan["_receipt_data"]["prior"] is not None:
+        result["prior_receipt_sha256"] = sha256_bytes(plan["_receipt_data"]["prior"])
+    return result
 
 
 def _execute_with_lease(state_root: Path, lease_adapter: Any, *, abort: bool = False,
@@ -1702,7 +1918,7 @@ def _execute_with_lease(state_root: Path, lease_adapter: Any, *, abort: bool = F
         return _terminal_result(current, state_root, abort, lease_adapter, failpoint)
     transaction_id = current["transaction_id"]
     plan_path = state_root / ".council-lifecycle/v1/transactions" / transaction_id / "plan.json"
-    plan, plan_data, _receipt, receipt_data = validate_plan(plan_path, pre_intent=False)
+    plan, plan_data, _receipt, _receipt_data = validate_plan(plan_path, pre_intent=False)
     if plan["transaction_id"] != transaction_id or plan["prior_admission"]["committed"] != current["committed"]:
         raise RecoveryError("pending admission does not bind the prepared plan")
     if plan["root_identities"]["state"] != facts["root_identity"] or plan["lock_identity"] != facts["lock_identity"]:
@@ -1730,17 +1946,7 @@ def _execute_with_lease(state_root: Path, lease_adapter: Any, *, abort: bool = F
             raise RecoveryError("coherent five-unit verification failed")
     _guard(plan, lease_adapter)
     outcome = plan["outcomes"][goal]
-    if goal == "target":
-        receipts = state_root / ".council-lifecycle/v1/receipts"
-        receipt_path = receipts / (plan["target_receipt_id"] + ".json")
-        _write_immutable(receipt_path, receipt_data, failpoint, "final-receipt")
-        if sha256_file(receipt_path) != plan["proposed_receipt"]["sha256"]:
-            raise RecoveryError("published receipt verification failed")
-    elif outcome["status"] == "committed":
-        summary = outcome["committed"]
-        prior_receipt = state_root / ".council-lifecycle/v1/receipts" / (summary["receipt_id"] + ".json")
-        if sha256_file(prior_receipt) != summary["receipt_sha256"]:
-            raise RecoveryError("prior receipt is unavailable or changed")
+    _publish_terminal_receipt(plan, goal, state_root, failpoint)
     _guard(plan, lease_adapter)
     _atomic_json(admission_path, outcome, failpoint, "terminal-admission")
     verified, _ = read_object(admission_path, "terminal admission")

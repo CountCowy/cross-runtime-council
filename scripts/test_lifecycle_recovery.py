@@ -8,6 +8,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shutil
 import stat
 import subprocess
 import sys
@@ -104,11 +105,19 @@ class Fixture:
             "payload": str(self.payload.absolute()),
             "opencode": str(self.opencode.resolve()),
         }
+        self.receipt_root_identities = {
+            "state": source.physical_identity(self.state),
+            "payload_parent": source.physical_identity(self.payload_parent),
+            "opencode": source.physical_identity(self.opencode),
+        }
+        self.receipt_lock_identity = source.physical_identity(self.lock)
         if initial:
             make_directory(self.payload)
             write_payload(self.payload, "prior", cache=cache)
             for unit_id, relative in source.EXTERNAL_DESTINATIONS.items():
                 write_file(self.opencode / relative, ("prior-%s\n" % unit_id).encode())
+        elif preserve_unowned:
+            write_file(self.opencode / "council-plugin.ts", b"preexisting-unowned\n")
         self.units = []
         for unit_id in source.UNIT_IDS:
             destination = source._unit_destination(self.roots, unit_id)
@@ -127,19 +136,25 @@ class Fixture:
                 else:
                     write_file(prior_object, destination.read_bytes())
                 prior_state = source.capture_state(prior_object, kind)
+            elif initial_state["exists"]:
+                prior_object = Path(objects["prior"])
+                write_file(prior_object, destination.read_bytes())
+                prior_state = source.capture_state(prior_object, kind)
             target_object = Path(objects["target"])
             preserve_this = preserve_unowned and unit_id == "opencode-plugin"
-            if not target_uninstalled:
+            if preserve_this:
+                write_file(target_object, destination.read_bytes())
+            elif not target_uninstalled:
                 if kind == "directory":
                     write_payload(target_object, "target")
                 else:
                     write_file(target_object, ("target-%s\n" % unit_id).encode())
-                target_state = source.capture_state(target_object, kind)
-            elif preserve_this:
-                write_file(target_object, destination.read_bytes())
-                target_state = source.capture_state(target_object, kind)
             else:
                 target_state = source.absent_state(kind)
+            target_state = (
+                source.capture_state(target_object, kind)
+                if target_object.exists() else source.absent_state(kind)
+            )
             self.units.append(
                 {
                     "unit_id": unit_id,
@@ -189,13 +204,30 @@ class Fixture:
         if initial:
             prior_receipt_id = "receipt-prior"
             prior_receipt_path = self.v1 / "receipts" / (prior_receipt_id + ".json")
+            prior_manifest_artifacts = {}
+            for unit in self.units:
+                if unit["unit_id"] == "payload":
+                    for item in unit["prior"]["artifacts"]:
+                        if item["kind"] == "file":
+                            prior_manifest_artifacts["payload/" + item["path"]] = item["sha256"]
+                else:
+                    prior_manifest_artifacts[source.EXTERNAL_MANIFEST_PATHS[unit["unit_id"]]] = unit["prior"]["sha256"]
+            prior_manifest = {
+                "format": 1,
+                "package_id": self.package_id,
+                "runtime_cohort": self.runtime_cohort,
+                "artifacts": dict(sorted(prior_manifest_artifacts.items())),
+                "opencode_sources": source.OPENCODE_SOURCES,
+            }
+            prior_manifest_path = self.v1 / "receipts" / (prior_receipt_id + ".manifest.json")
+            write_json(prior_manifest_path, prior_manifest)
             prior_artifacts = []
             for unit in self.units:
                 relatives = ["."]
                 if unit["unit_id"] == "payload":
-                    relatives.extend(item["path"] for item in unit["initial"]["artifacts"])
+                    relatives.extend(item["path"] for item in unit["prior"]["artifacts"])
                 for relative in sorted(relatives):
-                    intended = source._leaf_state(unit["initial"], relative)
+                    intended = source._leaf_state(unit["prior"], relative)
                     kind = "directory" if unit["unit_id"] == "payload" and relative == "." else None
                     prior_leaf = {"exists": False, "sha256": None, "mode": None, "kind": kind}
                     destination = Path(unit["destination"]) if relative == "." else Path(unit["destination"]) / relative
@@ -215,16 +247,24 @@ class Fixture:
                 "receipt_format": 1,
                 "receipt_id": prior_receipt_id,
                 "transaction_id": "txn-prior",
+                "outcome": "committed",
                 "roots": self.roots,
+                "root_identities": self.receipt_root_identities,
+                "lock_identity": self.receipt_lock_identity,
                 "package_id": self.package_id,
                 "runtime_cohort": self.runtime_cohort,
-                "source_manifest_sha256": file_hash(self.manifest_path),
+                "source_manifest_sha256": file_hash(prior_manifest_path),
                 "prior_receipt": None,
                 "recovery": {"format": 1, "tool_sha256": self.tool_digest},
                 "reader_support_sha256": file_hash(self.support_path),
                 "artifacts": prior_artifacts,
             }
             write_json(prior_receipt_path, prior_receipt)
+            shutil.copyfile(
+                self.support_path,
+                self.v1 / "receipts" / (prior_receipt_id + ".reader-support.json"),
+            )
+            (self.v1 / "receipts" / (prior_receipt_id + ".reader-support.json")).chmod(0o600)
             prior_committed = {
                 "receipt_id": prior_receipt_id,
                 "receipt_sha256": file_hash(prior_receipt_path),
@@ -269,7 +309,10 @@ class Fixture:
             "receipt_format": 1,
             "receipt_id": self.receipt_id,
             "transaction_id": self.transaction_id,
+            "outcome": "uninstalled" if target_uninstalled else "committed",
             "roots": self.roots,
+            "root_identities": self.receipt_root_identities,
+            "lock_identity": self.receipt_lock_identity,
             "package_id": self.package_id,
             "runtime_cohort": self.runtime_cohort,
             "source_manifest_sha256": file_hash(self.manifest_path),
@@ -295,8 +338,62 @@ class Fixture:
             "roots": self.roots,
             "status": "uninstalled" if target_uninstalled else "committed",
             "transaction_id": None,
-            "committed": None if target_uninstalled else committed,
+            "committed": committed,
         }
+        if initial:
+            prior_outcome = self.prior_admission
+            proposed_prior = None
+        else:
+            prior_receipt_id = self.receipt_id + "-prior"
+            prior_artifacts = []
+            for unit_id, relative in source._receipt_artifact_keys(self.units, "prior"):
+                unit = next(item for item in self.units if item["unit_id"] == unit_id)
+                prior_leaf = source._leaf_state(unit["initial"], relative)
+                intended = source._leaf_state(unit["prior"], relative)
+                destination = Path(unit["destination"]) if relative == "." else Path(unit["destination"]) / relative
+                prior_artifacts.append(
+                    {
+                        "unit_id": unit_id,
+                        "path": relative,
+                        "destination": str(destination),
+                        "prior": prior_leaf,
+                        "intended": intended,
+                        "ownership": (
+                            "matching_preexisting_unowned" if prior_leaf["exists"] else "absent"
+                        ),
+                        "local_change": "none",
+                    }
+                )
+            prior_receipt = {
+                "receipt_format": 1,
+                "receipt_id": prior_receipt_id,
+                "transaction_id": self.transaction_id,
+                "outcome": "uninstalled",
+                "roots": self.roots,
+                "root_identities": self.receipt_root_identities,
+                "lock_identity": self.receipt_lock_identity,
+                "package_id": self.package_id,
+                "runtime_cohort": self.runtime_cohort,
+                "source_manifest_sha256": file_hash(self.manifest_path),
+                "prior_receipt": None,
+                "recovery": {"format": 1, "tool_sha256": self.tool_digest},
+                "reader_support_sha256": file_hash(self.support_path),
+                "artifacts": prior_artifacts,
+            }
+            prior_candidate_path = self.transaction / "prior-receipt.json"
+            write_json(prior_candidate_path, prior_receipt)
+            prior_summary = {
+                "receipt_id": prior_receipt_id,
+                "receipt_sha256": file_hash(prior_candidate_path),
+                "package_id": self.package_id,
+                "runtime_cohort": self.runtime_cohort,
+            }
+            prior_outcome = copy.deepcopy(self.prior_admission)
+            prior_outcome["committed"] = prior_summary
+            proposed_prior = {
+                "path": "prior-receipt.json",
+                "sha256": file_hash(prior_candidate_path),
+            }
         self.plan = {
             "plan_format": 1,
             "transaction_id": self.transaction_id,
@@ -315,10 +412,11 @@ class Fixture:
             },
             "lock_identity": source.physical_identity(self.lock),
             "prior_admission": self.prior_admission,
-            "outcomes": {"target": target_admission, "prior": self.prior_admission},
+            "outcomes": {"target": target_admission, "prior": prior_outcome},
             "target_receipt_id": self.receipt_id,
             "source_manifest": {"path": "source-manifest.json", "sha256": file_hash(self.manifest_path)},
             "proposed_receipt": {"path": "receipt.json", "sha256": file_hash(self.receipt_path)},
+            "proposed_prior_receipt": proposed_prior,
             "recovery": {
                 "format": 1,
                 "tool_path": str(self.tool),
@@ -350,6 +448,226 @@ class Fixture:
         pending["status"] = "recovery_required"
         pending["transaction_id"] = self.transaction_id
         write_json(self.lifecycle / "admission.json", pending)
+
+    def prepare_managed_transaction(self, kind: str) -> None:
+        if kind not in ("upgrade", "uninstall"):
+            raise ValueError(kind)
+        prior_admission = json.loads((self.lifecycle / "admission.json").read_text())
+        if prior_admission["status"] != "committed":
+            raise ValueError("managed transaction requires a committed installation")
+        prior_summary = prior_admission["committed"]
+        prior_receipt_path = self.v1 / "receipts" / (prior_summary["receipt_id"] + ".json")
+        prior_receipt = json.loads(prior_receipt_path.read_text())
+        prior_ownership = {
+            (item["unit_id"], item["path"]): item["ownership"]
+            for item in prior_receipt["artifacts"]
+        }
+        generation = getattr(self, "generation", 0) + 1
+        self.generation = generation
+        self.transaction_id = "txn-%s-%d" % (kind, generation)
+        self.receipt_id = "receipt-%s-%d" % (kind, generation)
+        self.transaction = self.v1 / "transactions" / self.transaction_id
+        make_directory(self.transaction)
+        self.units = []
+        for unit_id in source.UNIT_IDS:
+            destination = source._unit_destination(self.roots, unit_id)
+            unit_kind = "directory" if unit_id == "payload" else "file"
+            objects = source._unit_objects(destination, self.transaction_id, unit_id)
+            initial_state = source.capture_state(destination, unit_kind)
+            prior_object = Path(objects["prior"])
+            if unit_kind == "directory":
+                shutil.copytree(destination, prior_object)
+                for path in prior_object.rglob("*"):
+                    path.chmod(0o700 if path.is_dir() else 0o644)
+                prior_object.chmod(0o700)
+            else:
+                write_file(prior_object, destination.read_bytes())
+            prior_state = source.capture_state(prior_object, unit_kind)
+            root_ownership = prior_ownership[(unit_id, ".")]
+            preserve_unowned = root_ownership == "matching_preexisting_unowned"
+            target_object = Path(objects["target"])
+            if preserve_unowned:
+                write_file(target_object, destination.read_bytes())
+                target_state = source.capture_state(target_object, unit_kind)
+            elif kind == "uninstall":
+                target_state = source.absent_state(unit_kind)
+            elif unit_kind == "directory":
+                write_payload(target_object, "managed-update-%d" % generation)
+                target_state = source.capture_state(target_object, unit_kind)
+            else:
+                write_file(
+                    target_object,
+                    ("managed-update-%d-%s\n" % (generation, unit_id)).encode(),
+                )
+                target_state = source.capture_state(target_object, unit_kind)
+            self.units.append(
+                {
+                    "unit_id": unit_id,
+                    "destination": str(destination),
+                    "parent_identity": source.physical_identity(destination.parent),
+                    "initial": initial_state,
+                    "prior": prior_state,
+                    "target": target_state,
+                    "objects": objects,
+                }
+            )
+        if kind == "upgrade":
+            self.package_id = hashlib.sha256(
+                ("fixture-package-%d" % generation).encode()
+            ).hexdigest()
+            self.runtime_cohort = hashlib.sha256(
+                ("fixture-cohort-%d" % generation).encode()
+            ).hexdigest()
+        else:
+            self.package_id = prior_summary["package_id"]
+            self.runtime_cohort = prior_summary["runtime_cohort"]
+        artifacts = {}
+        selected = "initial" if kind == "uninstall" else "target"
+        for unit in self.units:
+            state_value = unit[selected]
+            if unit["unit_id"] == "payload":
+                for artifact in state_value["artifacts"]:
+                    if artifact["kind"] == "file":
+                        artifacts["payload/" + artifact["path"]] = artifact["sha256"]
+            else:
+                artifacts[source.EXTERNAL_MANIFEST_PATHS[unit["unit_id"]]] = state_value["sha256"]
+        manifest = {
+            "format": 1,
+            "package_id": self.package_id,
+            "runtime_cohort": self.runtime_cohort,
+            "artifacts": dict(sorted(artifacts.items())),
+            "opencode_sources": source.OPENCODE_SOURCES,
+        }
+        self.manifest_path = self.transaction / "source-manifest.json"
+        write_json(self.manifest_path, manifest)
+        support = {
+            "source_sha256": hashlib.sha256(("reader-source-%d" % generation).encode()).hexdigest(),
+            "package_id": self.package_id,
+            "runtime_cohort": self.runtime_cohort,
+            "import_closure_sha256": hashlib.sha256(("reader-closure-%d" % generation).encode()).hexdigest(),
+            "fixture_corpus_sha256": hashlib.sha256(b"reader-corpus").hexdigest(),
+            "features": ["audit", "dialogues", "lifecycle-v1", "outbox", "registrations"],
+            "state_reader": "pass",
+            "managed_writer_admission": "pass",
+            "external_recoverer": "pass",
+            "formats": {"admission": 1, "plan": 1, "journal": 1, "receipt": 1, "recovery": 1},
+        }
+        self.support_path = self.transaction / "reader-support.json"
+        write_json(self.support_path, support)
+        receipt_artifacts = []
+        old_records = {
+            (item["unit_id"], item["path"]): item
+            for item in prior_receipt["artifacts"]
+        }
+        for unit_id, relative in source._receipt_artifact_keys(self.units):
+            unit = next(item for item in self.units if item["unit_id"] == unit_id)
+            prior_leaf = source._leaf_state(unit["initial"], relative)
+            intended = source._leaf_state(unit["target"], relative)
+            old = old_records.get((unit_id, relative))
+            if old is not None and old["ownership"] == "matching_preexisting_unowned":
+                ownership = old["ownership"]
+            elif prior_leaf["exists"]:
+                ownership = "already_owned"
+            elif intended["exists"]:
+                ownership = "created"
+            else:
+                ownership = "absent"
+            destination = Path(unit["destination"]) if relative == "." else Path(unit["destination"]) / relative
+            receipt_artifacts.append(
+                {
+                    "unit_id": unit_id,
+                    "path": relative,
+                    "destination": str(destination),
+                    "prior": prior_leaf,
+                    "intended": intended,
+                    "ownership": ownership,
+                    "local_change": "none",
+                }
+            )
+        self.receipt = {
+            "receipt_format": 1,
+            "receipt_id": self.receipt_id,
+            "transaction_id": self.transaction_id,
+            "outcome": "uninstalled" if kind == "uninstall" else "committed",
+            "roots": self.roots,
+            "root_identities": self.receipt_root_identities,
+            "lock_identity": self.receipt_lock_identity,
+            "package_id": self.package_id,
+            "runtime_cohort": self.runtime_cohort,
+            "source_manifest_sha256": file_hash(self.manifest_path),
+            "prior_receipt": {
+                "receipt_id": prior_summary["receipt_id"],
+                "receipt_sha256": prior_summary["receipt_sha256"],
+            },
+            "recovery": {"format": 1, "tool_sha256": self.tool_digest},
+            "reader_support_sha256": file_hash(self.support_path),
+            "artifacts": receipt_artifacts,
+        }
+        self.receipt_path = self.transaction / "receipt.json"
+        write_json(self.receipt_path, self.receipt)
+        committed = {
+            "receipt_id": self.receipt_id,
+            "receipt_sha256": file_hash(self.receipt_path),
+            "package_id": self.package_id,
+            "runtime_cohort": self.runtime_cohort,
+        }
+        target_admission = {
+            "format": 1,
+            "namespace_version": 1,
+            "roots": self.roots,
+            "status": "uninstalled" if kind == "uninstall" else "committed",
+            "transaction_id": None,
+            "committed": committed,
+        }
+        self.prior_admission = prior_admission
+        self.plan = {
+            "plan_format": 1,
+            "transaction_id": self.transaction_id,
+            "kind": kind,
+            "roots": self.roots,
+            "root_identities": {
+                "state": source.physical_identity(self.state),
+                "payload_parent": source.physical_identity(self.payload_parent),
+                "opencode": source.physical_identity(self.opencode),
+                "lifecycle": source.physical_identity(self.lifecycle),
+                "v1": source.physical_identity(self.v1),
+                "receipts": source.physical_identity(self.v1 / "receipts"),
+                "recovery": source.physical_identity(self.v1 / "recovery"),
+                "transactions": source.physical_identity(self.v1 / "transactions"),
+                "transaction": source.physical_identity(self.transaction),
+            },
+            "lock_identity": source.physical_identity(self.lock),
+            "prior_admission": prior_admission,
+            "outcomes": {"target": target_admission, "prior": prior_admission},
+            "target_receipt_id": self.receipt_id,
+            "source_manifest": {"path": "source-manifest.json", "sha256": file_hash(self.manifest_path)},
+            "proposed_receipt": {"path": "receipt.json", "sha256": file_hash(self.receipt_path)},
+            "proposed_prior_receipt": None,
+            "recovery": {
+                "format": 1,
+                "tool_path": str(self.tool),
+                "tool_sha256": self.tool_digest,
+                "python_path": str(Path(sys.executable).resolve()),
+                "python_version": list(sys.version_info[:3]),
+            },
+            "required_operations": list(source.REQUIRED_OPERATIONS),
+            "allowed_goals": ["target", "prior"],
+            "units": self.units,
+            "retained_state": source.retained_state_fingerprint(self.state),
+            "reader_support": {"path": "reader-support.json", "sha256": file_hash(self.support_path)},
+        }
+        self.plan_path = self.transaction / "plan.json"
+        write_json(self.plan_path, self.plan)
+        self.progress = {
+            "journal_format": 1,
+            "transaction_id": self.transaction_id,
+            "plan_sha256": file_hash(self.plan_path),
+            "sequence": 0,
+            "goal": "target",
+            "units": [{"unit_id": unit_id, "phase": "pending"} for unit_id in source.UNIT_IDS],
+        }
+        self.progress_path = self.transaction / "progress.json"
+        write_json(self.progress_path, self.progress)
 
     def rewrite_plan(self, mutate) -> None:
         plan = json.loads(self.plan_path.read_text())
@@ -459,7 +777,7 @@ class LifecycleRecoveryTests(unittest.TestCase):
         final_receipt = fixture.v1 / "receipts" / (fixture.receipt_id + ".json")
         self.assertEqual(final_receipt.read_bytes(), fixture.receipt_path.read_bytes())
         self.assertLess(
-            events.index("after:replace-immutable:final-receipt"),
+            events.index("after:replace-immutable:target-receipt"),
             events.index("before:replace:terminal-admission"),
         )
         self.assertEqual(fixture.engine.recover(fixture.state), result)
@@ -483,6 +801,8 @@ class LifecycleRecoveryTests(unittest.TestCase):
         fixture.assert_goal(self, "prior")
         progress = json.loads(fixture.progress_path.read_text())
         self.assertEqual(progress["goal"], "prior")
+        shutil.rmtree(fixture.transaction)
+        write_file(fixture.state / "registrations/later.json", b"{}\n", 0o600)
         self.assertEqual(fixture.engine.recover(fixture.state), result)
         with self.assertRaisesRegex(fixture.engine.RecoveryError, "terminal"):
             fixture.engine.recover(fixture.state, abort=True)
@@ -503,6 +823,32 @@ class LifecycleRecoveryTests(unittest.TestCase):
         self.assertEqual(result["receipt_id"], "receipt-prior")
         fixture.assert_goal(self, "prior")
         self.assertEqual(json.loads(fixture.progress_path.read_text())["goal"], "prior")
+
+    def test_actual_install_then_managed_update_abort_repeats_without_transaction_history(self):
+        fixture = self.fixture()
+        fixture.engine.check_plan(fixture.plan_path)
+        fixture.publish_intent()
+        installed = fixture.engine.recover(fixture.state)
+        first_receipt = installed["receipt_id"]
+        fixture.prepare_managed_transaction("upgrade")
+        fixture.engine.check_plan(fixture.plan_path)
+        fixture.publish_intent()
+
+        def stop_after_two_units(event):
+            if event == "after:rename:opencode-plugin:activate-target":
+                raise RuntimeError("partial managed update")
+
+        with self.assertRaises(RuntimeError):
+            fixture.engine.recover(fixture.state, failpoint=stop_after_two_units)
+        aborted = fixture.engine.recover(fixture.state, abort=True)
+        self.assertEqual(aborted["status"], "committed")
+        self.assertEqual(aborted["receipt_id"], first_receipt)
+        for transaction in list((fixture.v1 / "transactions").iterdir()):
+            shutil.rmtree(transaction)
+        write_file(fixture.state / "registrations/post-commit.json", b"{}\n", 0o600)
+        repeated = fixture.engine.recover(fixture.state)
+        self.assertEqual(repeated, aborted)
+        fixture.assert_goal(self, "prior")
 
     def test_abort_discards_only_a_known_partial_forward_stage(self):
         fixture = self.fixture()
@@ -697,6 +1043,33 @@ class LifecycleRecoveryTests(unittest.TestCase):
         self.assertNotEqual(refused.returncode, 0)
         self.assertEqual(fixture.snapshot(), before)
 
+    def test_actual_install_then_uninstall_repeats_from_receipt_without_history(self):
+        fixture = self.fixture(preserve_unowned=True)
+        fixture.engine.check_plan(fixture.plan_path)
+        fixture.publish_intent()
+        fixture.engine.recover(fixture.state)
+        fixture.prepare_managed_transaction("uninstall")
+        fixture.engine.check_plan(fixture.plan_path)
+        fixture.publish_intent()
+        uninstalled = fixture.engine.recover(fixture.state)
+        self.assertEqual(uninstalled["status"], "uninstalled")
+        self.assertIn("receipt_id", uninstalled)
+        for transaction in list((fixture.v1 / "transactions").iterdir()):
+            shutil.rmtree(transaction)
+        write_file(fixture.state / "registrations/post-uninstall.json", b"{}\n", 0o600)
+        self.assertEqual(fixture.engine.recover(fixture.state), uninstalled)
+        self.assertFalse(fixture.payload.exists())
+        self.assertEqual(
+            (fixture.opencode / "council-plugin.ts").read_bytes(),
+            b"preexisting-unowned\n",
+        )
+
+    def test_legacy_uninstalled_marker_without_receipt_is_uncertified(self):
+        fixture = self.fixture()
+        write_json(fixture.lifecycle / "admission.json", fixture.prior_admission)
+        with self.assertRaisesRegex(fixture.engine.RecoveryError, "no certifying"):
+            fixture.engine.recover(fixture.state)
+
     def test_rollback_uses_the_same_fixed_forward_target_machine(self):
         fixture = self.fixture(initial=True)
         fixture.rewrite_plan(lambda plan: plan.__setitem__("kind", "rollback"))
@@ -863,6 +1236,14 @@ class LifecycleRecoveryTests(unittest.TestCase):
         final_receipt = fixture2.v1 / "receipts" / (fixture2.receipt_id + ".json")
         final_receipt.write_bytes(fixture2.receipt_path.read_bytes())
         final_receipt.chmod(0o600)
+        shutil.copyfile(
+            fixture2.manifest_path,
+            fixture2.v1 / "receipts" / (fixture2.receipt_id + ".manifest.json"),
+        )
+        shutil.copyfile(
+            fixture2.support_path,
+            fixture2.v1 / "receipts" / (fixture2.receipt_id + ".reader-support.json"),
+        )
         write_json(fixture2.lifecycle / "admission.json", fixture2.plan["outcomes"]["target"])
         with self.assertRaisesRegex(fixture2.engine.RecoveryError, "coherent"):
             fixture2.engine.recover(fixture2.state)
@@ -1011,8 +1392,39 @@ class LifecycleRecoveryTests(unittest.TestCase):
         fixture2.engine.recover(fixture2.state)
         final_receipt = fixture2.v1 / "receipts" / (fixture2.receipt_id + ".json")
         final_receipt.write_text("{}\n")
-        with self.assertRaisesRegex(fixture2.engine.RecoveryError, "digest"):
+        with self.assertRaises(fixture2.engine.RecoveryError):
             fixture2.engine.recover(fixture2.state)
+
+        fixture3 = self.fixture()
+        fixture3.publish_intent()
+        fixture3.engine.recover(fixture3.state)
+        old_lock = fixture3.lock.with_name("broker.lock.displaced")
+        fixture3.lock.rename(old_lock)
+        write_file(fixture3.lock, b"replacement", 0o600)
+        with self.assertRaisesRegex(fixture3.engine.RecoveryError, "lock"):
+            fixture3.engine.recover(fixture3.state)
+
+        fixture4 = self.fixture()
+        fixture4.publish_intent()
+        fixture4.engine.recover(fixture4.state)
+        receipt_path = fixture4.v1 / "receipts" / (fixture4.receipt_id + ".json")
+        receipt = json.loads(receipt_path.read_text())
+        receipt["roots"]["payload"] = str(self.root / "wrong-payload")
+        write_json(receipt_path, receipt)
+        admission_path = fixture4.lifecycle / "admission.json"
+        admission = json.loads(admission_path.read_text())
+        admission["committed"]["receipt_sha256"] = file_hash(receipt_path)
+        write_json(admission_path, admission)
+        with self.assertRaises(fixture4.engine.RecoveryError):
+            fixture4.engine.recover(fixture4.state)
+
+        fixture5 = self.fixture()
+        fixture5.publish_intent()
+        fixture5.engine.recover(fixture5.state)
+        provenance = fixture5.v1 / "receipts" / (fixture5.receipt_id + ".manifest.json")
+        provenance.write_text("{}\n")
+        with self.assertRaises(fixture5.engine.RecoveryError):
+            fixture5.engine.recover(fixture5.state)
 
 
 if __name__ == "__main__":
