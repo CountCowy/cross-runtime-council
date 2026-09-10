@@ -109,6 +109,61 @@ class InspectionTests(unittest.TestCase):
         isolate_admission_roots(self, Path(self.temp.name))
         self.root = Path(self.temp.name) / "state"
 
+    def actual_offline_release(self):
+        """Build from committed HEAD plus only this side worker's allowed files."""
+        base = Path(self.temp.name)
+        source = base / "release-source"
+        release = base / "offline-release"
+        head = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=SCRIPTS.parent, text=True
+        ).strip()
+        subprocess.run(
+            [
+                "git",
+                "clone",
+                "--quiet",
+                "--no-hardlinks",
+                "--no-checkout",
+                str(SCRIPTS.parent),
+                str(source),
+            ],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "checkout", "--quiet", "--detach", head],
+            cwd=source,
+            check=True,
+        )
+        for relative in (
+            "scripts/council_inspect.py",
+            "scripts/test_admission.py",
+            "docs/maintenance-admission.md",
+            "docs/development.md",
+        ):
+            target = source / relative
+            target.write_bytes((SCRIPTS.parent / relative).read_bytes())
+        subprocess.run(
+            [sys.executable, "-B", "scripts/build_release.py", "--write"],
+            cwd=source,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            [
+                sys.executable,
+                "-B",
+                "scripts/build_release.py",
+                "--output",
+                str(release),
+            ],
+            cwd=source,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return release
+
     def test_absent_corrupt_dormant_retention_and_staged_inspection_never_mutates(self):
         before = inventory(self.root)
         with (
@@ -364,6 +419,79 @@ class InspectionTests(unittest.TestCase):
         self.assertEqual(
             inspection.inspect_artifacts(payload, external)["provenance"], "unavailable"
         )
+
+    def test_actual_offline_release_root_is_inspected_without_layout_fabrication(self):
+        release = self.actual_offline_release()
+        absent_state = Path(self.temp.name) / "absent-release-state"
+        self.assertFalse((release / "payload/release_manifest.json").exists())
+        before = inventory(release)
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-B",
+                str(release / "payload/scripts/council_inspect.py"),
+                "--state-root",
+                str(absent_state),
+                "--release-root",
+                str(release),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        report = json.loads(result.stdout)
+        manifest = json.loads((release / "release_manifest.json").read_text())
+        artifacts = report["release_artifacts"]
+        self.assertEqual(artifacts["provenance"], "manifest_observed")
+        self.assertEqual(artifacts["verified_count"], len(manifest["artifacts"]))
+        self.assertEqual(artifacts["mismatch_count"], 0)
+        self.assertTrue(artifacts["artifact_cohort_compatible"])
+        self.assertFalse(absent_state.exists())
+        self.assertEqual(inventory(release), before)
+
+        # Neither pre-fix two-root interpretation can inspect this real layout.
+        child_roots = inspection.inspect_artifacts(
+            release / "payload", release / "opencode"
+        )
+        flattened_roots = inspection.inspect_artifacts(release, release)
+        self.assertEqual(
+            child_roots["error"], "missing_or_invalid_release_manifest"
+        )
+        self.assertEqual(flattened_roots["verified_count"], 0)
+        self.assertEqual(
+            flattened_roots["mismatch_count"], len(manifest["artifacts"])
+        )
+
+    def test_release_root_rejects_mixed_wrong_and_malformed_layouts(self):
+        release = self.actual_offline_release()
+        mixed = inspection.inspect_artifacts(
+            release / "payload",
+            release / "opencode",
+            release_root=release,
+        )
+        wrong = inspection.inspect_artifacts(release_root=release / "payload")
+        missing_payload = inspection.inspect_artifacts(
+            opencode_root=release / "opencode"
+        )
+        missing_opencode = inspection.inspect_artifacts(
+            payload_root=release / "payload"
+        )
+        malformed_root = Path(self.temp.name) / "malformed-release"
+        malformed_root.mkdir()
+        (malformed_root / "release_manifest.json").write_text("{")
+        malformed = inspection.inspect_artifacts(release_root=malformed_root)
+        for report in (
+            mixed,
+            wrong,
+            missing_payload,
+            missing_opencode,
+            malformed,
+        ):
+            self.assertEqual(
+                report["error"], "missing_or_invalid_release_manifest"
+            )
+            self.assertEqual(report["provenance"], "unavailable")
+            self.assertEqual(report["verified_count"], 0)
 
     def test_positive_liveness_matrix_and_cached_probes(self):
         route = {

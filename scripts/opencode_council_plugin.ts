@@ -2,7 +2,8 @@ import {
   ENVELOPE_PREAMBLE, RELAY_ENVELOPE_KINDS as PROTOCOL_RELAY_KINDS,
   DEFAULT_LEASE_MINUTES, DEFAULT_ROUNDS, DEFAULT_MINIMUM_ROUNDS,
   DEFAULT_MAX_ROUNDS, DEFAULT_ACTIVE_CLAIM_CEILING, openCodeToolArgs,
-  RUNTIME_COHORT as PROTOCOL_COHORT,
+  MAX_LEASE_MINUTES, MAX_TEXT_BYTES, RUNTIME_COHORT as PROTOCOL_COHORT,
+  SAFE_NAME_PATTERN,
 } from "./council_protocol.ts"
 import { type Plugin, tool } from "@opencode-ai/plugin"
 import { randomBytes } from "node:crypto"
@@ -40,10 +41,11 @@ type DaemonStartupStatus = {
   retryable: boolean
 }
 
-const PACKAGE_ID = "90091936f57c229b536ccc489b6e254648f5bc13c05e9af2ef1e7ebd5e06602e"
-const RUNTIME_COHORT = "e94556d41743576d88ff1daae8097304b4d24cc6aa65c97a1bcb6903740a056a"
+const PACKAGE_ID = "43aaa33e1832f19cf836332468cebc8ffd684613edd657f0139cca476d178090"
+const RUNTIME_COHORT = "5cf4b1fb64603e9fc30a584c6c5085cc46e07a46f4e288b01e4e39b81f80ab49"
 const DAEMON_STARTUP_TIMEOUT_MS = 3000
 const MAX_DAEMON_STARTUP_STATUS_BYTES = 1024
+const MAX_PENDING_BINDING_ROTATIONS = 32
 if (RUNTIME_COHORT !== PROTOCOL_COHORT || RUNTIME_COHORT !== REGISTRY_COHORT) {
   throw new Error("Council plugin/helper cohort mismatch; refresh the complete runtime set")
 }
@@ -104,6 +106,54 @@ function key(sessionID: string, participant: string) {
 
 function capability() {
   return randomBytes(48).toString("base64url")
+}
+
+const safeNamePattern = new RegExp(`^(?:${SAFE_NAME_PATTERN})$`)
+
+function validateBindInputs(
+  args: {
+    participant: string
+    label: string
+    project: string
+    lease_minutes?: number
+  },
+  sessionID: string,
+) {
+  for (const [field, value] of [
+    ["participant", args.participant],
+    ["target_session_id", sessionID],
+  ] as const) {
+    if (typeof value !== "string" || !safeNamePattern.test(value)) {
+      throw new BridgeError(
+        `${field} must match [A-Za-z0-9][A-Za-z0-9_.-]{0,79}`,
+        "error",
+        "invalid_request",
+      )
+    }
+  }
+  for (const [field, value] of [
+    ["label", args.label],
+    ["project", args.project],
+  ] as const) {
+    if (typeof value !== "string" || !value.trim()) {
+      throw new BridgeError(`${field} must not be empty`, "error", "invalid_request")
+    }
+    if (new TextEncoder().encode(value).byteLength > MAX_TEXT_BYTES) {
+      throw new BridgeError(
+        `${field} exceeds ${MAX_TEXT_BYTES} bytes`,
+        "error",
+        "invalid_request",
+      )
+    }
+  }
+  const leaseMinutes = args.lease_minutes ?? DEFAULT_LEASE_MINUTES
+  if (!Number.isInteger(leaseMinutes) || leaseMinutes < 1 || leaseMinutes > MAX_LEASE_MINUTES) {
+    throw new BridgeError(
+      `lease_minutes must be between 1 and ${MAX_LEASE_MINUTES}`,
+      "error",
+      "invalid_request",
+    )
+  }
 }
 
 async function rawBridge(action: string, args: Record<string, unknown>) {
@@ -476,6 +526,9 @@ export const CouncilPlugin: Plugin = async ({ client }) => {
     dispose: async () => {
       for (const socket of relaySockets) socket.destroy()
       await new Promise<void>((resolve) => server.close(() => resolve()))
+      bindings.clear()
+      pendingRotations.clear()
+      deliveryRegistry.dispose()
       try {
         unlinkSync(relayPath)
       } catch {}
@@ -493,12 +546,24 @@ export const CouncilPlugin: Plugin = async ({ client }) => {
           "Bind this exact OpenCode session as an expiring Council participant. The model provider is not treated as the transport identity.",
         args: toolArgs.council_bind,
         async execute(args, context) {
+          validateBindInputs(args, context.sessionID)
           const identity = key(context.sessionID, args.participant)
           let pending = pendingRotations.get(identity)
           if (!pending) {
+            const confirmed = bindings.get(identity)
+            if (
+              pendingRotations.size >= MAX_PENDING_BINDING_ROTATIONS
+              && !confirmed
+            ) {
+              throw new BridgeError(
+                "too many pending Council binding rotations; retry an existing identity",
+                "error",
+                "invalid_request",
+              )
+            }
             pending = {
               capability: capability(),
-              previousCapability: bindings.get(identity)?.capability,
+              previousCapability: confirmed?.capability,
               relayCapability: capability(),
             }
             pendingRotations.set(identity, pending)

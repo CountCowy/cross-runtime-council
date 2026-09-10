@@ -133,6 +133,7 @@ test("loaded plugin origin, bounded mismatch startup and pending operation conse
   type Request = { action: string; runtime_cohort: string; arguments: Record<string, unknown> }
   const requests: Request[] = []
   let failAction = "bind"
+  let errorKind = "rejected"
   let reason = "transport_lost"
   let daemonSpawns = 0
   globals.Bun = {
@@ -143,7 +144,7 @@ test("loaded plugin origin, bounded mismatch startup and pending operation conse
         stdin: { write: (line: string) => { request = JSON.parse(line); requests.push(request) }, end: () => {} },
         get stdout() {
           const response = request.action === failAction
-            ? { ok: false, error: "fixture failure", error_kind: "rejected", reason }
+            ? { ok: false, error: "fixture failure", error_kind: errorKind, reason }
             : { ok: true, result: request.action === "extend"
                 ? { dialogue_id: "dlg-pending", phase: "collecting_exchange", authorized_rounds: 2, current_round: 1, duplicate: true }
                 : {} }
@@ -180,6 +181,9 @@ test("loaded plugin origin, bounded mismatch startup and pending operation conse
     assert.equal(new Set(ids).size, 1)
     failAction = ""
     await wrapper.bind.execute(binding, context)
+    const confirmedCapability = requests.filter(
+      (request) => request.action === "bind",
+    ).at(-1)!.arguments.binding_capability
     await assert.rejects(wrapper.extend.execute({ ...extension, additional_rounds: 2 }, context), /original round count/)
     await wrapper.extend.execute(extension, context)
     assert.equal(requests.filter((request) => request.action === "extend").at(-1)!.arguments.extension_id, ids[0])
@@ -190,6 +194,102 @@ test("loaded plugin origin, bounded mismatch startup and pending operation conse
     await assert.rejects(wrapper.ping.execute({}, context), /fixture failure/)
     assert.equal(requests.length, before + 1)
     assert.equal(daemonSpawns, 0)
+
+    const bindRequests = () => requests.filter((request) => request.action === "bind")
+    failAction = "bind"
+    reason = "invalid_request"
+    for (let index = 0; index < 32; index += 1) {
+      await assert.rejects(
+        wrapper.bind.execute(
+          { participant: `pending-${index}`, label: "Pending", project: "fixture" },
+          { sessionID: `pending-session-${index}` } as never,
+        ),
+        /fixture failure/,
+      )
+    }
+    const atCapacity = bindRequests().length
+    await assert.rejects(
+      wrapper.bind.execute(
+        { participant: "overflow", label: "Overflow", project: "fixture" },
+        { sessionID: "overflow-session" } as never,
+      ),
+      /too many pending Council binding rotations/,
+    )
+    assert.equal(bindRequests().length, atCapacity)
+
+    await assert.rejects(
+      wrapper.bind.execute(
+        { participant: "pending-0", label: "Pending", project: "fixture" },
+        { sessionID: "pending-session-0" } as never,
+      ),
+      /fixture failure/,
+    )
+    const pendingRetries = bindRequests().filter(
+      (request) => request.arguments.participant === "pending-0",
+    )
+    assert.equal(new Set(pendingRetries.map(
+      (request) => request.arguments.binding_capability,
+    )).size, 1)
+
+    errorKind = "error"
+    reason = "transport_lost"
+    await assert.rejects(wrapper.bind.execute(binding, context), /fixture failure/)
+    const ambiguousRenewal = bindRequests().at(-1)!
+    errorKind = "rejected"
+    reason = "invalid_request"
+    await assert.rejects(wrapper.bind.execute(binding, context), /fixture failure/)
+    const definiteRenewal = bindRequests().at(-1)!
+    assert.equal(
+      definiteRenewal.arguments.binding_capability,
+      ambiguousRenewal.arguments.binding_capability,
+    )
+    assert.equal(
+      definiteRenewal.arguments.previous_capability,
+      confirmedCapability,
+    )
+
+    const beforeInvalid = bindRequests().length
+    for (const [candidate, message] of [
+      [{ participant: "invalid/name", label: "Invalid", project: "fixture" }, /participant must match/],
+      [{ participant: "valid", label: " ", project: "fixture" }, /label must not be empty/],
+      [{ participant: "valid", label: "Valid", project: "é".repeat(32_769) }, /project exceeds/],
+    ] as const) {
+      await assert.rejects(
+        wrapper.bind.execute(candidate, { sessionID: "invalid-session" } as never),
+        message,
+      )
+    }
+    await assert.rejects(
+      wrapper.bind.execute(
+        { participant: "valid", label: "Valid", project: "fixture" },
+        { sessionID: "invalid/session" } as never,
+      ),
+      /target_session_id must match/,
+    )
+    assert.equal(bindRequests().length, beforeInvalid)
+
+    failAction = "bind"
+    await wrapper.unbind.execute({ participant: "alpha" }, context)
+    await assert.rejects(
+      wrapper.bind.execute(binding, context),
+      /too many pending Council binding rotations/,
+    )
+
+    await hooks?.dispose?.()
+    hooks = undefined
+    const { CouncilPlugin: RestartedCouncilPlugin } = await import(
+      new URL("./opencode_council_plugin.ts?admission-fixture", import.meta.url).href
+    )
+    hooks = await RestartedCouncilPlugin({ client: {} } as never)
+    const beforeRestart = bindRequests().length
+    await assert.rejects(
+      wrapper.bind.execute(
+        { participant: "after-dispose", label: "After", project: "fixture" },
+        { sessionID: "after-dispose-session" } as never,
+      ),
+      /fixture failure/,
+    )
+    assert.equal(bindRequests().length, beforeRestart + 1)
   } finally {
     await hooks?.dispose?.()
     delete globals[TOOL_REGISTRY_KEY]

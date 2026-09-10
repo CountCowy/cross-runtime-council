@@ -64,6 +64,14 @@ For a new offline release directory, the maintainer runs:
 python3 scripts/build_release.py --output /tmp/council-release
 ```
 
+The maintainer can inspect that exact emitted layout without copying its manifest:
+
+```sh
+python3 -B scripts/council_inspect.py \
+  --state-root /tmp/council-release-empty-state \
+  --release-root /tmp/council-release
+```
+
 The destination must not exist and must be outside the source checkout. It
 contains `payload/` with the tracked source snapshot, `opencode/` with the exact
 external copy layout, and a manifest binding each final artifact's bytes. It does

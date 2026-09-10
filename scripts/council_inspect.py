@@ -19,8 +19,8 @@ sys.dont_write_bytecode = True
 import council_admission as admission
 import council_protocol as protocol
 
-PACKAGE_ID = "90091936f57c229b536ccc489b6e254648f5bc13c05e9af2ef1e7ebd5e06602e"
-RUNTIME_COHORT = "e94556d41743576d88ff1daae8097304b4d24cc6aa65c97a1bcb6903740a056a"
+PACKAGE_ID = "43aaa33e1832f19cf836332468cebc8ffd684613edd657f0139cca476d178090"
+RUNTIME_COHORT = "5cf4b1fb64603e9fc30a584c6c5085cc46e07a46f4e288b01e4e39b81f80ab49"
 if (
     RUNTIME_COHORT != admission.RUNTIME_COHORT
     or RUNTIME_COHORT != protocol.RUNTIME_COHORT
@@ -396,9 +396,20 @@ def inspect_state(
     return report
 
 
-def inspect_artifacts(payload_root, opencode_root):
+def _artifact_roots(payload_root, opencode_root, release_root):
+    if release_root is not None:
+        if payload_root is not None or opencode_root is not None:
+            raise ValueError("release root cannot be combined with artifact roots")
+        release = Path(release_root).expanduser().resolve()
+        return release, release / "payload", release / "opencode"
+    if payload_root is None or opencode_root is None:
+        raise ValueError("payload and OpenCode roots are required")
     payload = Path(payload_root).expanduser().resolve()
     opencode = Path(opencode_root).expanduser().resolve()
+    return payload, payload, opencode
+
+
+def inspect_artifacts(payload_root=None, opencode_root=None, *, release_root=None):
     result = {
         "provenance": "unavailable",
         "verified_count": 0,
@@ -406,7 +417,10 @@ def inspect_artifacts(payload_root, opencode_root):
         "artifact_cohort_compatible": False,
     }
     try:
-        manifest = admission.read_object(payload / "release_manifest.json")
+        manifest_root, payload, opencode = _artifact_roots(
+            payload_root, opencode_root, release_root
+        )
+        manifest = admission.read_object(manifest_root / "release_manifest.json")
         if (
             type(manifest.get("format")) is not int
             or manifest["format"] != 1
@@ -486,20 +500,42 @@ def main():
         "--state-root", type=Path, default=Path.home() / ".claude/peer-consults"
     )
     parser.add_argument(
-        "--payload-root", type=Path, default=Path(__file__).resolve().parents[1]
+        "--payload-root",
+        type=Path,
+        help="source or installed payload root containing release_manifest.json",
     )
     parser.add_argument(
-        "--opencode-root", type=Path, default=Path.home() / ".config/opencode"
+        "--opencode-root", type=Path, help="external OpenCode artifact root"
+    )
+    parser.add_argument(
+        "--release-root",
+        type=Path,
+        help="offline release root containing manifest, payload/ and opencode/",
     )
     args = parser.parse_args()
+    if args.release_root is not None and (
+        args.payload_root is not None or args.opencode_root is not None
+    ):
+        parser.error("--release-root cannot be combined with artifact-root overrides")
+    if args.release_root is not None:
+        payload_root = args.release_root / "payload"
+        opencode_root = args.release_root / "opencode"
+    else:
+        payload_root = args.payload_root or Path(__file__).resolve().parents[1]
+        opencode_root = args.opencode_root or Path.home() / ".config/opencode"
     result = inspect_state(
         args.state_root,
-        payload_root=args.payload_root,
-        opencode_root=args.opencode_root,
+        payload_root=payload_root,
+        opencode_root=opencode_root,
     )
-    result["release_artifacts"] = inspect_artifacts(
-        args.payload_root, args.opencode_root
-    )
+    if args.release_root is not None:
+        result["release_artifacts"] = inspect_artifacts(
+            release_root=args.release_root
+        )
+    else:
+        result["release_artifacts"] = inspect_artifacts(
+            payload_root, opencode_root
+        )
     print(json.dumps(result, sort_keys=True, indent=2))
 
 

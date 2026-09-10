@@ -11,10 +11,14 @@ The operator still owns the initial maintenance window and live adoption.
 The operator can run `python3 -B scripts/council_inspect.py`. The inspector neither
 imports `council` nor constructs a broker, connects to a socket, expires a route,
 repairs JSONL, quarantines a file, creates a missing root or writes a report file.
-Explicit test roots are available through `--state-root`, `--payload-root` and
-`--opencode-root`; production layout remains fixed. `council.py doctor` now uses
-this offline inspection instead of ping. Its `local_runtime_ready` and broker
-reachability are null, and authenticated readiness is explicitly unobserved.
+Explicit test roots are available through `--state-root` and either the paired
+`--payload-root` / `--opencode-root` source-or-installed layout or
+`--release-root` for an emitted offline release. The release-root form reads
+`release_manifest.json` beside `payload/` and `opencode/`; it cannot be combined
+with either artifact-root override. Production layout remains fixed.
+`council.py doctor` now uses this offline inspection instead of ping. Its
+`local_runtime_ready` and broker reachability are null, and authenticated
+readiness is explicitly unobserved.
 
 The report separates the observed release-manifest hashes/cohort, admission
 metadata/receipt binding, registration liveness, structural artifact errors and
@@ -30,6 +34,14 @@ pin configuration; and tombstones. It observes the manifest's payload artifacts
 and all four external OpenCode copies. Ephemeral relay sockets, `broker.log`, MCP
 output, host transcripts and rendered exports are outside the retained-reader and
 replacement sets. Inspection does not lock or claim to freeze those outputs.
+
+`inspect_artifacts(payload_root, opencode_root)` retains the source and installed
+payload contract, where the manifest is stored in the payload root and manifest
+`payload/*` names resolve beneath that same root. The explicit offline form is
+`inspect_artifacts(release_root=release_root)`: it derives the two artifact roots
+from the builder's emitted layout instead of flattening or fabricating a second
+manifest under `payload/`. Missing, malformed, mixed or wrongly nested roots fail
+closed as unavailable provenance.
 
 Each inventory is bounded to 10,000 entries, 4 MiB per file and 64 MiB of file
 content. Admission envelopes and receipt bytes have a separate 1 MiB limit.
