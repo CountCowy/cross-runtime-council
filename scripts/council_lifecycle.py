@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Read-only Council release validation and ownership planning."""
+"""Council artifact lifecycle planning, transactions, and recovery handoff."""
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import os
@@ -1183,7 +1184,8 @@ def execute_operation(kind: str, release_root: Optional[Path], state_root: Path,
                       receipt_id: Optional[str] = None,
                       transaction_id: Optional[str] = None,
                       now: Optional[float] = None,
-                      probe: Optional[Any] = None) -> Dict[str, Any]:
+                      probe: Optional[Any] = None,
+                      recovery_command_sink: Optional[Any] = None) -> Dict[str, Any]:
     """Execute one normal artifact transaction through the shared C1 lease."""
     state_input = _lexical_root(state_root)
     payload_input = _lexical_root(payload_root)
@@ -1233,8 +1235,119 @@ def execute_operation(kind: str, release_root: Optional[Path], state_root: Path,
             bundle = prepare_transaction(
                 preview, release, lease, transaction_id=transaction_id
             )
+            if recovery_command_sink is not None:
+                recovery_command_sink(list(bundle["recovery_command"]))
             result = publish_and_execute(
                 bundle, lease, inspect, snapshot, now=now, probe=probe
             )
     result["recovery_command"] = bundle["recovery_command"]
     return result
+
+
+def _production_roots() -> Tuple[Path, Path, Path]:
+    home = Path.home().resolve(strict=True)
+    return (
+        home / ".claude/peer-consults",
+        home / ".claude/skills/council",
+        home / ".config/opencode",
+    )
+
+
+def _release_argument(value: Optional[Path]) -> Path:
+    if value is not None:
+        return value
+    candidate = SOURCE_ROOT.parent.parent
+    if (candidate / "release_manifest.json").is_file() and (
+        candidate / "payload/scripts/council_lifecycle.py"
+    ).is_file():
+        return candidate
+    raise LifecyclePlanningError(
+        "a generated release directory is required; use --release"
+    )
+
+
+def _plan_command(kind: str, release_value: Optional[Path], receipt_id: Optional[str],
+                  roots: Tuple[Path, Path, Path]) -> Dict[str, Any]:
+    state_root, payload_root, opencode_root = roots
+    if kind == "rollback":
+        if receipt_id is None or release_value is not None:
+            raise LifecyclePlanningError("rollback planning requires exactly one receipt ID")
+        release = retained_release(state_root, receipt_id)
+    elif kind == "uninstall":
+        if release_value is not None or receipt_id is not None:
+            raise LifecyclePlanningError("uninstall planning accepts no release or receipt")
+        release = None
+    else:
+        if receipt_id is not None:
+            raise LifecyclePlanningError("receipt selection is supported only for rollback")
+        release = validate_release(_release_argument(release_value))
+    return plan_ownership(
+        kind, release, inspect_ownership(state_root, payload_root, opencode_root)
+    )
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    commands = parser.add_subparsers(dest="command", required=True)
+    commands.add_parser("status", help="inspect lifecycle state without writing")
+    plan = commands.add_parser("plan", help="emit a non-executable ownership preview")
+    plan_actions = plan.add_subparsers(dest="kind", required=True)
+    for kind in ("install", "upgrade"):
+        action = plan_actions.add_parser(kind)
+        action.add_argument("--release", type=Path)
+    rollback_plan = plan_actions.add_parser("rollback")
+    rollback_plan.add_argument("--receipt", required=True)
+    plan_actions.add_parser("uninstall")
+    install = commands.add_parser("install", help="adopt an eligible generated release")
+    install.add_argument("--release", type=Path)
+    install.add_argument("--maintenance-window-confirmed", action="store_true")
+    upgrade = commands.add_parser("upgrade", help="replace a managed artifact set")
+    upgrade.add_argument("--release", type=Path)
+    rollback = commands.add_parser("rollback", help="restore an exact retained receipt")
+    rollback.add_argument("--receipt", required=True)
+    commands.add_parser("uninstall", help="remove only receipt-owned code artifacts")
+    return parser
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    parser = _parser()
+    args = parser.parse_args(argv)
+    try:
+        roots = _production_roots()
+        if args.command == "status":
+            result = status(*roots)
+        elif args.command == "plan":
+            result = _plan_command(
+                args.kind, getattr(args, "release", None),
+                getattr(args, "receipt", None), roots,
+            )
+        else:
+            release_root = (
+                _release_argument(getattr(args, "release", None))
+                if args.command in ("install", "upgrade") else None
+            )
+
+            def announce(command: List[str]) -> None:
+                sys.stderr.write(
+                    "recovery-command: " +
+                    json.dumps(command, ensure_ascii=False, separators=(",", ":")) + "\n"
+                )
+                sys.stderr.flush()
+
+            result = execute_operation(
+                args.command, release_root, *roots,
+                maintenance_window_confirmed=getattr(
+                    args, "maintenance_window_confirmed", False
+                ),
+                receipt_id=getattr(args, "receipt", None),
+                recovery_command_sink=announce,
+            )
+        sys.stdout.buffer.write(recovery.json_bytes(result))
+        return 0
+    except (LifecyclePlanningError, recovery.RecoveryError, OSError,
+            subprocess.SubprocessError, ValueError) as error:
+        parser.exit(2, "lifecycle: %s\n" % error)
+
+
+if __name__ == "__main__":
+    main()

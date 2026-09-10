@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 import council_lifecycle as lifecycle
 import council_recover as recovery
@@ -437,6 +438,31 @@ class LifecyclePlanningTests(unittest.TestCase):
         self.assertTrue(preview["eligible_for_integration"])
         self.assertEqual(observed["management"]["status"], "legacy_unmanaged")
         self.assertEqual(tree_snapshot(self.root), before)
+
+    def test_isolated_cli_contract_and_purge_refusal(self):
+        source = Path(lifecycle.__file__).resolve()
+        completed = subprocess.run(
+            [sys.executable, "-I", "-B", str(source), "--help"],
+            cwd=self.root,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        for command in ("status", "plan", "install", "upgrade", "rollback", "uninstall"):
+            self.assertIn(command, completed.stdout)
+        parser = lifecycle._parser()
+        self.assertEqual(
+            parser.parse_args(["plan", "install", "--release", "/fixture"]).kind,
+            "install",
+        )
+        self.assertEqual(
+            parser.parse_args(["rollback", "--receipt", "receipt-fixture"]).receipt,
+            "receipt-fixture",
+        )
+        with mock.patch("sys.stderr"):
+            with self.assertRaises(SystemExit):
+                parser.parse_args(["uninstall", "--purge-state"])
 
     def test_actual_release_install_update_rollback_and_uninstall(self):
         release = self.actual_release("integration")
