@@ -431,9 +431,12 @@ test("OpenCode bind cleanup is attempt-aware across concurrency and extension st
   const replacementRenewal = deferred()
   const staleSuccessFirst = deferred()
   const staleSuccessRenewal = deferred()
+  const unbindRaceRenewal = deferred()
   let sharedOrdinal = 0
   let replacementOrdinal = 0
   let staleSuccessBrokerCapability: unknown
+  let unbindRaceOrdinal = 0
+  let unbindRaceBrokerCapability: unknown
   const rejected = (
     reason: string,
     commitStatus?: "precommit",
@@ -447,6 +450,17 @@ test("OpenCode bind cleanup is attempt-aware across concurrency and extension st
   const responseFor = (request: Request): Response | Promise<Response> => {
     if (request.action === "ping") return { ok: true, result: {} }
     if (request.action === "extend") return rejected("transport_lost")
+    if (
+      request.action === "unbind"
+      && request.arguments.participant === "unbind-race"
+    ) {
+      assert.equal(
+        request.arguments._auth_capability,
+        unbindRaceBrokerCapability,
+      )
+      unbindRaceBrokerCapability = undefined
+      return { ok: true, result: {} }
+    }
     if (request.action !== "bind") return { ok: true, result: {} }
     const participant = request.arguments.participant
     if (participant === "owner" || participant === "unrelated") {
@@ -479,6 +493,27 @@ test("OpenCode bind cleanup is attempt-aware across concurrency and extension st
       if (previous === staleSuccessBrokerCapability) {
         staleSuccessBrokerCapability = capability
         return staleSuccessRenewal.promise
+      }
+      return rejected("not_authorized", "precommit")
+    }
+    if (participant === "unbind-race") {
+      unbindRaceOrdinal += 1
+      const capability = request.arguments.binding_capability
+      const previous = request.arguments.previous_capability
+      if (unbindRaceOrdinal === 2) {
+        return unbindRaceRenewal.promise.then((response) => {
+          assert.equal(unbindRaceBrokerCapability, undefined)
+          unbindRaceBrokerCapability = capability
+          return response
+        })
+      }
+      if (unbindRaceBrokerCapability === undefined) {
+        unbindRaceBrokerCapability = capability
+        return { ok: true, result: {} }
+      }
+      if (previous === unbindRaceBrokerCapability) {
+        unbindRaceBrokerCapability = capability
+        return { ok: true, result: {} }
       }
       return rejected("not_authorized", "precommit")
     }
@@ -687,6 +722,41 @@ test("OpenCode bind cleanup is attempt-aware across concurrency and extension st
       bindRequests("stale-success")[3].arguments.binding_capability,
       staleP2,
     )
+
+    const unbindRaceBinding = {
+      participant: "unbind-race",
+      label: "Unbind race",
+      project: "fixture",
+    }
+    const unbindRaceContext = { sessionID: "unbind-race-session" } as never
+    await wrapper.bind.execute(unbindRaceBinding, unbindRaceContext)
+    const unbindRaceP1 = bindRequests(
+      "unbind-race",
+    )[0].arguments.binding_capability
+    assert.equal(unbindRaceBrokerCapability, unbindRaceP1)
+    const unbindRace = wrapper.bind.execute(
+      unbindRaceBinding, unbindRaceContext,
+    )
+    await waitForBindCount("unbind-race", 2)
+    const unbindRaceP2 = bindRequests(
+      "unbind-race",
+    )[1].arguments.binding_capability
+    assert.equal(
+      bindRequests("unbind-race")[1].arguments.previous_capability,
+      unbindRaceP1,
+    )
+    await wrapper.unbind.execute(
+      { participant: "unbind-race" }, unbindRaceContext,
+    )
+    assert.equal(unbindRaceBrokerCapability, undefined)
+    unbindRaceRenewal.resolve({ ok: true, result: {} })
+    await unbindRace
+    assert.equal(unbindRaceBrokerCapability, unbindRaceP2)
+    await wrapper.bind.execute(unbindRaceBinding, unbindRaceContext)
+    assert.equal(
+      bindRequests("unbind-race")[2].arguments.previous_capability,
+      unbindRaceP2,
+    )
   } finally {
     sharedFirst.resolve(rejected("transport_lost"))
     sharedSecond.resolve(rejected("transport_lost"))
@@ -695,6 +765,7 @@ test("OpenCode bind cleanup is attempt-aware across concurrency and extension st
     replacementRenewal.resolve(rejected("transport_lost"))
     staleSuccessFirst.resolve(rejected("transport_lost"))
     staleSuccessRenewal.resolve(rejected("transport_lost"))
+    unbindRaceRenewal.resolve(rejected("transport_lost"))
     await hooks?.dispose?.()
     delete globals[TOOL_REGISTRY_KEY]
     if (priorBun === undefined) delete globals.Bun

@@ -43,8 +43,8 @@ type DaemonStartupStatus = {
   retryable: boolean
 }
 
-const PACKAGE_ID = "8f13e3cff57876d8933fde07b0347be867f615f4e3517bf7a3042afd692b8d3b"
-const RUNTIME_COHORT = "ea9204df57eb53f5959c176f33d8469b1256ab7e228254a38f876f6be7dce960"
+const PACKAGE_ID = "d082178b8a467ac52fdfdb1ab425f9a380d9d441de692b690651400e88cf9e09"
+const RUNTIME_COHORT = "a6f177962d061266376766eb47d5d7904648126098eb81899652cfa474407478"
 const DAEMON_STARTUP_TIMEOUT_MS = 3000
 const MAX_DAEMON_STARTUP_STATUS_BYTES = 1024
 const MAX_PENDING_BINDING_ROTATIONS = 32
@@ -716,8 +716,19 @@ export const CouncilPlugin: Plugin = async ({ client }) => {
             )
           ) {
             bindings.delete(identity)
-            pendingRotations.delete(identity)
-            deliveryRegistry.clear(context.sessionID, args.participant)
+            const pending = pendingRotations.get(identity)
+            if (pending?.inFlight) {
+              const deliveryStateWasPresent = deliveryRegistry.retain(
+                context.sessionID, args.participant,
+              )
+              if (pending.deliveryStateWasPresent === undefined) {
+                pending.deliveryStateWasPresent = deliveryStateWasPresent
+              }
+              pending.previousCapability = undefined
+            } else {
+              pendingRotations.delete(identity)
+              deliveryRegistry.clear(context.sessionID, args.participant)
+            }
           }
           return safeResult(result)
         },
