@@ -19,8 +19,8 @@ sys.dont_write_bytecode = True
 import council_admission as admission
 import council_protocol as protocol
 
-PACKAGE_ID = "fdf7ec2fbe4d9198c16b7b578d3b92f46265d421d2634e36820db07197cd2622"
-RUNTIME_COHORT = "8181ae63906b42e4af670df1613dede4d194c48991594e3b8ea9b961877831b5"
+PACKAGE_ID = "d082178b8a467ac52fdfdb1ab425f9a380d9d441de692b690651400e88cf9e09"
+RUNTIME_COHORT = "a6f177962d061266376766eb47d5d7904648126098eb81899652cfa474407478"
 if (
     RUNTIME_COHORT != admission.RUNTIME_COHORT
     or RUNTIME_COHORT != protocol.RUNTIME_COHORT
@@ -159,19 +159,15 @@ def classify_registration(record, now, probe=probe_process):
     route = record[3]
     if not isinstance(route, dict):
         return "unknown"
-    try:
-        normalized = admission.validate_persisted_registration(route)
-    except admission.AdmissionError:
-        return "unknown"
     expiry = route.get("lease_expires_epoch")
     if not admission.finite_number(now) or not admission.finite_number(expiry):
         return "unknown"
     if expiry <= now:
         return "expired"
     # Legacy Codex has no holder identity; never invent one from unrelated data.
-    if normalized.get("runtime") not in ("claude", "opencode"):
+    if route.get("runtime") not in ("claude", "opencode"):
         return "unknown"
-    pid = normalized.get("relay_pid")
+    pid = route.get("relay_pid")
     if type(pid) is not int or pid <= 1:
         return "unknown"
     try:
@@ -182,7 +178,7 @@ def classify_registration(record, now, probe=probe_process):
         return "unknown"
     if evidence.status == "absent":
         return "dead"
-    expected = normalized.get("relay_process_start_epoch")
+    expected = route.get("relay_process_start_epoch")
     if (
         evidence.status == "present"
         and type(expected) is int
@@ -291,11 +287,9 @@ def artifact_schema_fields(relative, value):
     parts = relative.parts
     if len(parts) == 3 and parts[0] == "outbox":
         envelope = value.get("envelope")
-        return ((
-            "schema_version",
-            protocol.SCHEMA_VERSION,
-            envelope if isinstance(envelope, dict) else {},
-        ),)
+        if isinstance(envelope, dict):
+            return (("schema_version", protocol.SCHEMA_VERSION, envelope),)
+        return ()
     if parts and parts[0] == "dialogues":
         if len(parts) == 3 and parts[2] in ("manifest.json", "final.json"):
             return (
@@ -391,7 +385,9 @@ def inspect_state(
                         relative, value
                     ):
                         schema = subject.get(key)
-                        if schema is None or type(schema) is not int or schema != expected:
+                        if schema is not None and (
+                            type(schema) is not int or schema != expected
+                        ):
                             artifacts["unsupported_schema_count"] += 1
             except (OSError, ValueError, UnicodeError):
                 artifacts["malformed_count"] += 1
@@ -413,51 +409,7 @@ def _artifact_roots(payload_root, opencode_root, release_root):
     return payload, payload, opencode
 
 
-def _managed_manifest(state_root, payload_root, opencode_root):
-    state = Path(state_root).expanduser().resolve()
-    facts = admission.inspect_admission(state, payload_root, opencode_root)
-    if not facts["managed"]:
-        return None
-    if not facts["envelope_valid"] or not facts["receipt_bound"]:
-        raise ValueError("managed lifecycle provenance is invalid")
-    envelope = admission.read_object(state / admission.NAMESPACE / "admission.json")
-    summary = envelope["committed"]
-    receipt_path = (
-        state / admission.NAMESPACE / "v1/receipts" /
-        (summary["receipt_id"] + ".json")
-    )
-    receipt_data, _ = admission.read_regular(receipt_path)
-    if hashlib.sha256(receipt_data).hexdigest() != summary["receipt_sha256"]:
-        raise ValueError("managed receipt changed after admission inspection")
-    receipt = admission.parse_json(receipt_data)
-    if (not isinstance(receipt, dict) or
-            set(receipt) != {
-                "receipt_format", "receipt_id", "transaction_id", "outcome", "roots",
-                "root_identities", "lock_identity", "package_id", "runtime_cohort",
-                "source_manifest_sha256", "prior_receipt", "recovery",
-                "reader_support_sha256", "artifacts",
-            } or type(receipt["receipt_format"]) is not int or
-            receipt["receipt_format"] != 1 or receipt["receipt_id"] != summary["receipt_id"] or
-            receipt["package_id"] != summary["package_id"] or
-            receipt["runtime_cohort"] != summary["runtime_cohort"] or
-            not isinstance(receipt["source_manifest_sha256"], str) or
-            not admission.HASH_PATTERN.fullmatch(receipt["source_manifest_sha256"])):
-        raise ValueError("managed receipt provenance is unsupported")
-    manifest_path = (
-        state / admission.NAMESPACE / "v1/receipts" /
-        (summary["receipt_id"] + ".manifest.json")
-    )
-    manifest_data, _ = admission.read_regular(manifest_path)
-    if hashlib.sha256(manifest_data).hexdigest() != receipt["source_manifest_sha256"]:
-        raise ValueError("managed source manifest digest mismatch")
-    manifest = admission.parse_json(manifest_data)
-    if not isinstance(manifest, dict):
-        raise ValueError("managed source manifest must be an object")
-    return manifest
-
-
-def inspect_artifacts(payload_root=None, opencode_root=None, *, release_root=None,
-                      state_root=None):
+def inspect_artifacts(payload_root=None, opencode_root=None, *, release_root=None):
     result = {
         "provenance": "unavailable",
         "verified_count": 0,
@@ -468,14 +420,7 @@ def inspect_artifacts(payload_root=None, opencode_root=None, *, release_root=Non
         manifest_root, payload, opencode = _artifact_roots(
             payload_root, opencode_root, release_root
         )
-        if state_root is not None and release_root is not None:
-            raise ValueError("managed state cannot be combined with a release root")
-        manifest = (
-            _managed_manifest(state_root, payload, opencode)
-            if state_root is not None else None
-        )
-        if manifest is None:
-            manifest = admission.read_object(manifest_root / "release_manifest.json")
+        manifest = admission.read_object(manifest_root / "release_manifest.json")
         if (
             type(manifest.get("format")) is not int
             or manifest["format"] != 1
@@ -538,11 +483,7 @@ def inspect_artifacts(payload_root=None, opencode_root=None, *, release_root=Non
             except (OSError, ValueError):
                 result["mismatch_count"] += 1
         result.update(
-            provenance=(
-                "managed_receipt_manifest" if state_root is not None
-                and (Path(state_root).expanduser().resolve() / admission.NAMESPACE).exists()
-                else "manifest_observed"
-            ),
+            provenance="manifest_observed",
             package_id=manifest["package_id"],
             runtime_cohort=manifest["runtime_cohort"],
             artifact_cohort_compatible=not result["mismatch_count"]
@@ -593,7 +534,7 @@ def main():
         )
     else:
         result["release_artifacts"] = inspect_artifacts(
-            payload_root, opencode_root, state_root=args.state_root
+            payload_root, opencode_root
         )
     print(json.dumps(result, sort_keys=True, indent=2))
 

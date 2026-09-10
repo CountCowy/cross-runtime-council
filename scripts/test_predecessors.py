@@ -30,6 +30,11 @@ PINS = {
         None,
     ),
 }
+C2_READER_COMMIT = "fd4862d733db267410529238a4ca680e8612a073"
+C2_READER_FILES = {
+    "LICENSE", "NOTICE", "scripts/council.py", "scripts/council_protocol.py",
+    "scripts/council_admission.py", "scripts/council_inspect.py",
+}
 REQUIRED_CASES = {
     "router-configured-unbound",
     "router-bound",
@@ -112,6 +117,19 @@ def validate_reader(label, descriptor, root=FIXTURES):
         and descriptor["files"]["scripts/council_protocol.py"]["sha256"] != pin[2]
     ):
         raise ValueError("helper is not the pinned predecessor")
+
+
+def validate_c2_reader(descriptor, root=FIXTURES / "c2-current"):
+    if (descriptor.get("commit") != C2_READER_COMMIT or
+            descriptor.get("managed_writer_admission") is not True or
+            set(descriptor.get("files", {})) != C2_READER_FILES):
+        raise ValueError("unknown C1 lifecycle reader tuple")
+    for name, identity in descriptor["files"].items():
+        path = root / name
+        data = path.read_bytes()
+        blob = hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest()
+        if path.is_symlink() or sha(data) != identity["sha256"] or blob != identity["git_blob"]:
+            raise ValueError("frozen C1 lifecycle reader identity mismatch")
 
 
 def validate_corpus(corpus):
@@ -423,6 +441,10 @@ class PredecessorTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.readers = json.loads((FIXTURES / "readers.json").read_text())["readers"]
+        cls.c2_reader = json.loads(
+            (FIXTURES / "c2-current/reader.json").read_text()
+        )
+        validate_c2_reader(cls.c2_reader)
         encoded = (FIXTURES / "corpus.json").read_bytes()
         if sha(encoded) != (FIXTURES / "corpus.sha256").read_text().strip():
             raise ValueError("corpus digest mismatch")
@@ -446,6 +468,88 @@ class PredecessorTests(unittest.TestCase):
         for label, cases in observed.items():
             for name, result in cases.items():
                 self.assertEqual(result, expected[label][name], (label, name, result))
+
+    def test_frozen_c1_reader_observes_genuine_c2_terminal_and_pending_records(self):
+        import council_lifecycle as lifecycle
+
+        with tempfile.TemporaryDirectory(prefix="c2-reader-state-") as directory:
+            base = Path(directory)
+            release = base / "release"
+            built = subprocess.run(
+                [sys.executable, "-B", str(ROOT / "build_release.py"),
+                 "--output", str(release)],
+                cwd=ROOT.parent,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(built.returncode, 0, built.stderr)
+            roots = (base / "state", base / "payload-parent/council", base / "opencode")
+            lifecycle.execute_operation(
+                "install", release, *roots,
+                maintenance_window_confirmed=True, transaction_id="txn-c2-reader-install",
+            )
+
+            def inspect_with_frozen(expected_status):
+                before = {
+                    str(path.relative_to(base)): sha(path.read_bytes())
+                    for path in base.rglob("*") if path.is_file()
+                }
+                response = subprocess.run(
+                    [sys.executable, "-I", "-B", str(ROOT / "predecessor_worker.py"),
+                     str(FIXTURES / "c2-current"), str(roots[0])],
+                    input=json.dumps({
+                        "reader": self.c2_reader, "clock_epoch": 2_000_000_000,
+                        "mode": "inspect", "payload_root": str(roots[1]),
+                        "opencode_root": str(roots[2]),
+                    }),
+                    capture_output=True, text=True, timeout=15,
+                )
+                self.assertEqual(response.returncode, 0, response.stderr)
+                result = json.loads(response.stdout)
+                self.assertEqual(result["constructor"], "not_invoked")
+                self.assertEqual(result["inspection"]["admission"]["status"], expected_status)
+                self.assertTrue(result["inspection"]["admission"]["envelope_valid"])
+                self.assertEqual(set(result["loaded"]), {
+                    "council", "council_protocol", "council_admission", "council_inspect"
+                })
+                after = {
+                    str(path.relative_to(base)): sha(path.read_bytes())
+                    for path in base.rglob("*") if path.is_file()
+                }
+                self.assertEqual(after, before)
+
+            inspect_with_frozen("committed")
+            refused = subprocess.run(
+                [sys.executable, "-I", "-B", str(ROOT / "predecessor_worker.py"),
+                 str(FIXTURES / "c2-current"), str(roots[0])],
+                input=json.dumps({
+                    "reader": self.c2_reader, "clock_epoch": 2_000_000_000,
+                    "case": "c2-managed-writer-refusal",
+                }),
+                capture_output=True, text=True, timeout=15,
+            )
+            self.assertEqual(refused.returncode, 0, refused.stderr)
+            self.assertEqual(json.loads(refused.stdout)["constructor"], "refused")
+            release_snapshot = lifecycle.validate_release(release)
+            ownership = lifecycle.inspect_ownership(*roots)
+            preview = lifecycle.plan_ownership("upgrade", release_snapshot, ownership)
+            with lifecycle.admission.acquire_writer_lease(roots[0]) as lease:
+                bundle = lifecycle.prepare_transaction(
+                    preview, release_snapshot, lease, transaction_id="txn-c2-reader-pending"
+                )
+                lifecycle.run_handshake(bundle)
+                lifecycle.recovery._atomic_json(
+                    roots[0] / ".council-lifecycle/admission.json",
+                    bundle["pending_admission"], None, "fixture-intent",
+                )
+            inspect_with_frozen("recovery_required")
+            with lifecycle.admission.acquire_writer_lease(roots[0]) as lease:
+                with lifecycle.C1LeaseAdapter(lease) as adapter:
+                    bundle["loaded_recoverer"]._execute_with_lease(roots[0], adapter)
+            lifecycle.execute_operation(
+                "uninstall", None, *roots, transaction_id="txn-c2-reader-uninstall"
+            )
+            inspect_with_frozen("uninstalled")
 
     def test_actual_predecessor_seed_is_read_by_current_without_route_resurrection(
         self,
@@ -518,6 +622,10 @@ class PredecessorTests(unittest.TestCase):
         descriptor["files"].pop("scripts/council_protocol.py")
         with self.assertRaises(ValueError):
             validate_reader("pre-c1", descriptor)
+        c2_reader = copy.deepcopy(self.c2_reader)
+        c2_reader["files"]["scripts/council_inspect.py"]["sha256"] = "0" * 64
+        with self.assertRaises(ValueError):
+            validate_c2_reader(c2_reader)
         corpus = copy.deepcopy(self.corpus)
         corpus["cases"].pop("pending-audit-intent")
         with self.assertRaises(ValueError):

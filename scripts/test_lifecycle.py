@@ -464,6 +464,32 @@ class LifecyclePlanningTests(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 parser.parse_args(["uninstall", "--purge-state"])
 
+    def test_reader_support_binds_runtime_and_exact_policy_corpus(self):
+        release_root = self.actual_release("reader-support")
+        release = lifecycle.validate_release(release_root)
+        support = lifecycle.reader_support_record(release)
+        self.assertEqual(support["package_id"], release["package_id"])
+        self.assertEqual(support["runtime_cohort"], release["runtime_cohort"])
+        self.assertEqual(support["state_reader"], "pass")
+        self.assertEqual(support["managed_writer_admission"], "pass")
+        self.assertEqual(support["external_recoverer"], "pass")
+
+        policy_path = release_root / "payload/scripts/fixtures/lifecycle/reader-support-v1.json"
+        policy = json.loads(policy_path.read_text())
+        policy["results"]["state_reader"] = "unknown"
+        write_file(policy_path, recovery.json_bytes(policy))
+        manifest_path = release_root / "release_manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["artifacts"][
+            "payload/scripts/fixtures/lifecycle/reader-support-v1.json"
+        ] = hashlib.sha256(policy_path.read_bytes()).hexdigest()
+        write_file(manifest_path, recovery.json_bytes(manifest))
+        changed = lifecycle.validate_release(release_root)
+        with self.assertRaisesRegex(
+            lifecycle.LifecyclePlanningError, "policy is not qualified"
+        ):
+            lifecycle.reader_support_record(changed)
+
     def test_actual_release_install_update_rollback_and_uninstall(self):
         release = self.actual_release("integration")
         roots = (
@@ -484,6 +510,13 @@ class LifecyclePlanningTests(unittest.TestCase):
             result = lifecycle.execute_operation(kind, source_root, *roots, **arguments)
             outcomes.append(result["status"])
             self.assertEqual(result["recovery_command"][1:3], ["-I", "-B"])
+            if kind == "install":
+                artifacts = lifecycle.inspect.inspect_artifacts(
+                    roots[1], roots[2], state_root=roots[0]
+                )
+                self.assertEqual(artifacts["provenance"], "managed_receipt_manifest")
+                self.assertEqual(artifacts["mismatch_count"], 0)
+                self.assertFalse((roots[1] / "release_manifest.json").exists())
         self.assertEqual(outcomes, ["committed", "committed", "committed", "uninstalled"])
         terminal = lifecycle.status(*roots)
         self.assertTrue(terminal["management"]["certified"])
@@ -520,7 +553,8 @@ class LifecyclePlanningTests(unittest.TestCase):
         )
         self.assertEqual(catalog["format"], 1)
         self.assertIn("actual-build-release", catalog["supported"])
-        self.assertIn("transaction-publication", catalog["deferred"])
+        self.assertIn("atomic-first-namespace-publication", catalog["supported"])
+        self.assertEqual(catalog["deferred"], [])
 
 
 if __name__ == "__main__":

@@ -2230,55 +2230,14 @@ class ProcessBarrierTests(unittest.TestCase):
 
 
 class LegacyFenceTests(unittest.TestCase):
-    def test_every_script_refuses_marker_before_noop_backup_or_purge(self):
-        with tempfile.TemporaryDirectory(
-            prefix="c1-home-", dir="/private/tmp"
-        ) as directory:
-            home = Path(directory)
-            marker = home / ".claude/peer-consults" / admission.NAMESPACE
-            marker.parent.mkdir(parents=True)
-            script_root = home / "source/install"
-            script_root.mkdir(parents=True)
-            for source in (SCRIPTS.parent / "install").glob("*.sh"):
-                # Only fixed-layout variable expansion is redirected in these
-                # disposable copies. Production guard/control flow is unchanged.
-                text = (
-                    source.read_text()
-                    .replace("${HOME}", "${COUNCIL_FIXTURE_HOME}")
-                    .replace("${HOME:-}", "${COUNCIL_FIXTURE_HOME:-}")
-                )
-                (script_root / source.name).write_text(text)
-            for kind in ("directory", "dangling", "file"):
-                if kind == "directory":
-                    marker.mkdir()
-                elif kind == "dangling":
-                    marker.symlink_to("missing")
-                else:
-                    marker.write_text("invalid")
-                before = inventory(home)
-                for script in ("install", "upgrade", "rollback", "uninstall"):
-                    for args in (
-                        ([], ["--purge-state"]) if script == "uninstall" else ([],)
-                    ):
-                        result = subprocess.run(
-                            [
-                                "sh",
-                                str(script_root / (script + ".sh")),
-                                *args,
-                            ],
-                            env={**os.environ, "COUNCIL_FIXTURE_HOME": str(home)},
-                            input="purge\ndelete-clone\n",
-                            capture_output=True,
-                            text=True,
-                            timeout=5,
-                        )
-                        self.assertNotEqual(result.returncode, 0)
-                        self.assertIn("managed Council namespace", result.stderr)
-                        self.assertEqual(inventory(home), before)
-                if kind == "directory":
-                    marker.rmdir()
-                else:
-                    marker.unlink()
+    def test_legacy_shell_mutation_paths_are_replaced_by_the_fixed_engine(self):
+        for command in ("install", "upgrade", "rollback", "uninstall"):
+            text = (SCRIPTS.parent / "install" / (command + ".sh")).read_text()
+            self.assertIn("exec python3 -I -B", text)
+            self.assertIn("scripts/council_lifecycle.py", text)
+            self.assertIn(" " + command + ' "$@"', text)
+            for forbidden in ("rm -rf", "git pull", "mktemp", "broker.sock"):
+                self.assertNotIn(forbidden, text)
 
 
 if __name__ == "__main__":

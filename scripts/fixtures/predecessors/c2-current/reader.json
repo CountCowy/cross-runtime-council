@@ -1,0 +1,30 @@
+{
+  "commit": "fd4862d733db267410529238a4ca680e8612a073",
+  "files": {
+    "LICENSE": {
+      "git_blob": "261eeb9e9f8b2b4b0d119366dda99c6fd7d35c64",
+      "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+    },
+    "NOTICE": {
+      "git_blob": "c108dc29e9f39bd5498bc145584d8d27193e341a",
+      "sha256": "c107f4746d20aaa762ad632e1feaf75c22a3b025f05d1362675f8f728597f603"
+    },
+    "scripts/council.py": {
+      "git_blob": "3ce20dc4c85f0c6cce2bed9e74ee670f6aa8ab59",
+      "sha256": "7fd23877e88fafdf32b59739142eddbd94d883bcd47caa9373a8011000624f2b"
+    },
+    "scripts/council_admission.py": {
+      "git_blob": "c5bc9cf0e97096dffea257f030cedae148d7799e",
+      "sha256": "64a229aa54a5d553700e942054448d120711a332569efbc16184e2c299ddf5a2"
+    },
+    "scripts/council_inspect.py": {
+      "git_blob": "846e15589dfd2b135def79c4c130b4ae9be0f969",
+      "sha256": "2abea084a7adb9347a74194c4c4fb63c5448172ed6e284e52d3af6b9a1cc2b61"
+    },
+    "scripts/council_protocol.py": {
+      "git_blob": "681a62f7876e1ffb48be74d1f100bc6b1fad1c3c",
+      "sha256": "42401a5ccc2aee66ffc711d893d24add0f806a3bd9cf6ffbf4d22482a079595a"
+    }
+  },
+  "managed_writer_admission": true
+}

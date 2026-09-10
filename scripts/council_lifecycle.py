@@ -100,14 +100,16 @@ def _observed_root(path: Path) -> Path:
         if path.is_symlink():
             raise LifecyclePlanningError("root path must not be a symlink")
         return path.resolve(strict=True)
+    missing = [path.name]
     ancestor = path.parent
     while not ancestor.exists():
         if ancestor == ancestor.parent:
             break
+        missing.append(ancestor.name)
         ancestor = ancestor.parent
-    if ancestor.is_symlink() or ancestor.resolve(strict=True) != ancestor:
-        raise LifecyclePlanningError("absent root has a symlinked ancestor")
-    return path
+    if not ancestor.is_dir():
+        raise LifecyclePlanningError("absent root has no physical directory ancestor")
+    return ancestor.resolve(strict=True).joinpath(*reversed(missing))
 
 
 def _release_tree_files(release_root: Path) -> Tuple[List[str], List[str]]:
@@ -321,10 +323,30 @@ def retained_release(state_root: Path, receipt_id: str) -> Dict[str, Any]:
     receipt_id = recovery.checked_id(receipt_id, "rollback receipt_id")
     state_root = _real_directory(state_root, "state root")
     lifecycle = state_root / ".council-lifecycle"
-    receipt_path = lifecycle / "v1/receipts" / (receipt_id + ".json")
-    receipt, receipt_data = recovery.read_object(receipt_path, "rollback receipt")
-    receipt = recovery.validate_receipt_shape(receipt, "rollback receipt")
-    if receipt["receipt_id"] != receipt_id or receipt["outcome"] != "committed":
+    admission_value, _ = recovery.read_object(lifecycle / "admission.json", "admission")
+    admission_value = recovery.validate_admission(admission_value)
+    if admission_value["status"] != "committed":
+        raise LifecyclePlanningError("rollback requires a committed current installation")
+    reference = admission_value["committed"]
+    seen = set()
+    receipt = receipt_data = None
+    while reference is not None and reference["receipt_id"] not in seen:
+        seen.add(reference["receipt_id"])
+        if len(seen) > recovery.MAX_ARTIFACTS:
+            raise LifecyclePlanningError("rollback receipt history exceeds its bound")
+        path = lifecycle / "v1/receipts" / (reference["receipt_id"] + ".json")
+        candidate, candidate_data = recovery.read_object(path, "receipt history")
+        candidate = recovery.validate_receipt_shape(candidate, "receipt history")
+        if (candidate["receipt_id"] != reference["receipt_id"] or
+                recovery.sha256_bytes(candidate_data) != reference["receipt_sha256"]):
+            raise LifecyclePlanningError("rollback receipt history binding is invalid")
+        if candidate["receipt_id"] == receipt_id:
+            receipt, receipt_data = candidate, candidate_data
+            break
+        reference = candidate["prior_receipt"]
+    if receipt is None or receipt_data is None:
+        raise LifecyclePlanningError("rollback receipt is not in current managed history")
+    if receipt["outcome"] != "committed":
         raise LifecyclePlanningError("rollback source must be a committed receipt")
     roots = recovery.validate_roots(receipt["roots"])
     if roots["state"] != str(state_root):
@@ -725,16 +747,39 @@ def _release_artifact_map(release: Dict[str, Any]) -> Dict[Tuple[str, str], Dict
 def reader_support_record(release: Dict[str, Any]) -> Dict[str, Any]:
     release = _validate_release_snapshot(release)
     artifacts = {item["release_path"]: item["sha256"] for item in release["artifacts"]}
-    reader_names = [
-        "payload/scripts/council_protocol.py",
-        "payload/scripts/council_admission.py",
-        "payload/scripts/council_inspect.py",
-        "payload/scripts/council.py",
+    policy_name = "payload/scripts/fixtures/lifecycle/reader-support-v1.json"
+    policy, policy_data = recovery.read_object(
+        Path(release["root"]) / policy_name, "reader support policy"
+    )
+    recovery.exact_keys(
+        policy, ("format", "features", "formats", "required_tests", "results"),
+        "reader support policy",
+    )
+    if recovery.exact_int(policy["format"], "reader support policy format", 1) != 1:
+        raise LifecyclePlanningError("unsupported reader support policy")
+    required_tests = [
+        "scripts/test_admission.py", "scripts/test_lifecycle.py",
+        "scripts/test_lifecycle_recovery.py", "scripts/test_predecessors.py",
     ]
-    closure_names = reader_names + [
+    if policy["required_tests"] != required_tests or any(
+        "payload/" + name not in artifacts for name in required_tests
+    ):
+        raise LifecyclePlanningError("reader support policy lacks its exact test closure")
+    results = policy["results"]
+    if not isinstance(results, dict):
+        raise LifecyclePlanningError("reader support results must be an object")
+    recovery.exact_keys(
+        results, ("state_reader", "managed_writer_admission", "external_recoverer"),
+        "reader support results",
+    )
+    if any(value != "pass" for value in results.values()):
+        raise LifecyclePlanningError("reader support policy is not qualified")
+    reader_names = ["payload/" + name for name in release["runtime_sources"]]
+    closure_names = sorted(set(reader_names + [
         "payload/scripts/council_recover.py",
         "payload/scripts/council_lifecycle.py",
-    ]
+        policy_name,
+    ]))
     if any(name not in artifacts for name in closure_names):
         raise LifecyclePlanningError("release lacks the lifecycle reader/import closure")
 
@@ -743,23 +788,34 @@ def reader_support_record(release: Dict[str, Any]) -> Dict[str, Any]:
             json.dumps([[name, artifacts[name]] for name in names], separators=(",", ":")).encode()
         ).hexdigest()
 
-    corpus = artifacts.get("payload/scripts/fixtures/predecessors/corpus.json")
-    if corpus is None:
+    corpus_names = [
+        "payload/scripts/fixtures/predecessors/corpus.json",
+        "payload/scripts/fixtures/predecessors/corpus.sha256",
+        "payload/scripts/fixtures/predecessors/readers.json",
+        "payload/scripts/fixtures/predecessors/support.json",
+        "payload/scripts/fixtures/predecessors/c2-current/LICENSE",
+        "payload/scripts/fixtures/predecessors/c2-current/NOTICE",
+        "payload/scripts/fixtures/predecessors/c2-current/reader.json",
+        "payload/scripts/fixtures/predecessors/c2-current/scripts/council.py",
+        "payload/scripts/fixtures/predecessors/c2-current/scripts/council_admission.py",
+        "payload/scripts/fixtures/predecessors/c2-current/scripts/council_inspect.py",
+        "payload/scripts/fixtures/predecessors/c2-current/scripts/council_protocol.py",
+    ]
+    if any(name not in artifacts for name in corpus_names):
         raise LifecyclePlanningError("release lacks predecessor corpus evidence")
+    if recovery.sha256_bytes(policy_data) != artifacts[policy_name]:
+        raise LifecyclePlanningError("reader support policy changed during validation")
     record = {
         "source_sha256": identity(reader_names),
         "package_id": release["package_id"],
         "runtime_cohort": release["runtime_cohort"],
         "import_closure_sha256": identity(closure_names),
-        "fixture_corpus_sha256": corpus,
-        "features": [
-            "audit", "dialogues", "lifecycle-v1", "outbox", "registrations",
-            "retention", "router", "tombstones",
-        ],
-        "state_reader": "pass",
-        "managed_writer_admission": "pass",
-        "external_recoverer": "pass",
-        "formats": {"admission": 1, "plan": 1, "journal": 1, "receipt": 1, "recovery": 1},
+        "fixture_corpus_sha256": identity(corpus_names),
+        "features": policy["features"],
+        "state_reader": results["state_reader"],
+        "managed_writer_admission": results["managed_writer_admission"],
+        "external_recoverer": results["external_recoverer"],
+        "formats": policy["formats"],
     }
     return recovery.validate_reader_support(record)
 
@@ -1212,6 +1268,9 @@ def execute_operation(kind: str, release_root: Optional[Path], state_root: Path,
         raise LifecyclePlanningError(
             "first adoption requires an explicit maintenance-window decision"
         )
+    state_input = Path(preflight["roots"]["state"])
+    payload_input = Path(preflight["roots"]["payload"])
+    opencode_input = Path(preflight["roots"]["opencode"])
     with admission.acquire_writer_lease(state_input) as lease:
         with lease.operation():
             _create_fixed_directory(payload_input.parent)
