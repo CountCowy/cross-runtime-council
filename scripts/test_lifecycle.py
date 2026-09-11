@@ -257,10 +257,13 @@ class LifecyclePlanningTests(unittest.TestCase):
         )
         original = lifecycle._copy_file
 
-        def change_before_copy(source, destination, expected_sha256, mode=0o644):
+        def change_before_copy(source, destination, expected_sha256, mode=0o644,
+                               *arguments):
             if source == changing:
                 write_file(changing, b"after")
-            return original(source, destination, expected_sha256, mode)
+            return original(
+                source, destination, expected_sha256, mode, *arguments
+            )
 
         with lifecycle.admission.acquire_writer_lease(state) as lease:
             with mock.patch.object(lifecycle, "_copy_file", side_effect=change_before_copy):
@@ -852,8 +855,8 @@ class LifecyclePlanningTests(unittest.TestCase):
         original = lifecycle._copy_state
         calls = {"count": 0}
 
-        def fail_after_copy(source, destination, expected):
-            original(source, destination, expected)
+        def fail_after_copy(*arguments):
+            original(*arguments)
             calls["count"] += 1
             if calls["count"] == 1:
                 raise RuntimeError("synthetic copy failure")
@@ -893,7 +896,7 @@ class LifecyclePlanningTests(unittest.TestCase):
         }
         self.assertEqual(
             {name: len(values) for name, values in categories.items()},
-            {"record": 27, "control": 6, "copy": 6},
+            {"record": 52, "control": 6, "copy": 6},
         )
 
         for category, expected_events in categories.items():
@@ -939,6 +942,275 @@ class LifecyclePlanningTests(unittest.TestCase):
                     self.assertEqual(
                         list(roots[0].glob(".council-lifecycle.prepare-*")), []
                     )
+
+    def test_first_and_later_preparation_record_pending_states_reconcile_safely(self):
+        release = self.actual_release("preparation-record-pending")
+        cases = (
+            ("empty", "before:write:preparation-record", 0),
+            ("truncated", "before:write:preparation-record", 0),
+            ("complete", "after:write:preparation-record", 0),
+            ("later-complete", "after:write:preparation-record", 1),
+        )
+        for case, selected, occurrence in cases:
+            with self.subTest(case=case):
+                roots = self.roots("preparation-record-%s-" % case)
+                child = os.fork()
+                if child == 0:
+                    seen = {"count": 0}
+
+                    def crash(event):
+                        if event == selected:
+                            if seen["count"] == occurrence:
+                                os._exit(93)
+                            seen["count"] += 1
+
+                    lifecycle.execute_operation(
+                        "install", release, *roots,
+                        maintenance_window_confirmed=True,
+                        transaction_id="txn-record-" + case,
+                        _preparation_failpoint=crash,
+                    )
+                    os._exit(0)
+                _pid, child_status = os.waitpid(child, 0)
+                self.assertEqual(os.waitstatus_to_exitcode(child_status), 93)
+                if case == "truncated":
+                    pending = next(
+                        (roots[0] / recovery.PREPARATION_ROOT_NAME).glob(".*.pending")
+                    )
+                    pending.write_bytes(b"{")
+                    pending.chmod(0o600)
+                result = lifecycle.execute_operation(
+                    "install", release, *roots,
+                    maintenance_window_confirmed=True,
+                    transaction_id="txn-record-retry-" + case,
+                )
+                self.assertEqual(result["status"], "committed")
+                self.assertEqual(
+                    list((roots[0] / recovery.PREPARATION_ROOT_NAME).iterdir()), []
+                )
+
+        roots = self.roots("preparation-record-later-malformed-")
+        child = os.fork()
+        if child == 0:
+            seen = {"count": 0}
+
+            def crash_later(event):
+                if event == "before:write:preparation-record":
+                    if seen["count"] == 1:
+                        os._exit(94)
+                    seen["count"] += 1
+
+            lifecycle.execute_operation(
+                "install", release, *roots,
+                maintenance_window_confirmed=True,
+                transaction_id="txn-later-malformed",
+                _preparation_failpoint=crash_later,
+            )
+            os._exit(0)
+        _pid, child_status = os.waitpid(child, 0)
+        self.assertEqual(os.waitstatus_to_exitcode(child_status), 94)
+        pending = next(
+            (roots[0] / recovery.PREPARATION_ROOT_NAME).glob(".*.pending")
+        )
+        self.assertEqual(pending.stat().st_size, 0)
+        with self.assertRaises(lifecycle.recovery.RecoveryError):
+            lifecycle.execute_operation(
+                "install", release, *roots,
+                maintenance_window_confirmed=True,
+                transaction_id="txn-after-later-malformed",
+            )
+        self.assertTrue(pending.is_file())
+
+    def test_unbound_preparation_pending_type_link_and_intent_refuse(self):
+        for case in ("symlink", "hardlink"):
+            with self.subTest(case=case):
+                roots = self.roots("preparation-pending-%s-" % case)
+                record_root = roots[0] / recovery.PREPARATION_ROOT_NAME
+                make_directory(record_root)
+                pending = record_root / ".txn-unbound.json.pending"
+                outside = self.root / ("pending-outside-" + case)
+                write_file(outside, b"outside\n", 0o600)
+                if case == "symlink":
+                    pending.symlink_to(outside)
+                else:
+                    os.link(outside, pending)
+                before = outside.read_bytes()
+                with self.assertRaisesRegex(
+                    lifecycle.LifecyclePlanningError, "pending record changed"
+                ):
+                    with lifecycle.admission.acquire_writer_lease(roots[0]) as lease:
+                        with lease.operation():
+                            lifecycle._reconcile_preparations(roots[0], lease)
+                self.assertEqual(outside.read_bytes(), before)
+                self.assertTrue(pending.exists() or pending.is_symlink())
+
+        fixture = Fixture(self.root / "preparation-published-intent")
+        fixture.publish_intent()
+        record_root = fixture.state / recovery.PREPARATION_ROOT_NAME
+        make_directory(record_root)
+        pending = record_root / (".%s.json.pending" % fixture.transaction_id)
+        write_file(pending, b"", 0o600)
+        with self.assertRaisesRegex(
+            lifecycle.LifecyclePlanningError, "published intent|transaction content"
+        ):
+            lifecycle._remove_stale_preparation_pending(
+                pending, None, fixture.state
+            )
+        self.assertTrue(pending.is_file())
+
+    def test_incomplete_prepared_outputs_reconcile_write_and_copy_interruptions(self):
+        release = self.actual_release("incomplete-prepared-output")
+        roots = self.roots("incomplete-enospc-")
+        transaction_id = "txn-incomplete-enospc"
+        source_manifest = (
+            roots[0] / (".council-lifecycle.prepare-" + transaction_id)
+            / "v1/transactions" / transaction_id / "source-manifest.json"
+        )
+
+        def no_space(event):
+            if event == "before:prepare-write:source-manifest":
+                source_manifest.write_bytes(b"partial")
+                source_manifest.chmod(0o600)
+                raise OSError("ENOSPC")
+
+        with self.assertRaisesRegex(OSError, "ENOSPC"):
+            lifecycle.execute_operation(
+                "install", release, *roots,
+                maintenance_window_confirmed=True,
+                transaction_id=transaction_id,
+                _preparation_failpoint=no_space,
+            )
+        self.assertFalse(source_manifest.exists())
+        self.assertEqual(
+            lifecycle.execute_operation(
+                "install", release, *roots,
+                maintenance_window_confirmed=True,
+                transaction_id="txn-after-incomplete-enospc",
+            )["status"],
+            "committed",
+        )
+
+        probe_roots = self.roots("incomplete-boundary-probe-")
+        snapshot = lifecycle.validate_release(release)
+        preview = lifecycle.plan_ownership(
+            "install", snapshot, lifecycle.inspect_ownership(*probe_roots)
+        )
+        events = []
+        with lifecycle.admission.acquire_writer_lease(probe_roots[0]) as lease:
+            bundle = lifecycle.prepare_transaction(
+                preview, snapshot, lease,
+                transaction_id="txn-incomplete-boundary-probe",
+                failpoint=events.append,
+            )
+            lifecycle._cleanup_preintent_bundle(bundle)
+        boundaries = [
+            event for event in events
+            if event.startswith((
+                "before:prepare-write:", "after:prepare-write:",
+                "before:prepare-copy:", "after:prepare-copy:",
+                "before:prepare-tree:", "after:prepare-tree:",
+            ))
+        ]
+        self.assertEqual(len(boundaries), 26)
+        for boundary in range(len(boundaries)):
+            with self.subTest(boundary=boundary, event=boundaries[boundary]):
+                roots = self.roots("incomplete-boundary-%d-" % boundary)
+                child = os.fork()
+                if child == 0:
+                    seen = {"count": 0}
+
+                    def crash(event):
+                        if event.startswith((
+                            "before:prepare-write:", "after:prepare-write:",
+                            "before:prepare-copy:", "after:prepare-copy:",
+                            "before:prepare-tree:", "after:prepare-tree:",
+                        )):
+                            if seen["count"] == boundary:
+                                os._exit(95)
+                            seen["count"] += 1
+
+                    lifecycle.execute_operation(
+                        "install", release, *roots,
+                        maintenance_window_confirmed=True,
+                        transaction_id="txn-incomplete-boundary",
+                        _preparation_failpoint=crash,
+                    )
+                    os._exit(0)
+                _pid, child_status = os.waitpid(child, 0)
+                self.assertEqual(os.waitstatus_to_exitcode(child_status), 95)
+                result = lifecycle.execute_operation(
+                    "install", release, *roots,
+                    maintenance_window_confirmed=True,
+                    transaction_id="txn-incomplete-retry",
+                )
+                self.assertEqual(result["status"], "committed")
+                self.assertEqual(
+                    list((roots[0] / recovery.PREPARATION_ROOT_NAME).iterdir()), []
+                )
+
+    def test_incomplete_prepared_output_substitution_and_unknown_child_refuse(self):
+        release = self.actual_release("incomplete-substitution")
+        roots = self.roots("incomplete-substitution-")
+        child = os.fork()
+        if child == 0:
+            def stop_copy(event):
+                if event == "before:prepare-copy:recovery-tool":
+                    os._exit(96)
+
+            lifecycle.execute_operation(
+                "install", release, *roots,
+                maintenance_window_confirmed=True,
+                transaction_id="txn-incomplete-substitution",
+                _preparation_failpoint=stop_copy,
+            )
+            os._exit(0)
+        _pid, child_status = os.waitpid(child, 0)
+        self.assertEqual(os.waitstatus_to_exitcode(child_status), 96)
+        tool = next(
+            (roots[0] / ".council-lifecycle.prepare-txn-incomplete-substitution"
+             / "v1/recovery").glob("*.py")
+        )
+        tool.unlink()
+        write_file(tool, b"", 0o600)
+        with self.assertRaisesRegex(
+            lifecycle.LifecyclePlanningError, "output identity changed"
+        ):
+            lifecycle.execute_operation(
+                "install", release, *roots,
+                maintenance_window_confirmed=True,
+                transaction_id="txn-after-incomplete-substitution",
+            )
+        self.assertEqual(tool.read_bytes(), b"")
+
+        roots = self.roots("incomplete-unknown-child-")
+        child = os.fork()
+        if child == 0:
+            def stop_tree(event):
+                if event.startswith("before:prepare-tree:"):
+                    os._exit(97)
+
+            lifecycle.execute_operation(
+                "install", release, *roots,
+                maintenance_window_confirmed=True,
+                transaction_id="txn-incomplete-unknown-child",
+                _preparation_failpoint=stop_tree,
+            )
+            os._exit(0)
+        _pid, child_status = os.waitpid(child, 0)
+        self.assertEqual(os.waitstatus_to_exitcode(child_status), 97)
+        target = roots[1].parent / (
+            ".council-lifecycle-txn-incomplete-unknown-child-payload-target"
+        )
+        write_file(target / "unexpected.txt", b"unexpected\n")
+        with self.assertRaisesRegex(
+            lifecycle.LifecyclePlanningError, "unexpected content"
+        ):
+            lifecycle.execute_operation(
+                "install", release, *roots,
+                maintenance_window_confirmed=True,
+                transaction_id="txn-after-incomplete-unknown-child",
+            )
+        self.assertEqual((target / "unexpected.txt").read_bytes(), b"unexpected\n")
 
     def test_abandoned_preparation_with_changed_content_is_preserved(self):
         release = self.actual_release("preparation-change")

@@ -1405,6 +1405,150 @@ class LifecycleRecoveryTests(unittest.TestCase):
                     fixture.engine.recover(fixture.state)
                 fixture.assert_goal(self, "prior")
 
+    def test_nested_staged_payload_abort_completes_in_one_call(self):
+        fixture = self.fixture()
+        fixture.publish_intent()
+
+        def stop_after_nested_file(event):
+            if event == (
+                "after:replace-materialized-file:"
+                "payload:target:scripts/runtime.py"
+            ):
+                raise RuntimeError("complete nested stage")
+
+        with self.assertRaisesRegex(RuntimeError, "complete nested stage"):
+            fixture.engine.recover(
+                fixture.state, failpoint=stop_after_nested_file
+            )
+        stage = Path(fixture.units[0]["objects"]["stage"])
+        self.assertTrue((stage / "scripts/runtime.py").is_file())
+        result = fixture.engine.recover(fixture.state, abort=True)
+        self.assertEqual(result["status"], "uninstalled")
+        fixture.assert_goal(self, "prior")
+        self.assertFalse(stage.exists())
+
+    def test_nested_stage_directory_replacement_or_type_change_refuses(self):
+        for mutation in ("replacement", "type-change"):
+            with self.subTest(mutation=mutation):
+                fixture = self.fixture()
+                fixture.publish_intent()
+
+                def stop_after_nested_file(event):
+                    if event == (
+                        "after:replace-materialized-file:"
+                        "payload:target:scripts/runtime.py"
+                    ):
+                        raise RuntimeError("complete nested stage")
+
+                with self.assertRaisesRegex(RuntimeError, "complete nested stage"):
+                    fixture.engine.recover(
+                        fixture.state, failpoint=stop_after_nested_file
+                    )
+                stage = Path(fixture.units[0]["objects"]["stage"])
+                nested = stage / "scripts"
+                saved = stage / "scripts.saved"
+                changed = {"done": False}
+
+                def change_nested_directory(event):
+                    if not event.endswith(
+                        "payload:discard-target-stage:scripts"
+                    ) or not event.startswith("before:rmdir-stage:"):
+                        return
+                    if mutation == "replacement":
+                        nested.rename(saved)
+                        make_directory(nested)
+                    else:
+                        nested.rmdir()
+                        write_file(nested, b"replacement type\n")
+                    changed["done"] = True
+
+                with self.assertRaisesRegex(
+                    fixture.engine.RecoveryError,
+                    "stage changed during bounded removal",
+                ):
+                    fixture.engine.recover(
+                        fixture.state,
+                        abort=True,
+                        failpoint=change_nested_directory,
+                    )
+                self.assertTrue(changed["done"])
+                if mutation == "replacement":
+                    self.assertTrue(saved.is_dir())
+                    self.assertTrue(nested.is_dir())
+                else:
+                    self.assertTrue(nested.is_file())
+
+    def test_staged_payload_file_and_inventory_changes_remain_fail_closed(self):
+        for mutation in ("content", "symlink", "hardlink", "unexpected"):
+            with self.subTest(mutation=mutation):
+                fixture = self.fixture()
+                fixture.publish_intent()
+
+                def stop_after_nested_file(event):
+                    if event == (
+                        "after:replace-materialized-file:"
+                        "payload:target:scripts/runtime.py"
+                    ):
+                        raise RuntimeError("complete nested stage")
+
+                with self.assertRaisesRegex(RuntimeError, "complete nested stage"):
+                    fixture.engine.recover(
+                        fixture.state, failpoint=stop_after_nested_file
+                    )
+                stage = Path(fixture.units[0]["objects"]["stage"])
+                skill = stage / "SKILL.md"
+                if mutation == "content":
+                    skill.write_bytes(b"changed staged content\n")
+                elif mutation == "symlink":
+                    skill.unlink()
+                    skill.symlink_to("scripts/runtime.py")
+                elif mutation == "hardlink":
+                    os.link(skill, fixture.root / "external-hardlink")
+                else:
+                    write_file(stage / "unexpected.txt", b"unexpected\n")
+                with self.assertRaisesRegex(
+                    fixture.engine.RecoveryError,
+                    "stage contains unknown content|known disposable stage",
+                ):
+                    fixture.engine.recover(fixture.state, abort=True)
+
+    def test_staged_payload_file_identity_change_during_removal_refuses(self):
+        fixture = self.fixture()
+        fixture.publish_intent()
+
+        def stop_after_nested_file(event):
+            if event == (
+                "after:replace-materialized-file:"
+                "payload:target:scripts/runtime.py"
+            ):
+                raise RuntimeError("complete nested stage")
+
+        with self.assertRaisesRegex(RuntimeError, "complete nested stage"):
+            fixture.engine.recover(fixture.state, failpoint=stop_after_nested_file)
+        stage = Path(fixture.units[0]["objects"]["stage"])
+        skill = stage / "SKILL.md"
+        original = skill.read_bytes()
+        displaced = stage / "SKILL.saved"
+        changed = {"done": False}
+
+        def replace_file(event):
+            if event.endswith("payload:discard-target-stage:SKILL.md") and event.startswith(
+                "before:unlink-stage:"
+            ):
+                skill.rename(displaced)
+                write_file(skill, original)
+                changed["done"] = True
+
+        with self.assertRaisesRegex(
+            fixture.engine.RecoveryError, "stage changed during bounded removal"
+        ):
+            fixture.engine.recover(
+                fixture.state, abort=True, failpoint=replace_file
+            )
+        self.assertTrue(changed["done"])
+        self.assertEqual(skill.read_bytes(), original)
+        self.assertEqual(displaced.read_bytes(), original)
+
     def test_fsync_failure_and_premature_terminal_marker_do_not_claim_success(self):
         fixture = self.fixture()
         fixture.publish_intent()

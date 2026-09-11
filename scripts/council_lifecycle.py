@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import json
 import os
@@ -827,6 +828,16 @@ def _prepared_file_state(data: bytes, mode: int = 0o600) -> Dict[str, Any]:
     }
 
 
+def _prepared_identity(details: Any) -> Dict[str, Any]:
+    if stat.S_ISREG(details.st_mode) and details.st_nlink == 1:
+        kind = "file"
+    elif stat.S_ISDIR(details.st_mode) and not stat.S_ISLNK(details.st_mode):
+        kind = "directory"
+    else:
+        raise LifecyclePlanningError("prepared output has an unsupported identity")
+    return {"device": details.st_dev, "inode": details.st_ino, "kind": kind}
+
+
 def _preparation_root(state_root: Path) -> Path:
     return state_root / recovery.PREPARATION_ROOT_NAME
 
@@ -878,7 +889,10 @@ def _validate_preparation_record(value: Any, state_root: Path) -> Dict[str, Any]
         label = "preparation claim %d" % index
         if not isinstance(claim, dict):
             raise LifecyclePlanningError("%s must be an object" % label)
-        recovery.exact_keys(claim, ("path", "parent_identity", "expected"), label)
+        recovery.exact_keys(
+            claim, ("path", "parent_identity", "expected", "phase", "identity"),
+            label,
+        )
         path = recovery.checked_absolute(claim["path"], label + " path")
         if path in seen:
             raise LifecyclePlanningError("duplicate preparation claim")
@@ -892,8 +906,27 @@ def _validate_preparation_record(value: Any, state_root: Path) -> Dict[str, Any]
         if expected is not None:
             kind = expected.get("kind") if isinstance(expected, dict) else None
             recovery.validate_state(expected, label + " expected", kind)
+        if claim["phase"] not in {"reserved", "incomplete", "complete"}:
+            raise LifecyclePlanningError("preparation claim phase is unsupported")
+        identity = claim["identity"]
+        if claim["phase"] == "reserved":
+            if identity is not None:
+                raise LifecyclePlanningError("reserved preparation claim has an identity")
+        else:
+            if not isinstance(identity, dict):
+                raise LifecyclePlanningError("owned preparation claim lacks an identity")
+            recovery.exact_keys(identity, ("device", "inode", "kind"), label + " identity")
+            recovery.exact_int(identity["device"], label + " identity device")
+            recovery.exact_int(identity["inode"], label + " identity inode")
+            if identity["kind"] not in {"file", "directory"}:
+                raise LifecyclePlanningError("preparation identity kind is unsupported")
+            if expected is not None and identity["kind"] != expected["kind"]:
+                raise LifecyclePlanningError("preparation identity kind differs from expected")
+        if claim["phase"] == "complete" and expected is None:
+            raise LifecyclePlanningError("complete preparation claim lacks final state")
         inside_control = path == control or control in path.parents
-        if not inside_control and path not in allowed_objects:
+        inside_object = any(path == item or item in path.parents for item in allowed_objects)
+        if not inside_control and not inside_object:
             raise LifecyclePlanningError("preparation claim escapes the fixed namespace")
     return value
 
@@ -939,7 +972,42 @@ def _remove_prepared_tree(path: Path, expected: Dict[str, Any], counter: List[in
         recovery._sync_directory(child.parent, None, "pre-intent-cleanup")
 
 
-def _remove_prepared_path(path: Path, expected: Optional[Dict[str, Any]],
+def _remove_incomplete_prepared_tree(path: Path, expected: Optional[Dict[str, Any]],
+                                     counter: List[int]) -> None:
+    allowed = (
+        {} if expected is None
+        else {item["path"]: item for item in expected["artifacts"]}
+    )
+    actual = []
+    for child in path.rglob("*"):
+        relative = str(child.relative_to(path).as_posix())
+        planned = allowed.get(relative)
+        details = child.lstat()
+        if planned is None or stat.S_ISLNK(details.st_mode):
+            raise LifecyclePlanningError("prepared cleanup encountered unexpected content")
+        if planned["kind"] == "file":
+            if not stat.S_ISREG(details.st_mode) or details.st_nlink != 1:
+                raise LifecyclePlanningError("prepared cleanup encountered a changed file")
+        elif not stat.S_ISDIR(details.st_mode):
+            raise LifecyclePlanningError("prepared cleanup encountered a changed directory")
+        if stat.S_IMODE(details.st_mode) != planned["mode"]:
+            raise LifecyclePlanningError("prepared cleanup encountered changed metadata")
+        actual.append(child)
+        counter[0] += 1
+        if counter[0] > recovery.MAX_ARTIFACTS * 2:
+            raise LifecyclePlanningError("prepared cleanup exceeds its bound")
+    for child in sorted(
+        actual, key=lambda item: (len(item.relative_to(path).parts), str(item)),
+        reverse=True,
+    ):
+        if child.is_dir():
+            child.rmdir()
+        else:
+            child.unlink()
+        recovery._sync_directory(child.parent, None, "incomplete-preparation-cleanup")
+
+
+def _remove_prepared_path(path: Path, claim: Dict[str, Any],
                           counter: List[int]) -> None:
     try:
         details = path.lstat()
@@ -950,30 +1018,46 @@ def _remove_prepared_path(path: Path, expected: Optional[Dict[str, Any]],
         raise LifecyclePlanningError("prepared cleanup exceeds its bound")
     if stat.S_ISLNK(details.st_mode):
         raise LifecyclePlanningError("prepared cleanup encountered a symlink")
-    if expected is not None and expected["kind"] == "file":
+    expected = claim["expected"]
+    phase = claim["phase"]
+    if phase == "reserved":
+        if stat.S_ISREG(details.st_mode):
+            if details.st_nlink != 1 or details.st_size != 0:
+                raise LifecyclePlanningError("reserved preparation file is not empty")
+            if expected is not None and expected["kind"] != "file":
+                raise LifecyclePlanningError("reserved preparation kind differs")
+            path.unlink()
+            recovery._sync_directory(path.parent, None, "reserved-preparation-cleanup")
+            return
+        if not stat.S_ISDIR(details.st_mode):
+            raise LifecyclePlanningError("reserved preparation has unsupported content")
+        if expected is not None and expected["kind"] != "directory":
+            raise LifecyclePlanningError("reserved preparation kind differs")
+        with os.scandir(path) as entries:
+            if next(entries, None) is not None:
+                raise LifecyclePlanningError("reserved preparation directory is not empty")
+        path.rmdir()
+        recovery._sync_directory(path.parent, None, "reserved-preparation-cleanup")
+        return
+    identity = _prepared_identity(details)
+    if identity != claim["identity"]:
+        raise LifecyclePlanningError("prepared output identity changed")
+    if phase == "complete" and expected is not None and not recovery.state_matches(path, expected):
+        raise LifecyclePlanningError("complete prepared output changed")
+    if identity["kind"] == "file":
         if not stat.S_ISREG(details.st_mode):
             raise LifecyclePlanningError("prepared cleanup encountered a changed file")
         if details.st_nlink != 1:
             raise LifecyclePlanningError("prepared cleanup encountered a hard link")
-        if not recovery.state_matches(path, expected):
-            raise LifecyclePlanningError("prepared cleanup encountered changed file bytes")
         path.unlink()
         recovery._sync_directory(path.parent, None, "pre-intent-cleanup")
         return
     if not stat.S_ISDIR(details.st_mode):
         raise LifecyclePlanningError("prepared cleanup encountered unsupported content")
-    if expected is not None:
-        if expected["kind"] != "directory":
-            raise LifecyclePlanningError("prepared cleanup kind differs")
-        if stat.S_IMODE(details.st_mode) != expected["mode"]:
-            raise LifecyclePlanningError("prepared cleanup directory mode differs")
+    if phase == "complete" and expected is not None:
         _remove_prepared_tree(path, expected, counter)
     else:
-        with os.scandir(path) as entries:
-            if next(entries, None) is not None:
-                raise LifecyclePlanningError(
-                    "prepared cleanup directory contains unexpected content"
-                )
+        _remove_incomplete_prepared_tree(path, expected, counter)
     path.rmdir()
     recovery._sync_directory(path.parent, None, "pre-intent-cleanup")
 
@@ -1014,11 +1098,37 @@ class _PreparationGuard:
         )
 
     @property
-    def claims(self) -> List[Tuple[Path, Dict[str, int], Optional[Dict[str, Any]]]]:
-        return [
-            (Path(item["path"]), item["parent_identity"], item["expected"])
-            for item in self.record["claims"]
-        ]
+    def claims(self) -> List[Dict[str, Any]]:
+        return list(self.record["claims"])
+
+    def _publish(self, previous: Dict[str, Any]) -> None:
+        _validate_preparation_record(self.record, self.state_root)
+        current_data = recovery.json_bytes(self.record)
+        previous_data = recovery.json_bytes(previous)
+        try:
+            recovery._atomic_json(
+                self.record_path, self.record, self.failpoint, "preparation-record"
+            )
+        except BaseException:
+            try:
+                observed = recovery.read_regular(
+                    self.record_path, "preparation ownership record"
+                )
+            except FileNotFoundError:
+                observed = None
+            if observed == previous_data:
+                self.record = previous
+            elif observed != current_data:
+                raise LifecyclePlanningError(
+                    "preparation record publication outcome is uncertain"
+                )
+            raise
+
+    def _claim(self, path: Path) -> Dict[str, Any]:
+        matches = [item for item in self.record["claims"] if item["path"] == str(path)]
+        if len(matches) != 1:
+            raise LifecyclePlanningError("prepared path does not have one ownership claim")
+        return matches[0]
 
     def claim_absent(self, path: Path,
                      expected: Optional[Dict[str, Any]] = None) -> None:
@@ -1029,12 +1139,38 @@ class _PreparationGuard:
             "path": str(path),
             "parent_identity": recovery.physical_identity(path.parent),
             "expected": expected,
+            "phase": "reserved",
+            "identity": None,
         }
+        previous = copy.deepcopy(self.record)
         self.record["claims"].append(claim)
-        _validate_preparation_record(self.record, self.state_root)
-        recovery._atomic_json(
-            self.record_path, self.record, self.failpoint, "preparation-record"
-        )
+        self._publish(previous)
+
+    def bind_incomplete(self, path: Path, details: Any) -> None:
+        self.lease.validate()
+        claim = self._claim(path)
+        if claim["phase"] != "reserved" or claim["identity"] is not None:
+            raise LifecyclePlanningError("prepared path is already bound")
+        identity = _prepared_identity(details)
+        current = path.lstat()
+        if _prepared_identity(current) != identity:
+            raise LifecyclePlanningError("prepared output changed while binding")
+        previous = copy.deepcopy(self.record)
+        claim["phase"] = "incomplete"
+        claim["identity"] = identity
+        self._publish(previous)
+
+    def promote_complete(self, path: Path) -> None:
+        self.lease.validate()
+        claim = self._claim(path)
+        if claim["phase"] != "incomplete" or claim["expected"] is None:
+            raise LifecyclePlanningError("prepared output cannot be promoted")
+        if (_prepared_identity(path.lstat()) != claim["identity"] or
+                not recovery.state_matches(path, claim["expected"])):
+            raise LifecyclePlanningError("prepared output differs from its final state")
+        previous = copy.deepcopy(self.record)
+        claim["phase"] = "complete"
+        self._publish(previous)
 
     def _retire_record(self) -> None:
         expected = recovery.json_bytes(self.record)
@@ -1049,12 +1185,13 @@ class _PreparationGuard:
             return
         self.lease.validate()
         counter = [0]
-        for path, parent_identity, expected in reversed(self.claims):
+        for claim in reversed(self.claims):
+            path = Path(claim["path"])
             if not (path.exists() or path.is_symlink()):
                 continue
-            if recovery.physical_identity(path.parent) != parent_identity:
+            if recovery.physical_identity(path.parent) != claim["parent_identity"]:
                 raise LifecyclePlanningError("prepared cleanup parent identity changed")
-            _remove_prepared_path(path, expected, counter)
+            _remove_prepared_path(path, claim, counter)
         self._retire_record()
         self.active = False
 
@@ -1079,20 +1216,112 @@ class _PreparationGuard:
         return guard
 
 
+def _preparation_record_transition(canonical: Dict[str, Any],
+                                   pending: Dict[str, Any]) -> bool:
+    for name in (
+        "format", "transaction_id", "roots", "root_identities", "bootstrap",
+        "control_root",
+    ):
+        if pending[name] != canonical[name]:
+            return False
+    old = canonical["claims"]
+    new = pending["claims"]
+    if len(new) == len(old) + 1:
+        added = new[-1]
+        return (
+            new[:-1] == old and added["phase"] == "reserved"
+            and added["identity"] is None
+        )
+    if len(new) != len(old):
+        return False
+    changed = [index for index in range(len(old)) if old[index] != new[index]]
+    if len(changed) != 1:
+        return False
+    before = old[changed[0]]
+    after = new[changed[0]]
+    if any(after[name] != before[name] for name in ("path", "parent_identity", "expected")):
+        return False
+    if before["phase"] == "reserved":
+        return after["phase"] == "incomplete" and after["identity"] is not None
+    return (
+        before["phase"] == "incomplete" and after["phase"] == "complete"
+        and after["identity"] == before["identity"]
+    )
+
+
 def _remove_stale_preparation_pending(path: Path, canonical: Optional[Dict[str, Any]],
                                       state_root: Path) -> None:
-    value, _data = recovery.read_object(path, "preparation record pending replacement")
-    value = _validate_preparation_record(value, state_root)
-    if canonical is not None:
-        if (value["transaction_id"] != canonical["transaction_id"] or
-                value["claims"][:len(canonical["claims"])] != canonical["claims"] or
-                len(value["claims"]) != len(canonical["claims"]) + 1):
-            raise LifecyclePlanningError("preparation pending record is not the next claim")
+    prefix = "."
+    suffix = ".json.pending"
+    if not path.name.startswith(prefix) or not path.name.endswith(suffix):
+        raise LifecyclePlanningError("preparation pending path is not fixed")
+    transaction_id = recovery.checked_id(
+        path.name[len(prefix):-len(suffix)], "preparation pending transaction_id"
+    )
     details = path.lstat()
-    if not stat.S_ISREG(details.st_mode) or details.st_nlink != 1:
+    if (not stat.S_ISREG(details.st_mode) or details.st_nlink != 1 or
+            stat.S_IMODE(details.st_mode) != 0o600):
         raise LifecyclePlanningError("preparation pending record changed")
-    path.unlink()
-    recovery._sync_directory(path.parent, None, "preparation-pending-retired")
+    token = (
+        details.st_dev, details.st_ino, details.st_mode, details.st_nlink,
+        details.st_size, details.st_mtime_ns, details.st_ctime_ns,
+    )
+    if canonical is None:
+        canonical_path = path.parent / (transaction_id + ".json")
+        prepared_control = state_root / (".council-lifecycle.prepare-" + transaction_id)
+        canonical_transaction = (
+            state_root / ".council-lifecycle/v1/transactions" / transaction_id
+        )
+        if (canonical_path.exists() or canonical_path.is_symlink() or
+                prepared_control.exists() or prepared_control.is_symlink() or
+                canonical_transaction.exists() or canonical_transaction.is_symlink()):
+            raise LifecyclePlanningError(
+                "unbound preparation pending record has transaction content"
+            )
+        lifecycle_root = state_root / ".council-lifecycle"
+        if lifecycle_root.exists() or lifecycle_root.is_symlink():
+            admission_value, _ = recovery.read_object(
+                lifecycle_root / "admission.json", "admission"
+            )
+            admission_value = recovery.validate_admission(admission_value)
+            if (admission_value["status"] == "recovery_required" and
+                    admission_value["transaction_id"] == transaction_id):
+                raise LifecyclePlanningError(
+                    "published intent retains its preparation pending record"
+                )
+        try:
+            value, _data = recovery.read_object(
+                path, "preparation record pending replacement"
+            )
+            value = _validate_preparation_record(value, state_root)
+        except (LifecyclePlanningError, recovery.RecoveryError, UnicodeError, ValueError):
+            value = None
+        if value is not None and value["transaction_id"] != transaction_id:
+            raise LifecyclePlanningError("preparation pending transaction differs from its name")
+    else:
+        value, _data = recovery.read_object(path, "preparation record pending replacement")
+        value = _validate_preparation_record(value, state_root)
+        if (value["transaction_id"] != transaction_id or
+                not _preparation_record_transition(canonical, value)):
+            raise LifecyclePlanningError("preparation pending record is not the next transition")
+    parent = path.parent
+    parent_details = parent.lstat()
+    descriptor = os.open(str(parent), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        opened = os.fstat(descriptor)
+        if (opened.st_dev, opened.st_ino) != (parent_details.st_dev, parent_details.st_ino):
+            raise LifecyclePlanningError("preparation record parent changed")
+        current = os.stat(path.name, dir_fd=descriptor, follow_symlinks=False)
+        current_token = (
+            current.st_dev, current.st_ino, current.st_mode, current.st_nlink,
+            current.st_size, current.st_mtime_ns, current.st_ctime_ns,
+        )
+        if current_token != token:
+            raise LifecyclePlanningError("preparation pending record changed")
+        os.unlink(path.name, dir_fd=descriptor)
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def _reconcile_preparations(state_root: Path, lease: Any) -> None:
@@ -1192,8 +1421,34 @@ def _cleanup_preintent_bundle(bundle: _PreparedBundle) -> None:
     guard.cleanup()
 
 
+def _write_prepared_file(path: Path, data: bytes, mode: int,
+                         preparation_guard: _PreparationGuard,
+                         failpoint: Any, label: str) -> None:
+    descriptor = os.open(
+        str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode
+    )
+    try:
+        preparation_guard.bind_incomplete(path, os.fstat(descriptor))
+        recovery._event(failpoint, "before:prepare-write:" + label)
+        view = memoryview(data)
+        while view:
+            written = os.write(descriptor, view)
+            if written <= 0:
+                raise LifecyclePlanningError("short prepared output write")
+            view = view[written:]
+        os.fchmod(descriptor, mode)
+        os.fsync(descriptor)
+        recovery._event(failpoint, "after:prepare-write:" + label)
+    finally:
+        os.close(descriptor)
+    preparation_guard.promote_complete(path)
+    recovery._sync_directory(path.parent, failpoint, "prepared-output:" + label)
+
+
 def _copy_file(source: Path, destination: Path, expected_sha256: str,
-               mode: int = 0o644) -> None:
+               mode: int = 0o644,
+               preparation_guard: Optional[_PreparationGuard] = None,
+               failpoint: Any = None, label: str = "staged-artifact") -> None:
     before = source.lstat()
     if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
         raise LifecyclePlanningError("staged source must be a single-linked regular file")
@@ -1207,6 +1462,9 @@ def _copy_file(source: Path, destination: Path, expected_sha256: str,
         )
         destination_details = os.fstat(destination_descriptor)
         destination_identity = (destination_details.st_dev, destination_details.st_ino)
+        if preparation_guard is not None:
+            preparation_guard.bind_incomplete(destination, destination_details)
+        recovery._event(failpoint, "before:prepare-copy:" + label)
         opened = os.fstat(source_descriptor)
         digest = hashlib.sha256()
         while True:
@@ -1229,6 +1487,7 @@ def _copy_file(source: Path, destination: Path, expected_sha256: str,
         os.fchmod(destination_descriptor, mode)
         os.fsync(destination_descriptor)
         complete = True
+        recovery._event(failpoint, "after:prepare-copy:" + label)
     finally:
         os.close(source_descriptor)
         if destination_descriptor >= 0:
@@ -1244,17 +1503,26 @@ def _copy_file(source: Path, destination: Path, expected_sha256: str,
                 recovery._sync_directory(
                     destination.parent, None, "failed-staged-artifact-cleanup"
                 )
+    if preparation_guard is not None:
+        preparation_guard.promote_complete(destination)
     recovery._sync_directory(destination.parent, None, "staged-artifact")
 
 
-def _copy_state(source: Path, destination: Path, expected: Dict[str, Any]) -> None:
+def _copy_state(source: Path, destination: Path, expected: Dict[str, Any],
+                preparation_guard: _PreparationGuard,
+                failpoint: Any, label: str) -> None:
     if not expected["exists"]:
         return
     if expected["kind"] == "file":
-        _copy_file(source, destination, expected["sha256"], expected["mode"])
+        _copy_file(
+            source, destination, expected["sha256"], expected["mode"],
+            preparation_guard, failpoint, label,
+        )
     else:
         _mkdir(destination)
         destination.chmod(expected["mode"])
+        preparation_guard.bind_incomplete(destination, destination.lstat())
+        recovery._event(failpoint, "before:prepare-tree:" + label)
         for item in expected["artifacts"]:
             path = destination / item["path"]
             if item["kind"] == "directory":
@@ -1262,8 +1530,11 @@ def _copy_state(source: Path, destination: Path, expected: Dict[str, Any]) -> No
                 path.chmod(item["mode"])
             else:
                 _copy_file(source / item["path"], path, item["sha256"], item["mode"])
+        recovery._event(failpoint, "after:prepare-tree:" + label)
     if not recovery.state_matches(destination, expected):
         raise LifecyclePlanningError("staged recovery object differs from planned state")
+    if expected["kind"] == "directory":
+        preparation_guard.promote_complete(destination)
 
 
 def _control_bytes(value: Any, label: str) -> bytes:
@@ -1485,9 +1756,12 @@ def _prepare_transaction(preview: Dict[str, Any], release_snapshot: Optional[Dic
         control, control / "v1", control / "v1/receipts", control / "v1/recovery",
         control / "v1/transactions", transaction,
     ):
-        if not (path.exists() or path.is_symlink()):
+        created = not (path.exists() or path.is_symlink())
+        if created:
             preparation_guard.claim_absent(path)
         _mkdir(path)
+        if created:
+            preparation_guard.bind_incomplete(path, path.lstat())
         recovery._event(failpoint, "after:prepare-directory:" + str(path))
     manifest_path = transaction / "source-manifest.json"
     support_path = transaction / "reader-support.json"
@@ -1681,28 +1955,23 @@ def _prepare_transaction(preview: Dict[str, Any], release_snapshot: Optional[Dic
     for path, data in immutable_values:
         expected_file = _prepared_file_state(data)
         preparation_guard.claim_absent(path, expected_file)
-        preparation_guard.claim_absent(
-            path.with_name(path.name + ".partial"), expected_file
-        )
     progress_path = transaction / "progress.json"
     progress_data = recovery.json_bytes(progress)
     progress_expected = _prepared_file_state(progress_data)
     preparation_guard.claim_absent(progress_path, progress_expected)
-    preparation_guard.claim_absent(
-        progress_path.with_name(".%s.pending" % progress_path.name),
-        progress_expected,
-    )
     if bootstrap:
         admission_path = control / "admission.json"
         pending_data = recovery.json_bytes(pending)
         pending_expected = _prepared_file_state(pending_data)
         preparation_guard.claim_absent(admission_path, pending_expected)
-        preparation_guard.claim_absent(
-            admission_path.with_name(".%s.pending" % admission_path.name),
-            pending_expected,
-        )
-    recovery._write_immutable(manifest_path, manifest_data, None, "source-manifest")
-    recovery._write_immutable(support_path, support_data, None, "reader-support")
+    _write_prepared_file(
+        manifest_path, manifest_data, 0o600, preparation_guard,
+        failpoint, "source-manifest",
+    )
+    _write_prepared_file(
+        support_path, support_data, 0o600, preparation_guard,
+        failpoint, "reader-support",
+    )
     if not tool_exists:
         preparation_guard.claim_absent(
             actual_tool,
@@ -1711,7 +1980,10 @@ def _prepare_transaction(preview: Dict[str, Any], release_snapshot: Optional[Dic
                 "mode": 0o600, "artifacts": [],
             },
         )
-        _copy_file(tool_source, actual_tool, tool_sha256, 0o600)
+        _copy_file(
+            tool_source, actual_tool, tool_sha256, 0o600,
+            preparation_guard, failpoint, "recovery-tool",
+        )
         recovery._event(failpoint, "after:prepare-recoverer-copy")
     loaded = _load_source_module(
         "_council_pinned_recover_" + transaction_id.replace("-", "_"), actual_tool,
@@ -1719,20 +1991,31 @@ def _prepare_transaction(preview: Dict[str, Any], release_snapshot: Optional[Dic
     )
     for copy_source, copy_destination, copy_expected in copy_jobs:
         preparation_guard.claim_absent(copy_destination, copy_expected)
-        _copy_state(copy_source, copy_destination, copy_expected)
+        _copy_state(
+            copy_source, copy_destination, copy_expected,
+            preparation_guard, failpoint, str(copy_destination),
+        )
         recovery._event(failpoint, "after:prepare-artifact-copy:" + str(copy_destination))
-    recovery._write_immutable(
-        target_receipt_path, target_receipt_data, None, "target-receipt"
+    _write_prepared_file(
+        target_receipt_path, target_receipt_data, 0o600, preparation_guard,
+        failpoint, "target-receipt",
     )
     if prior_receipt_data is not None:
-        recovery._write_immutable(
-            transaction / "prior-receipt.json", prior_receipt_data, None,
-            "prior-receipt",
+        _write_prepared_file(
+            transaction / "prior-receipt.json", prior_receipt_data, 0o600,
+            preparation_guard, failpoint, "prior-receipt",
         )
-    recovery._write_immutable(plan_path, plan_data, None, "plan")
-    recovery._atomic_json(progress_path, progress, None, "progress")
+    _write_prepared_file(
+        plan_path, plan_data, 0o600, preparation_guard, failpoint, "plan"
+    )
+    _write_prepared_file(
+        progress_path, progress_data, 0o600, preparation_guard, failpoint, "progress"
+    )
     if bootstrap:
-        recovery._atomic_json(control / "admission.json", pending, None, "prepared-admission")
+        _write_prepared_file(
+            control / "admission.json", pending_data, 0o600,
+            preparation_guard, failpoint, "prepared-admission",
+        )
     bundle = _PreparedBundle({
         "transaction_id": transaction_id, "kind": preview["kind"], "bootstrap": bootstrap,
         "control_root": str(control), "canonical_root": str(canonical),

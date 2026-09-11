@@ -2161,7 +2161,7 @@ def _snapshot_removal_tree(root_descriptor: int, label: str
     entries: List[Dict[str, Any]] = []
     root_details = os.fstat(root_descriptor)
     directories: Dict[str, Tuple[int, int, int]] = {
-        ".": (root_details.st_dev, root_details.st_ino, root_details.st_mode)
+        ".": _stable_directory_token(root_details)
     }
 
     def visit(descriptor: int, relative_parent: str) -> None:
@@ -2169,22 +2169,21 @@ def _snapshot_removal_tree(root_descriptor: int, label: str
             names = sorted(entry.name for entry in iterator)
         for name in names:
             details = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
-            token = _stat_token(details)
             relative = name if relative_parent == "." else relative_parent + "/" + name
             if stat.S_ISREG(details.st_mode) and details.st_nlink == 1:
                 kind = "file"
+                token = _stat_token(details)
             elif stat.S_ISDIR(details.st_mode) and not stat.S_ISLNK(details.st_mode):
                 kind = "directory"
+                token = _stable_directory_token(details)
                 child = os.open(
                     name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
                     dir_fd=descriptor,
                 )
                 try:
-                    if _stat_token(os.fstat(child)) != token:
+                    if _stable_directory_token(os.fstat(child)) != token:
                         raise RecoveryError("%s stage changed while enumerating" % label)
-                    directories[relative] = (
-                        details.st_dev, details.st_ino, details.st_mode
-                    )
+                    directories[relative] = token
                     visit(child, relative)
                 finally:
                     os.close(child)
@@ -2205,6 +2204,19 @@ def _snapshot_removal_tree(root_descriptor: int, label: str
     return entries, directories
 
 
+def _stable_directory_token(details: os.stat_result) -> Tuple[int, int, int]:
+    return (details.st_dev, details.st_ino, stat.S_IFMT(details.st_mode))
+
+
+def _directory_entry_token(descriptor: int, name: str
+                           ) -> Optional[Tuple[int, int, int]]:
+    try:
+        details = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+    except FileNotFoundError:
+        return None
+    return _stable_directory_token(details)
+
+
 def _open_relative_directory(root_descriptor: int, relative: str,
                              identities: Dict[str, Tuple[int, int, int]], label: str) -> int:
     descriptor = os.dup(root_descriptor)
@@ -2213,7 +2225,7 @@ def _open_relative_directory(root_descriptor: int, relative: str,
         for component in (() if relative == "." else PurePosixPath(relative).parts):
             expected = identities[current if current != "." else "."]
             details = os.fstat(descriptor)
-            if (details.st_dev, details.st_ino, details.st_mode) != expected:
+            if _stable_directory_token(details) != expected:
                 raise RecoveryError("%s stage parent changed during removal" % label)
             child = os.open(
                 component,
@@ -2224,7 +2236,7 @@ def _open_relative_directory(root_descriptor: int, relative: str,
             descriptor = child
             current = component if current == "." else current + "/" + component
             details = os.fstat(descriptor)
-            if (details.st_dev, details.st_ino, details.st_mode) != identities[current]:
+            if _stable_directory_token(details) != identities[current]:
                 raise RecoveryError("%s stage parent changed during removal" % label)
         return descriptor
     except BaseException:
@@ -2284,7 +2296,12 @@ def _remove_owned_stage(stage: Path, expected: Dict[str, Any], plan: Dict[str, A
                     stage_descriptor, entry["parent"], directory_tokens, label
                 )
                 try:
-                    if _entry_token(entry_parent, entry["name"]) != entry["token"]:
+                    observed_token = (
+                        _entry_token(entry_parent, entry["name"])
+                        if entry["kind"] == "file"
+                        else _directory_entry_token(entry_parent, entry["name"])
+                    )
+                    if observed_token != entry["token"]:
                         raise RecoveryError("%s stage changed during bounded removal" % label)
                     if entry["kind"] == "file":
                         os.unlink(entry["name"], dir_fd=entry_parent)
