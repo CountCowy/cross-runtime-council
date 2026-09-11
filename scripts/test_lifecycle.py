@@ -559,6 +559,60 @@ class LifecyclePlanningTests(unittest.TestCase):
             item["code"] for item in preview["blockers"]
         })
 
+    def test_pending_status_returns_validated_transaction_and_current_recovery_command(self):
+        fixture = Fixture(self.root / "pending-status")
+        fixture.publish_intent()
+        observed = lifecycle.status(
+            fixture.state, fixture.payload, fixture.opencode
+        )
+        pending = observed["pending_recovery"]
+        self.assertEqual(observed["management"]["status"], "recovery_required")
+        self.assertEqual(pending["transaction_id"], fixture.transaction_id)
+        self.assertEqual(
+            pending["plan_sha256"], hashlib.sha256(fixture.plan_path.read_bytes()).hexdigest()
+        )
+        self.assertEqual(pending["recovery_command"][1:3], ["-I", "-B"])
+        self.assertEqual(
+            pending["recovery_command"][3], fixture.plan["recovery"]["tool_path"]
+        )
+        self.assertEqual(pending["python_contract"]["implementation"], "CPython")
+        self.assertEqual(pending["python_contract"]["minimum"], [3, 9])
+
+        fixture.rewrite_plan(
+            lambda plan: plan["recovery"].__setitem__("tool_sha256", "0" * 64)
+        )
+        with self.assertRaises(
+            (lifecycle.LifecyclePlanningError, lifecycle.recovery.RecoveryError,
+             FileNotFoundError)
+        ):
+            lifecycle.status(fixture.state, fixture.payload, fixture.opencode)
+
+        for case in ("missing-plan", "cross-root"):
+            probe = Fixture(self.root / ("pending-status-" + case))
+            probe.publish_intent()
+            if case == "missing-plan":
+                probe.plan_path.unlink()
+            else:
+                admission_path = probe.lifecycle / "admission.json"
+                admission = json.loads(admission_path.read_text())
+                admission["roots"]["payload"] = str(self.root / "alternate-payload")
+                write_file(
+                    admission_path, recovery.json_bytes(admission), 0o600
+                )
+            before = tree_snapshot(probe.root)
+            with self.subTest(case=case), self.assertRaises(
+                (lifecycle.LifecyclePlanningError, lifecycle.recovery.RecoveryError,
+                 FileNotFoundError)
+            ):
+                lifecycle.status(probe.state, probe.payload, probe.opencode)
+            self.assertEqual(tree_snapshot(probe.root), before)
+
+        unmanaged = self.roots("pending-unmanaged-")
+        self.assertEqual(
+            lifecycle.status(*unmanaged)["management"]["status"],
+            "legacy_unmanaged",
+        )
+
     def test_absent_root_plan_and_status_are_read_only(self):
         release = lifecycle.validate_release(synthetic_release(self.root, "absent-roots"))
         roots = (
@@ -590,6 +644,55 @@ class LifecyclePlanningTests(unittest.TestCase):
             )
         self.assertEqual(tree_snapshot(target), before)
 
+    def test_fixed_unit_ancestors_are_physical_and_revalidated(self):
+        state, payload, opencode = self.roots("unit-ancestor-")
+        outside = self.root / "outside-tools"
+        make_directory(outside)
+        write_file(outside / "council.ts", b"outside\n")
+        (opencode / "tools").rmdir()
+        (opencode / "tools").symlink_to(outside, target_is_directory=True)
+        outside_before = tree_snapshot(outside)
+        with self.assertRaisesRegex(
+            lifecycle.LifecyclePlanningError, "nonphysical ancestor"
+        ):
+            lifecycle.inspect_ownership(state, payload, opencode)
+        self.assertEqual(tree_snapshot(outside), outside_before)
+
+        state, payload, opencode = self.roots("missing-tools-")
+        (opencode / "tools").rmdir()
+        observed = lifecycle.inspect_ownership(state, payload, opencode)
+        tool = next(
+            item for item in observed["units"]
+            if item["unit_id"] == "opencode-tool"
+        )
+        self.assertFalse(tool["state"]["exists"])
+
+        release = self.actual_release("ancestor-revalidation")
+        state, payload, opencode = self.roots("ancestor-revalidation-")
+        outside = self.root / "outside-revalidation"
+        make_directory(outside)
+        calls = {"count": 0}
+        original = lifecycle.inspect_ownership
+
+        def replace_before_under_lease(*roots):
+            calls["count"] += 1
+            if calls["count"] == 3:
+                (opencode / "tools").rmdir()
+                (opencode / "tools").symlink_to(outside, target_is_directory=True)
+            return original(*roots)
+
+        with mock.patch.object(
+            lifecycle, "inspect_ownership", side_effect=replace_before_under_lease
+        ), self.assertRaisesRegex(
+            lifecycle.LifecyclePlanningError, "nonphysical ancestor"
+        ):
+            lifecycle.execute_operation(
+                "install", release, state, payload, opencode,
+                maintenance_window_confirmed=True,
+                transaction_id="txn-ancestor-revalidation",
+            )
+        self.assertEqual(tree_snapshot(outside), [])
+
     def test_isolated_cli_contract_and_purge_refusal(self):
         source = Path(lifecycle.__file__).resolve()
         completed = subprocess.run(
@@ -614,6 +717,18 @@ class LifecyclePlanningTests(unittest.TestCase):
         with mock.patch("sys.stderr"):
             with self.assertRaises(SystemExit):
                 parser.parse_args(["uninstall", "--purge-state"])
+
+    def test_lifecycle_cli_refuses_non_darwin_before_root_observation(self):
+        with mock.patch.object(lifecycle.sys, "platform", "linux"), mock.patch.object(
+            lifecycle, "_production_roots", side_effect=AssertionError("roots observed")
+        ), mock.patch("sys.stderr"), self.assertRaises(SystemExit) as raised:
+            lifecycle.main(["status"])
+        self.assertEqual(raised.exception.code, 2)
+
+        state, payload, opencode = self.roots("darwin-status-")
+        with mock.patch.object(lifecycle.sys, "platform", "darwin"):
+            observed = lifecycle.status(state, payload, opencode)
+        self.assertEqual(observed["management"]["status"], "legacy_unmanaged")
 
     def test_reader_support_binds_runtime_and_exact_policy_corpus(self):
         release_root = self.actual_release("reader-support")
@@ -752,6 +867,213 @@ class LifecyclePlanningTests(unittest.TestCase):
         self.assertFalse((state / ".council-lifecycle").exists())
         self.assertFalse(any(payload.parent.glob(".council-lifecycle-txn-copy-failure-*")))
         self.assertFalse(any(opencode.glob(".council-lifecycle-txn-copy-failure-*")))
+
+    def test_process_exit_at_preparation_boundaries_is_reconciled(self):
+        release = self.actual_release("preparation-crash")
+        probe_roots = self.roots("preparation-probe-")
+        snapshot = lifecycle.validate_release(release)
+        preview = lifecycle.plan_ownership(
+            "install", snapshot, lifecycle.inspect_ownership(*probe_roots)
+        )
+        events = []
+        with lifecycle.admission.acquire_writer_lease(probe_roots[0]) as lease:
+            bundle = lifecycle.prepare_transaction(
+                preview, snapshot, lease, transaction_id="txn-preparation-probe",
+                failpoint=events.append,
+            )
+            lifecycle._cleanup_preintent_bundle(bundle)
+        categories = {
+            "record": [event for event in events
+                       if event == "after:replace:preparation-record"],
+            "control": [event for event in events
+                        if event.startswith("after:prepare-directory:")],
+            "copy": [event for event in events
+                     if event == "after:prepare-recoverer-copy" or
+                     event.startswith("after:prepare-artifact-copy:")],
+        }
+        self.assertEqual(
+            {name: len(values) for name, values in categories.items()},
+            {"record": 27, "control": 6, "copy": 6},
+        )
+
+        for category, expected_events in categories.items():
+            for occurrence in range(len(expected_events)):
+                with self.subTest(category=category, occurrence=occurrence):
+                    roots = self.roots("preparation-%s-%d-" % (category, occurrence))
+                    child = os.fork()
+                    if child == 0:
+                        seen = {"count": 0}
+
+                        def crash(event):
+                            matches = (
+                                event == "after:replace:preparation-record"
+                                if category == "record" else
+                                event.startswith("after:prepare-directory:")
+                                if category == "control" else
+                                event == "after:prepare-recoverer-copy" or
+                                event.startswith("after:prepare-artifact-copy:")
+                            )
+                            if matches:
+                                if seen["count"] == occurrence:
+                                    os._exit(97)
+                                seen["count"] += 1
+
+                        lifecycle.execute_operation(
+                            "install", release, *roots,
+                            maintenance_window_confirmed=True,
+                            transaction_id="txn-crashed-preparation",
+                            _preparation_failpoint=crash,
+                        )
+                        os._exit(0)
+                    _pid, child_status = os.waitpid(child, 0)
+                    self.assertEqual(os.waitstatus_to_exitcode(child_status), 97)
+                    result = lifecycle.execute_operation(
+                        "install", release, *roots,
+                        maintenance_window_confirmed=True,
+                        transaction_id="txn-reconciled-preparation",
+                    )
+                    self.assertEqual(result["status"], "committed")
+                    self.assertEqual(
+                        list((roots[0] / recovery.PREPARATION_ROOT_NAME).iterdir()), []
+                    )
+                    self.assertEqual(
+                        list(roots[0].glob(".council-lifecycle.prepare-*")), []
+                    )
+
+    def test_abandoned_preparation_with_changed_content_is_preserved(self):
+        release = self.actual_release("preparation-change")
+        for case in ("changed", "extra", "hardlink", "symlink"):
+            with self.subTest(case=case):
+                roots = self.roots("preparation-change-%s-" % case)
+                child = os.fork()
+                if child == 0:
+                    def crash(event):
+                        if event.startswith("after:prepare-artifact-copy:"):
+                            os._exit(98)
+
+                    lifecycle.execute_operation(
+                        "install", release, *roots,
+                        maintenance_window_confirmed=True,
+                        transaction_id="txn-preparation-change",
+                        _preparation_failpoint=crash,
+                    )
+                    os._exit(0)
+                _pid, child_status = os.waitpid(child, 0)
+                self.assertEqual(os.waitstatus_to_exitcode(child_status), 98)
+                target = roots[1].parent / (
+                    ".council-lifecycle-txn-preparation-change-payload-target"
+                )
+                outside = self.root / ("preparation-change-outside-" + case)
+                if case == "changed":
+                    write_file(target / "SKILL.md", b"changed\n")
+                elif case == "extra":
+                    write_file(target / "extra.txt", b"extra\n")
+                elif case == "hardlink":
+                    os.link(target / "SKILL.md", outside)
+                else:
+                    shutil.rmtree(target)
+                    make_directory(outside)
+                    write_file(outside / "sentinel", b"outside\n")
+                    target.symlink_to(outside, target_is_directory=True)
+                with self.assertRaises(lifecycle.LifecyclePlanningError):
+                    lifecycle.execute_operation(
+                        "install", release, *roots,
+                        maintenance_window_confirmed=True,
+                        transaction_id="txn-preparation-after-change",
+                    )
+                self.assertTrue(target.exists() or target.is_symlink())
+                if case == "symlink":
+                    self.assertEqual((outside / "sentinel").read_bytes(), b"outside\n")
+
+    def test_published_intent_preparation_record_is_retired_without_cleanup(self):
+        release = self.actual_release("preparation-intent")
+        roots = self.roots("preparation-intent-")
+        child = os.fork()
+        if child == 0:
+            original = lifecycle.recovery._sync_directory
+
+            def crash(path, failpoint, label):
+                if label == "bootstrap-intent":
+                    os._exit(99)
+                return original(path, failpoint, label)
+
+            with mock.patch.object(lifecycle.recovery, "_sync_directory", side_effect=crash):
+                lifecycle.execute_operation(
+                    "install", release, *roots,
+                    maintenance_window_confirmed=True,
+                    transaction_id="txn-preparation-intent",
+                )
+            os._exit(0)
+        _pid, child_status = os.waitpid(child, 0)
+        self.assertEqual(os.waitstatus_to_exitcode(child_status), 99)
+        preparation_records = list(
+            (roots[0] / recovery.PREPARATION_ROOT_NAME).glob("*.json")
+        )
+        self.assertEqual(len(preparation_records), 1)
+        pending = lifecycle.status(*roots)
+        self.assertEqual(pending["management"]["status"], "recovery_required")
+        completed = subprocess.run(
+            pending["pending_recovery"]["recovery_command"],
+            cwd=self.root,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        upgraded = lifecycle.execute_operation(
+            "upgrade", release, *roots,
+            transaction_id="txn-after-preparation-intent",
+        )
+        self.assertEqual(upgraded["status"], "committed")
+        self.assertEqual(
+            list((roots[0] / recovery.PREPARATION_ROOT_NAME).iterdir()), []
+        )
+
+    def test_every_operation_recovers_from_a_preintent_process_exit(self):
+        release = self.actual_release("operation-preintent")
+        for kind in ("install", "upgrade", "rollback", "uninstall"):
+            with self.subTest(kind=kind):
+                roots = self.roots("operation-preintent-%s-" % kind)
+                receipt_id = None
+                if kind != "install":
+                    installed = lifecycle.execute_operation(
+                        "install", release, *roots,
+                        maintenance_window_confirmed=True,
+                        transaction_id="txn-%s-base" % kind,
+                    )
+                    receipt_id = installed["receipt_id"]
+                release_argument = release if kind in ("install", "upgrade") else None
+                arguments = {
+                    "maintenance_window_confirmed": kind == "install",
+                    "receipt_id": receipt_id if kind == "rollback" else None,
+                }
+                child = os.fork()
+                if child == 0:
+                    def crash(event):
+                        if event.startswith("after:prepare-artifact-copy:"):
+                            os._exit(96)
+
+                    lifecycle.execute_operation(
+                        kind, release_argument, *roots,
+                        transaction_id="txn-%s-preintent-crash" % kind,
+                        _preparation_failpoint=crash,
+                        **arguments,
+                    )
+                    os._exit(0)
+                _pid, child_status = os.waitpid(child, 0)
+                self.assertEqual(os.waitstatus_to_exitcode(child_status), 96)
+                result = lifecycle.execute_operation(
+                    kind, release_argument, *roots,
+                    transaction_id="txn-%s-preintent-retry" % kind,
+                    **arguments,
+                )
+                self.assertEqual(
+                    result["status"],
+                    "uninstalled" if kind == "uninstall" else "committed",
+                )
+                self.assertEqual(
+                    list((roots[0] / recovery.PREPARATION_ROOT_NAME).iterdir()), []
+                )
 
     def test_postintent_failure_retains_recovery_evidence(self):
         release = lifecycle.validate_release(self.actual_release("postintent"))

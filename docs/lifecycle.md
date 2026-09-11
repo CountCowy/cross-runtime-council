@@ -65,6 +65,16 @@ target identities, required gates, blockers, and the five-unit preview. It omits
 transaction IDs, proposed receipts, object paths, and other fields that could
 turn it into executable intent.
 
+For terminal or unmanaged state, `status` uses the existing ownership
+inspection and returns `status_format`, `roots`, `management`,
+`payload_cache_count`, and `units`; terminal certification remains
+receipt-backed. For a `recovery_required` admission it uses a separate read-only
+path: it validates the pending admission, exact plan, fixed roots, and
+digest-bound copied recoverer without attempting terminal ownership
+certification. The same top-level fields are present, with `management.status`
+set to `recovery_required`, and `pending_recovery` adds the validated
+`transaction_id`, `plan_sha256`, `recovery_command`, and `python_contract`.
+
 ## Admission and operation rules
 
 Normal execution performs an initial ownership and release preflight, then
@@ -89,6 +99,15 @@ file, missing owned file, unexpected payload entry, unowned conflict, payload
 `.git` entry, or pending recovery is a blocker. The operator resolves the
 underlying ownership decision outside the lifecycle engine and requests a fresh
 plan; the engine does not select, delete, or relocate the content.
+
+For the README source-clone layout, the supported first-install migration is an
+operator move of the complete fixed-path clone to an explicitly chosen retained
+path during the required quiescent maintenance window, followed by generated
+release installation. The move preserves `.git`, local edits, and untracked
+files while leaving the state root and external runtime configuration in place.
+The lifecycle engine does not claim, delete, or rewrite the retained clone, and
+continues to refuse an in-place source clone or differing unowned destination
+artifacts. [install.md](install.md) gives the exact command sequence.
 
 Rollback uses immutable receipt identity rather than a mutable backup directory.
 It is a new transaction against current state, so it repeats liveness and
@@ -158,13 +177,38 @@ The recovery interface advertises admission, plan, journal, and receipt format
 - `verify-receipt-v1`
 - `publish-admission-v1`
 
-The mutating CLI's standard-error `recovery-command` is the authoritative path
-and argument vector for a pending transaction. Run it exactly. The recoverer
-acquires the same `broker.lock`, verifies its physical identity and every bound
-record, classifies each destination from hashes, and resumes the sticky target
-goal. Mixed intermediate generations and a temporarily absent payload are
-expected recoverable states when every observed object matches the prepared
-plan.
+The mutating CLI writes and flushes its complete recovery argument vector before
+intent. A later `status` invocation on the pending transaction returns a
+validated `pending_recovery` object with this shape:
+
+```json
+{
+  "transaction_id": "<transaction-id>",
+  "plan_sha256": "<plan-sha256>",
+  "recovery_command": ["<compatible-python>", "-I", "-B", "<copied-tool>", "recover", "--state-root", "<state-root>"],
+  "python_contract": {
+    "implementation": "CPython",
+    "minimum": [3, 9],
+    "required_flags": ["-I", "-B"],
+    "recorded_path": "<original-python-path>",
+    "recorded_version": [3, 9, 0]
+  }
+}
+```
+
+Run the complete returned `recovery_command` without editing its flags, copied
+tool path, or state root. It uses the currently running compatible interpreter;
+the interpreter path and version captured in the plan remain provenance rather
+than an exact-path or patch-release requirement. Recovery requires CPython 3.9
+or newer, isolated mode, disabled bytecode writes, and the recoverer's closed
+runtime feature probes. An incompatible interpreter or incomplete pending
+record refuses before recovery mutation.
+
+The recoverer acquires the same `broker.lock`, verifies its physical identity
+and every bound record, classifies each destination from hashes, and resumes the
+sticky target goal. Mixed intermediate generations and a temporarily absent
+payload are expected recoverable states when every observed object matches the
+prepared plan.
 
 Recovery can be interrupted and repeated. It verifies all five destinations,
 publishes the selected immutable receipt, and only then publishes terminal

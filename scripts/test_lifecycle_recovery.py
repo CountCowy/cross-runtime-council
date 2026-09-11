@@ -23,6 +23,61 @@ source = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(source)
 
 
+BOUNDARY_UNIT_IDS = (
+    "payload",
+    "opencode-plugin",
+    "opencode-protocol",
+    "opencode-registry",
+    "opencode-tool",
+)
+BOUNDARY_OPERATION_KINDS = ("install", "upgrade", "rollback", "uninstall")
+
+
+def required_recovery_boundaries(kind: str):
+    if kind not in BOUNDARY_OPERATION_KINDS:
+        raise ValueError(kind)
+    required = {
+        "before:replace-immutable:target-receipt",
+        "after:replace-immutable:target-receipt",
+        "before:replace:terminal-admission",
+        "after:replace:terminal-admission",
+    }
+    for unit_id in BOUNDARY_UNIT_IDS:
+        required.update({
+            "before:replace:progress:" + unit_id,
+            "after:replace:progress:" + unit_id,
+        })
+        if kind != "install":
+            required.update({
+                "before:rename:" + unit_id + ":preserve-initial",
+                "after:rename:" + unit_id + ":preserve-initial",
+            })
+        if kind != "uninstall":
+            required.update({
+                "before:rename:" + unit_id + ":activate-target",
+                "after:rename:" + unit_id + ":activate-target",
+            })
+    if kind != "uninstall":
+        required.update({
+            "before:replace-materialized-file:payload:target:SKILL.md",
+            "after:replace-materialized-file:payload:target:SKILL.md",
+            "before:replace-materialized-file:payload:target:scripts/runtime.py",
+            "after:replace-materialized-file:payload:target:scripts/runtime.py",
+        })
+        for unit_id in BOUNDARY_UNIT_IDS[1:]:
+            required.update({
+                "before:replace-materialized-file:" + unit_id + ":target",
+                "after:replace-materialized-file:" + unit_id + ":target",
+            })
+    return frozenset(required)
+
+
+def assert_required_recovery_boundaries(kind: str, events) -> None:
+    missing = required_recovery_boundaries(kind) - set(events)
+    if missing:
+        raise AssertionError("missing required recovery boundaries: %s" % sorted(missing))
+
+
 def file_hash(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -715,6 +770,19 @@ class LifecycleRecoveryTests(unittest.TestCase):
         make_directory(path)
         return Fixture(path, **kwargs)
 
+    def operation_fixture(self, kind: str) -> Fixture:
+        fixture = self.fixture()
+        if kind != "install":
+            fixture.publish_intent()
+            fixture.engine.recover(fixture.state)
+            fixture.prepare_managed_transaction(
+                "uninstall" if kind == "uninstall" else "upgrade"
+            )
+            if kind == "rollback":
+                fixture.rewrite_plan(lambda plan: plan.__setitem__("kind", "rollback"))
+        fixture.publish_intent()
+        return fixture
+
     def test_describe_matches_literal_format_fixture(self):
         expected = json.loads(
             (Path(__file__).parent / "fixtures/lifecycle/describe-v1.json").read_text()
@@ -883,6 +951,69 @@ class LifecycleRecoveryTests(unittest.TestCase):
         self.assertEqual(result["status"], "uninstalled")
         self.assertFalse(stage.exists())
         fixture.assert_goal(self, "prior")
+
+    def test_recovery_mutations_refuse_swapped_stage_progress_and_source(self):
+        fixture = self.fixture()
+        fixture.publish_intent()
+
+        def stop_partial(event):
+            if event == "after:replace-materialized-file:payload:target:SKILL.md":
+                raise RuntimeError("partial stage")
+
+        with self.assertRaisesRegex(RuntimeError, "partial stage"):
+            fixture.engine.recover(fixture.state, failpoint=stop_partial)
+        stage = Path(fixture.units[0]["objects"]["stage"])
+        saved = stage.with_name(stage.name + "-saved")
+        outside = fixture.root / "outside-stage"
+        write_payload(outside, "outside")
+        outside_before = fixture.engine.capture_state(outside, "directory")
+        swapped = {"done": False}
+
+        def swap_stage(event):
+            if (event.startswith("before:unlink-stage:payload:discard-target-stage:")
+                    and not swapped["done"]):
+                stage.rename(saved)
+                stage.symlink_to(outside, target_is_directory=True)
+                swapped["done"] = True
+
+        with self.assertRaisesRegex(fixture.engine.RecoveryError, "stage changed"):
+            fixture.engine.recover(fixture.state, abort=True, failpoint=swap_stage)
+        self.assertTrue(stage.is_symlink())
+        self.assertTrue(fixture.engine.state_matches(outside, outside_before))
+
+        fixture = self.fixture()
+        fixture.publish_intent()
+        progress = fixture.progress_path
+        original = progress.with_name("progress-before-swap.json")
+
+        def swap_progress(event):
+            if event == "before:replace:progress:payload":
+                progress.rename(original)
+                write_file(progress, b"outside-owner\n", 0o600)
+
+        with self.assertRaisesRegex(
+            fixture.engine.RecoveryError, "changed before metadata replacement"
+        ):
+            fixture.engine.recover(fixture.state, failpoint=swap_progress)
+        self.assertEqual(progress.read_bytes(), b"outside-owner\n")
+        self.assertTrue(original.is_file())
+
+        fixture = self.fixture()
+        fixture.publish_intent()
+        stage = Path(fixture.units[0]["objects"]["stage"])
+        saved = stage.with_name(stage.name + "-saved")
+
+        def swap_activation(event):
+            if event == "before:rename:payload:activate-target":
+                stage.rename(saved)
+                write_payload(stage, "foreign")
+
+        with self.assertRaisesRegex(
+            fixture.engine.RecoveryError, "rename source or destination changed"
+        ):
+            fixture.engine.recover(fixture.state, failpoint=swap_activation)
+        self.assertFalse(fixture.payload.exists())
+        self.assertTrue((stage / "SKILL.md").is_file())
 
     def test_unrelated_partial_name_is_never_engine_scratch(self):
         fixture = self.fixture()
@@ -1157,16 +1288,20 @@ class LifecycleRecoveryTests(unittest.TestCase):
         ])
 
     def test_every_forward_durability_boundary_recovers_after_process_exit(self):
-        for initial in (False, True):
-            probe = self.fixture(initial=initial)
-            probe.publish_intent()
+        for kind in BOUNDARY_OPERATION_KINDS:
+            probe = self.operation_fixture(kind)
             events = []
             probe.engine.recover(probe.state, failpoint=events.append)
+            assert_required_recovery_boundaries(kind, events)
             self.assertGreater(len(events), 40)
+            removed = next(iter(required_recovery_boundaries(kind)))
+            with self.assertRaisesRegex(AssertionError, "missing required"):
+                assert_required_recovery_boundaries(
+                    kind, [event for event in events if event != removed]
+                )
             for boundary in range(len(events)):
-                with self.subTest(initial=initial, boundary=boundary, event=events[boundary]):
-                    fixture = self.fixture(initial=initial)
-                    fixture.publish_intent()
+                with self.subTest(kind=kind, boundary=boundary, event=events[boundary]):
+                    fixture = self.operation_fixture(kind)
                     child = os.fork()
                     if child == 0:
                         observed = {"index": -1}
@@ -1183,34 +1318,29 @@ class LifecycleRecoveryTests(unittest.TestCase):
                     fixture.engine.recover(fixture.state)
                     fixture.assert_goal(self, "target")
                     admission = json.loads((fixture.lifecycle / "admission.json").read_text())
-                    self.assertEqual(admission["status"], "committed")
+                    self.assertEqual(
+                        admission["status"],
+                        "uninstalled" if kind == "uninstall" else "committed",
+                    )
 
     def test_every_abort_durability_boundary_keeps_prior_goal_sticky(self):
         def partial_forward(fixture):
-            fixture.publish_intent()
-
             def stop(event):
-                if event == "after:rename:payload:activate-target":
+                if event == "after:replace:progress:payload":
                     raise RuntimeError("partial")
 
             with self.assertRaises(RuntimeError):
                 fixture.engine.recover(fixture.state, failpoint=stop)
 
-        for initial in (False, True):
-            probe = self.fixture(initial=initial)
+        for kind in BOUNDARY_OPERATION_KINDS:
+            probe = self.operation_fixture(kind)
             partial_forward(probe)
             events = []
             probe.engine.recover(probe.state, abort=True, failpoint=events.append)
             self.assertGreater(len(events), 20)
-            boundaries = list(range(len(events)))
-            if initial:
-                # The synthetic prior receipt has no older transaction plan. The fresh-install
-                # case covers crashes during/after terminal publication; this case adds every
-                # inverse materialization boundary before the identical publication sequence.
-                boundaries = boundaries[:events.index("before:replace:terminal-admission")]
-            for boundary in boundaries:
-                with self.subTest(initial=initial, boundary=boundary, event=events[boundary]):
-                    fixture = self.fixture(initial=initial)
+            for boundary in range(len(events)):
+                with self.subTest(kind=kind, boundary=boundary, event=events[boundary]):
+                    fixture = self.operation_fixture(kind)
                     partial_forward(fixture)
                     child = os.fork()
                     if child == 0:
@@ -1225,9 +1355,6 @@ class LifecycleRecoveryTests(unittest.TestCase):
                         os._exit(0)
                     _pid, status_value = os.waitpid(child, 0)
                     self.assertEqual(os.waitstatus_to_exitcode(status_value), 98)
-                    progress = json.loads(fixture.progress_path.read_text())
-                    if progress["sequence"]:
-                        self.assertEqual(progress["goal"], "prior")
                     admission = json.loads((fixture.lifecycle / "admission.json").read_text())
                     if admission["status"] == "recovery_required":
                         fixture.engine.recover(fixture.state, abort=True)
@@ -1397,10 +1524,55 @@ class LifecycleRecoveryTests(unittest.TestCase):
 
         fixture = self.fixture()
         fixture.rewrite_plan(
-            lambda plan: plan["recovery"].__setitem__("python_version", [3, 9, 999])
+            lambda plan: plan["recovery"].__setitem__("python_version", [3, 8, 999])
         )
-        with self.assertRaisesRegex(fixture.engine.RecoveryError, "Python version"):
+        with self.assertRaisesRegex(
+            fixture.engine.RecoveryError, "recorded Python provenance"
+        ):
             fixture.engine.check_plan(fixture.plan_path)
+
+    def test_compatible_relocated_python_recovers_and_runtime_contract_refuses(self):
+        fixture = self.fixture()
+        alternate = fixture.root / "relocated-python3"
+        alternate.symlink_to(Path(sys.executable).resolve())
+        recorded = [sys.version_info[0], sys.version_info[1], sys.version_info[2] + 1]
+        fixture.rewrite_plan(
+            lambda plan: (
+                plan["recovery"].__setitem__("python_path", str(alternate)),
+                plan["recovery"].__setitem__("python_version", recorded),
+            )
+        )
+        fixture.publish_intent()
+        completed = subprocess.run(
+            [str(alternate), "-I", "-B", str(fixture.tool), "recover",
+             "--state-root", str(fixture.state)],
+            cwd=fixture.root,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(json.loads(completed.stdout)["status"], "committed")
+
+        cases = (
+            ("implementation", "requires CPython"),
+            ("version", "3.9 or newer"),
+            ("features", "descriptor-relative"),
+        )
+        for case, message in cases:
+            probe = self.fixture()
+            if case == "implementation":
+                patcher = mock.patch.object(
+                    probe.engine.platform, "python_implementation", return_value="PyPy"
+                )
+            elif case == "version":
+                patcher = mock.patch.object(probe.engine.sys, "version_info", (3, 8, 99))
+            else:
+                patcher = mock.patch.object(probe.engine.os, "supports_dir_fd", set())
+            with self.subTest(case=case), patcher, self.assertRaisesRegex(
+                probe.engine.RecoveryError, message
+            ):
+                probe.engine.check_plan(probe.plan_path)
 
     def test_prior_receipt_prevents_silent_adoption_or_dropped_ownership(self):
         fixture = self.fixture(initial=True, target_uninstalled=True, preserve_unowned=True)
@@ -1487,6 +1659,24 @@ class LifecycleRecoveryTests(unittest.TestCase):
             before = fixture.snapshot()
             with self.subTest(root=root_name), self.assertRaisesRegex(
                 fixture.engine.RecoveryError, "roots differ"
+            ):
+                fixture.engine.recover(fixture.state)
+            self.assertEqual(fixture.snapshot(), before)
+
+    def test_terminal_admission_must_match_all_receipt_roots(self):
+        for root_name in ("payload", "opencode"):
+            fixture = self.fixture()
+            fixture.publish_intent()
+            fixture.engine.recover(fixture.state)
+            admission_path = fixture.lifecycle / "admission.json"
+            admission = json.loads(admission_path.read_text())
+            admission["roots"][root_name] = str(
+                self.root / ("alternate-terminal-" + root_name)
+            )
+            write_json(admission_path, admission)
+            before = fixture.snapshot()
+            with self.subTest(root=root_name), self.assertRaisesRegex(
+                fixture.engine.RecoveryError, "admission roots differ"
             ):
                 fixture.engine.recover(fixture.state)
             self.assertEqual(fixture.snapshot(), before)

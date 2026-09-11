@@ -14,6 +14,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from types import MappingProxyType
 import unittest
 
 ROOT = Path(__file__).resolve().parent
@@ -31,10 +32,33 @@ PINS = {
     ),
 }
 C2_READER_COMMIT = "fd4862d733db267410529238a4ca680e8612a073"
-C2_READER_FILES = {
-    "LICENSE", "NOTICE", "scripts/council.py", "scripts/council_protocol.py",
-    "scripts/council_admission.py", "scripts/council_inspect.py",
-}
+C2_READER_IDENTITIES = MappingProxyType({
+    "LICENSE": MappingProxyType({
+        "git_blob": "261eeb9e9f8b2b4b0d119366dda99c6fd7d35c64",
+        "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+    }),
+    "NOTICE": MappingProxyType({
+        "git_blob": "c108dc29e9f39bd5498bc145584d8d27193e341a",
+        "sha256": "c107f4746d20aaa762ad632e1feaf75c22a3b025f05d1362675f8f728597f603",
+    }),
+    "scripts/council.py": MappingProxyType({
+        "git_blob": "3ce20dc4c85f0c6cce2bed9e74ee670f6aa8ab59",
+        "sha256": "7fd23877e88fafdf32b59739142eddbd94d883bcd47caa9373a8011000624f2b",
+    }),
+    "scripts/council_admission.py": MappingProxyType({
+        "git_blob": "c5bc9cf0e97096dffea257f030cedae148d7799e",
+        "sha256": "64a229aa54a5d553700e942054448d120711a332569efbc16184e2c299ddf5a2",
+    }),
+    "scripts/council_inspect.py": MappingProxyType({
+        "git_blob": "846e15589dfd2b135def79c4c130b4ae9be0f969",
+        "sha256": "2abea084a7adb9347a74194c4c4fb63c5448172ed6e284e52d3af6b9a1cc2b61",
+    }),
+    "scripts/council_protocol.py": MappingProxyType({
+        "git_blob": "681a62f7876e1ffb48be74d1f100bc6b1fad1c3c",
+        "sha256": "42401a5ccc2aee66ffc711d893d24add0f806a3bd9cf6ffbf4d22482a079595a",
+    }),
+})
+C2_READER_FILES = frozenset(C2_READER_IDENTITIES)
 REQUIRED_CASES = {
     "router-configured-unbound",
     "router-bound",
@@ -120,15 +144,26 @@ def validate_reader(label, descriptor, root=FIXTURES):
 
 
 def validate_c2_reader(descriptor, root=FIXTURES / "c2-current"):
+    files = descriptor.get("files", {})
     if (descriptor.get("commit") != C2_READER_COMMIT or
             descriptor.get("managed_writer_admission") is not True or
-            set(descriptor.get("files", {})) != C2_READER_FILES):
+            not isinstance(files, dict) or set(files) != C2_READER_FILES):
         raise ValueError("unknown C1 lifecycle reader tuple")
-    for name, identity in descriptor["files"].items():
+    for name, expected in C2_READER_IDENTITIES.items():
+        identity = files[name]
+        if not isinstance(identity, dict) or identity != expected:
+            raise ValueError("unknown C1 lifecycle reader identity")
         path = root / name
+        if path.is_symlink():
+            raise ValueError("symlink C1 lifecycle reader")
         data = path.read_bytes()
-        blob = hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest()
-        if path.is_symlink() or sha(data) != identity["sha256"] or blob != identity["git_blob"]:
+        observed = {
+            "git_blob": hashlib.sha1(
+                b"blob " + str(len(data)).encode() + b"\0" + data
+            ).hexdigest(),
+            "sha256": sha(data),
+        }
+        if observed != expected:
             raise ValueError("frozen C1 lifecycle reader identity mismatch")
 
 
@@ -645,6 +680,37 @@ class PredecessorTests(unittest.TestCase):
         result = run_case("pre-c1", self.readers["pre-c1"], corpus, "triad-complete")
         self.assertIn("phase_changed", result["oracle_errors"])
         self.assertFalse(result["reader_supported"])
+
+    def test_c2_reader_identity_uses_independent_literal_oracle(self):
+        validate_c2_reader(self.c2_reader)
+
+        for field in ("git_blob", "sha256"):
+            with self.subTest(descriptor_field=field):
+                altered = copy.deepcopy(self.c2_reader)
+                altered["files"]["scripts/council_inspect.py"][field] = "0" * (
+                    40 if field == "git_blob" else 64
+                )
+                with self.assertRaises(ValueError):
+                    validate_c2_reader(altered)
+
+        with tempfile.TemporaryDirectory(prefix="c2-reader-coedit-") as directory:
+            root = Path(directory) / "c2-current"
+            shutil.copytree(FIXTURES / "c2-current", root)
+            target = root / "scripts/council_inspect.py"
+            changed = target.read_bytes() + b"\n# co-edited fixture\n"
+            target.write_bytes(changed)
+            coedited = copy.deepcopy(self.c2_reader)
+            coedited["files"]["scripts/council_inspect.py"] = {
+                "git_blob": hashlib.sha1(
+                    b"blob " + str(len(changed)).encode() + b"\0" + changed
+                ).hexdigest(),
+                "sha256": sha(changed),
+            }
+            (root / "reader.json").write_text(json.dumps(coedited, indent=2) + "\n")
+            with self.assertRaises(ValueError):
+                validate_c2_reader(
+                    json.loads((root / "reader.json").read_text()), root
+                )
 
     def test_reader_sensitive_field_loss_negative_controls(self):
         def lose_manifest_field(state):

@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath
+import platform
 import re
 import stat
 import sys
@@ -63,6 +64,7 @@ REQUIRED_OPERATIONS = (
 KINDS = {"install", "upgrade", "rollback", "uninstall"}
 OWNERSHIP = {"absent", "created", "already_owned", "matching_preexisting_unowned"}
 VOLATILE_STATE_NAMES = {"broker.lock", "broker.sock", "broker.log"}
+PREPARATION_ROOT_NAME = ".council-lifecycle-preparations"
 
 
 class RecoveryError(Exception):
@@ -256,6 +258,52 @@ def checked_absolute(value: Any, label: str) -> Path:
 def physical_identity(path: Path) -> Dict[str, int]:
     details = path.stat()
     return {"device": details.st_dev, "inode": details.st_ino}
+
+
+def _stat_token(details: os.stat_result) -> Tuple[int, ...]:
+    return (
+        details.st_dev, details.st_ino, details.st_mode, details.st_nlink,
+        details.st_size, details.st_mtime_ns, details.st_ctime_ns,
+    )
+
+
+def _entry_token(descriptor: int, name: str) -> Optional[Tuple[int, ...]]:
+    try:
+        return _stat_token(os.stat(name, dir_fd=descriptor, follow_symlinks=False))
+    except FileNotFoundError:
+        return None
+
+
+def _entry_identity(descriptor: int, name: str) -> Optional[Tuple[int, int, int]]:
+    try:
+        details = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+    except FileNotFoundError:
+        return None
+    return details.st_dev, details.st_ino, details.st_mode
+
+
+def _opened_directory(path: Path, label: str) -> Tuple[int, Dict[str, int]]:
+    descriptor = os.open(str(path), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    details = os.fstat(descriptor)
+    identity = {"device": details.st_dev, "inode": details.st_ino}
+    if directory_identity(path, label) != identity:
+        os.close(descriptor)
+        raise RecoveryError("%s changed while opening" % label)
+    return descriptor, identity
+
+
+def _require_open_directory(path: Path, descriptor: int,
+                            identity: Dict[str, int], label: str) -> None:
+    details = os.fstat(descriptor)
+    if ({"device": details.st_dev, "inode": details.st_ino} != identity or
+            directory_identity(path, label) != identity):
+        raise RecoveryError("%s changed before mutation" % label)
+
+
+def _sync_open_directory(descriptor: int, failpoint: Failpoint, label: str) -> None:
+    _event(failpoint, "before:fsync-directory:" + label)
+    os.fsync(descriptor)
+    _event(failpoint, "after:fsync-directory:" + label)
 
 
 def directory_identity(path: Path, label: str) -> Dict[str, int]:
@@ -915,6 +963,82 @@ def inspect_terminal_ownership(state_root: Path, payload_root: Path,
     }
 
 
+def inspect_pending_status(state_root: Path, payload_root: Path,
+                           opencode_root: Path) -> Dict[str, Any]:
+    """Validate and describe one pending transaction without acquiring its lease."""
+    _validate_compatible_python()
+    state_root = Path(state_root).resolve(strict=True)
+    opencode_root = Path(opencode_root).resolve(strict=True)
+    payload_input = Path(payload_root)
+    payload_parent = payload_input.parent.resolve(strict=True)
+    payload_root = payload_parent / payload_input.name
+    if payload_root.is_symlink():
+        raise RecoveryError("payload root must not be a symlink")
+    roots = validate_roots(
+        {"state": str(state_root), "payload": str(payload_root), "opencode": str(opencode_root)}
+    )
+    admission_path = state_root / ".council-lifecycle/admission.json"
+    admission, admission_data = read_object(admission_path, "pending admission")
+    admission = validate_admission(admission, roots)
+    if admission["status"] != "recovery_required":
+        raise RecoveryError("pending status requires a recovery_required admission")
+    transaction_id = admission["transaction_id"]
+    plan_path = (
+        state_root / ".council-lifecycle/v1/transactions" / transaction_id / "plan.json"
+    )
+    plan, plan_data, _receipt, _receipt_data = validate_plan(
+        plan_path, pre_intent=False, require_executing_tool=False
+    )
+    if (plan["transaction_id"] != transaction_id or
+            plan["prior_admission"]["committed"] != admission["committed"] or
+            plan["roots"] != admission["roots"]):
+        raise RecoveryError("pending admission does not bind the prepared plan")
+    current, current_data = read_object(admission_path, "pending admission")
+    if current_data != admission_data or validate_admission(current, roots) != admission:
+        raise RecoveryError("pending admission changed during status inspection")
+    current_units = []
+    for unit in plan["units"]:
+        state = capture_state(
+            Path(unit["destination"]),
+            "directory" if unit["unit_id"] == "payload" else "file",
+        )
+        current_units.append(
+            {"unit_id": unit["unit_id"], "exists": state["exists"], "sha256": state["sha256"]}
+        )
+    return {
+        "status_format": 1,
+        "roots": roots,
+        "management": {
+            "status": "recovery_required",
+            "certified": False,
+            "reason": "a validated lifecycle transaction requires recovery",
+            "summary": admission["committed"],
+        },
+        "payload_cache_count": 0,
+        "units": current_units,
+        "pending_recovery": {
+            "transaction_id": transaction_id,
+            "plan_sha256": sha256_bytes(plan_data),
+            "recovery_command": [
+                str(Path(sys.executable).resolve(strict=True)),
+                "-I",
+                "-B",
+                str(Path(plan["recovery"]["tool_path"])),
+                "recover",
+                "--state-root",
+                str(state_root),
+            ],
+            "python_contract": {
+                "implementation": "CPython",
+                "minimum": [3, 9],
+                "required_flags": ["-I", "-B"],
+                "recorded_path": plan["recovery"]["python_path"],
+                "recorded_version": plan["recovery"]["python_version"],
+            },
+        },
+    }
+
+
 def validate_receipt(value: Any, plan: Dict[str, Any], goal: str = "target") -> Dict[str, Any]:
     validate_receipt_shape(value, "receipt")
     receipt_id = value["receipt_id"]
@@ -1063,7 +1187,10 @@ def retained_state_fingerprint(state_root: Path,
     for parent, dirs, files in os.walk(state_root, topdown=True, followlinks=False):
         relative_parent = Path(parent).relative_to(state_root)
         if relative_parent == Path("."):
-            dirs[:] = sorted(name for name in dirs if name != ignored)
+            dirs[:] = sorted(
+                name for name in dirs
+                if name not in {ignored, PREPARATION_ROOT_NAME}
+            )
             files = sorted(name for name in files if name not in VOLATILE_STATE_NAMES)
         else:
             dirs.sort()
@@ -1191,8 +1318,26 @@ def _require_control_directory(path: Path, label: str) -> None:
         raise RecoveryError("%s must have mode 0700" % label)
 
 
+def _validate_compatible_python() -> None:
+    """Refuse interpreters that cannot honor the copied recoverer's safety contract."""
+    if platform.python_implementation() != "CPython":
+        raise RecoveryError("recovery requires CPython")
+    if sys.version_info[:2] < (3, 9) or sys.version_info[0] != 3:
+        raise RecoveryError("recovery requires CPython 3.9 or newer")
+    required_constants = ("O_DIRECTORY", "O_NOFOLLOW")
+    if any(not hasattr(os, name) for name in required_constants):
+        raise RecoveryError("recovery Python lacks required no-follow filesystem support")
+    dir_fd_functions = (os.open, os.stat, os.unlink, os.rmdir)
+    if any(function not in os.supports_dir_fd for function in dir_fd_functions):
+        raise RecoveryError("recovery Python lacks required descriptor-relative filesystem support")
+    if os.stat not in os.supports_follow_symlinks:
+        raise RecoveryError("recovery Python lacks required no-follow stat support")
+
+
 def validate_plan(plan_path: Path, *, pre_intent: bool,
-                  require_progress: bool = True) -> Tuple[Dict[str, Any], bytes, Dict[str, Any], bytes]:
+                  require_progress: bool = True,
+                  require_executing_tool: bool = True
+                  ) -> Tuple[Dict[str, Any], bytes, Dict[str, Any], bytes]:
     plan_path = Path(plan_path).resolve(strict=True)
     plan, plan_data = read_object(plan_path, "prepared plan")
     exact_keys(
@@ -1317,14 +1462,17 @@ def validate_plan(plan_path: Path, *, pre_intent: bool,
     actual_tool = actual_lifecycle / "v1/recovery" / (recovery["tool_sha256"] + ".py")
     if checked_absolute(recovery["tool_path"], "recovery tool_path") != canonical_tool:
         raise RecoveryError("recovery tool path is not fixed by its digest")
-    if Path(__file__).resolve(strict=True) != actual_tool or sha256_file(actual_tool) != recovery["tool_sha256"]:
+    if sha256_file(actual_tool) != recovery["tool_sha256"]:
+        raise RecoveryError("the copied recovery tool does not match the plan")
+    if require_executing_tool and Path(__file__).resolve(strict=True) != actual_tool:
         raise RecoveryError("the executing recovery tool does not match the plan")
-    if checked_absolute(recovery["python_path"], "recovery python_path") != Path(sys.executable).resolve(strict=True):
-        raise RecoveryError("the executing Python does not match the plan")
+    checked_absolute(recovery["python_path"], "recovery python_path")
     version = recovery["python_version"]
     if (not isinstance(version, list) or len(version) != 3 or
-            any(type(item) is not int or item < 0 for item in version) or tuple(version) != sys.version_info[:3]):
-        raise RecoveryError("the executing Python version does not match the plan")
+            any(type(item) is not int or item < 0 for item in version) or
+            version[0] != 3 or version[1] < 9):
+        raise RecoveryError("the recorded Python provenance is incompatible")
+    _validate_compatible_python()
     if plan["required_operations"] != list(REQUIRED_OPERATIONS):
         raise RecoveryError("plan requires unsupported or incomplete operations")
     if plan["allowed_goals"] not in (["target"], ["target", "prior"]):
@@ -1577,19 +1725,32 @@ def _atomic_json(path: Path, value: Any, failpoint: Failpoint, label: str) -> No
     if len(data) > MAX_METADATA_BYTES:
         raise RecoveryError("%s exceeds the 1 MiB metadata limit" % label)
     temporary = path.with_name(".%s.pending" % path.name)
+    if temporary.parent != path.parent:
+        raise RecoveryError("metadata temporary path escaped its parent")
+    parent_descriptor, parent_identity = _opened_directory(path.parent, label + " parent")
+    descriptor = -1
+    owned_token = None
     try:
-        temporary_details = temporary.lstat()
-    except FileNotFoundError:
-        pass
-    else:
-        if not stat.S_ISREG(temporary_details.st_mode) or temporary_details.st_nlink != 1:
-            raise RecoveryError("owned %s temporary path has an unexpected type" % label)
-        temporary.unlink()
-        _sync_directory(path.parent, failpoint, label + ":temporary-cleanup")
-    descriptor = os.open(
-        str(temporary), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600
-    )
-    try:
+        original_token = _entry_token(parent_descriptor, path.name)
+        temporary_token = _entry_token(parent_descriptor, temporary.name)
+        if temporary_token is not None:
+            temporary_details = os.stat(
+                temporary.name, dir_fd=parent_descriptor, follow_symlinks=False
+            )
+            if (not stat.S_ISREG(temporary_details.st_mode) or
+                    temporary_details.st_nlink != 1):
+                raise RecoveryError("owned %s temporary path has an unexpected type" % label)
+            os.unlink(temporary.name, dir_fd=parent_descriptor)
+            _sync_open_directory(
+                parent_descriptor, failpoint, label + ":temporary-cleanup"
+            )
+        descriptor = os.open(
+            temporary.name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            0o600,
+            dir_fd=parent_descriptor,
+        )
+        owned_token = _stat_token(os.fstat(descriptor))
         _event(failpoint, "before:write:" + label)
         os.fchmod(descriptor, 0o600)
         view = memoryview(data)
@@ -1602,19 +1763,29 @@ def _atomic_json(path: Path, value: Any, failpoint: Failpoint, label: str) -> No
         _event(failpoint, "before:fsync-file:" + label)
         os.fsync(descriptor)
         _event(failpoint, "after:fsync-file:" + label)
+        owned_token = _stat_token(os.fstat(descriptor))
         os.close(descriptor)
         descriptor = -1
         _event(failpoint, "before:replace:" + label)
-        os.replace(temporary, path)
+        _require_open_directory(
+            path.parent, parent_descriptor, parent_identity, label + " parent"
+        )
+        if (_entry_token(parent_descriptor, temporary.name) != owned_token or
+                _entry_token(parent_descriptor, path.name) != original_token):
+            raise RecoveryError("%s changed before metadata replacement" % label)
+        os.replace(
+            temporary.name, path.name,
+            src_dir_fd=parent_descriptor, dst_dir_fd=parent_descriptor,
+        )
+        owned_token = None
         _event(failpoint, "after:replace:" + label)
-        _sync_directory(path.parent, failpoint, label)
+        _sync_open_directory(parent_descriptor, failpoint, label)
     finally:
         if descriptor >= 0:
             os.close(descriptor)
-        try:
-            os.unlink(temporary)
-        except FileNotFoundError:
-            pass
+        if owned_token is not None and _entry_token(parent_descriptor, temporary.name) == owned_token:
+            os.unlink(temporary.name, dir_fd=parent_descriptor)
+        os.close(parent_descriptor)
 
 
 def _write_immutable(path: Path, data: bytes, failpoint: Failpoint, label: str) -> None:
@@ -1668,7 +1839,8 @@ def _guard(plan: Dict[str, Any], lease: Any) -> None:
 
 
 def _rename(parent: Path, source: Path, destination: Path, plan: Dict[str, Any], lease: Any,
-            failpoint: Failpoint, label: str) -> None:
+            failpoint: Failpoint, label: str,
+            expected_sources: Sequence[Dict[str, Any]]) -> None:
     _guard(plan, lease)
     if source.parent != parent or destination.parent != parent:
         raise RecoveryError("cross-directory rename is not permitted")
@@ -1680,18 +1852,24 @@ def _rename(parent: Path, source: Path, destination: Path, plan: Dict[str, Any],
     )
     if expected_parent is None:
         raise RecoveryError("rename parent is outside the fixed unit set")
-    descriptor = os.open(str(parent), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    if not any(state_matches(source, expected) for expected in expected_sources):
+        raise RecoveryError("rename source differs from its planned state: %s" % source)
+    descriptor, opened_identity = _opened_directory(parent, "unit parent")
     try:
-        details = os.fstat(descriptor)
-        opened_identity = {"device": details.st_dev, "inode": details.st_ino}
-        if opened_identity != expected_parent or directory_identity(parent, "unit parent") != expected_parent:
+        if opened_identity != expected_parent:
             raise RecoveryError("unit parent changed while opening it")
+        source_token = _entry_token(descriptor, source.name)
+        destination_token = _entry_token(descriptor, destination.name)
         _event(failpoint, "before:rename:" + label)
+        _require_open_directory(parent, descriptor, expected_parent, "unit parent")
+        if (_entry_token(descriptor, source.name) != source_token or
+                _entry_token(descriptor, destination.name) != destination_token or
+                destination_token is not None or
+                not any(state_matches(source, expected) for expected in expected_sources)):
+            raise RecoveryError("rename source or destination changed before mutation")
         os.replace(source.name, destination.name, src_dir_fd=descriptor, dst_dir_fd=descriptor)
         _event(failpoint, "after:rename:" + label)
-        _event(failpoint, "before:fsync-directory:" + label)
-        os.fsync(descriptor)
-        _event(failpoint, "after:fsync-directory:" + label)
+        _sync_open_directory(descriptor, failpoint, label)
     finally:
         os.close(descriptor)
 
@@ -1699,18 +1877,39 @@ def _rename(parent: Path, source: Path, destination: Path, plan: Dict[str, Any],
 def _copy_file(source: Path, destination: Path, expected: Dict[str, Any], failpoint: Failpoint,
                label: str, partial: Optional[Path] = None) -> None:
     partial = partial or destination.with_name(destination.name + ".partial")
+    if partial.parent != destination.parent:
+        raise RecoveryError("artifact partial path escaped its destination parent")
+    source_before = source.lstat()
+    if (stat.S_ISLNK(source_before.st_mode) or not stat.S_ISREG(source_before.st_mode) or
+            source_before.st_nlink != 1):
+        raise RecoveryError("recovery source is not a single-linked regular file")
     source_descriptor = os.open(str(source), os.O_RDONLY | os.O_NOFOLLOW)
+    source_token = _stat_token(source_before)
+    if _stat_token(os.fstat(source_descriptor)) != source_token:
+        os.close(source_descriptor)
+        raise RecoveryError("recovery source changed while opening")
+    parent_descriptor, parent_identity = _opened_directory(
+        destination.parent, label + " destination parent"
+    )
     destination_descriptor = -1
+    partial_token = None
     try:
+        destination_token = _entry_token(parent_descriptor, destination.name)
+        if _entry_token(parent_descriptor, partial.name) is not None:
+            raise RecoveryError("artifact partial path is occupied")
         destination_descriptor = os.open(
-            str(partial), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            partial.name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
             expected["mode"],
+            dir_fd=parent_descriptor,
         )
+        partial_token = _stat_token(os.fstat(destination_descriptor))
         _event(failpoint, "before:copy-file:" + label)
+        digest = hashlib.sha256()
         while True:
             chunk = os.read(source_descriptor, 1024 * 1024)
             if not chunk:
                 break
+            digest.update(chunk)
             view = memoryview(chunk)
             while view:
                 written = os.write(destination_descriptor, view)
@@ -1719,15 +1918,35 @@ def _copy_file(source: Path, destination: Path, expected: Dict[str, Any], failpo
                 view = view[written:]
         os.fchmod(destination_descriptor, expected["mode"])
         os.fsync(destination_descriptor)
+        partial_token = _stat_token(os.fstat(destination_descriptor))
+        if (digest.hexdigest() != expected["sha256"] or
+                _stat_token(os.fstat(source_descriptor)) != source_token or
+                _stat_token(source.lstat()) != source_token):
+            raise RecoveryError("recovery source changed while copying")
         _event(failpoint, "after:copy-file:" + label)
+        os.close(destination_descriptor)
+        destination_descriptor = -1
+        _event(failpoint, "before:replace-materialized-file:" + label)
+        _require_open_directory(
+            destination.parent, parent_descriptor, parent_identity,
+            label + " destination parent",
+        )
+        if (_entry_token(parent_descriptor, partial.name) != partial_token or
+                _entry_token(parent_descriptor, destination.name) != destination_token or
+                _stat_token(source.lstat()) != source_token):
+            raise RecoveryError("artifact source or destination changed before replacement")
+        os.replace(
+            partial.name, destination.name,
+            src_dir_fd=parent_descriptor, dst_dir_fd=parent_descriptor,
+        )
+        partial_token = None
+        _event(failpoint, "after:replace-materialized-file:" + label)
+        _sync_open_directory(parent_descriptor, failpoint, label + ":file-created")
     finally:
         os.close(source_descriptor)
         if destination_descriptor >= 0:
             os.close(destination_descriptor)
-    _event(failpoint, "before:replace-materialized-file:" + label)
-    os.replace(partial, destination)
-    _event(failpoint, "after:replace-materialized-file:" + label)
-    _sync_directory(destination.parent, failpoint, label + ":file-created")
+        os.close(parent_descriptor)
 
 
 def _partial_tree_is_known(stage: Path, expected: Dict[str, Any]) -> bool:
@@ -1751,20 +1970,58 @@ def _partial_tree_is_known(stage: Path, expected: Dict[str, Any]) -> bool:
 
 def _clean_known_partials(stage: Path, expected: Dict[str, Any], failpoint: Failpoint,
                           label: str) -> None:
-    for item in expected["artifacts"]:
-        if item["kind"] != "file":
-            continue
-        partial = (stage / item["path"]).with_name(Path(item["path"]).name + ".partial")
-        try:
-            details = partial.lstat()
-        except FileNotFoundError:
-            continue
-        if not stat.S_ISREG(details.st_mode) or details.st_nlink != 1:
-            raise RecoveryError("owned partial path is not a regular file: %s" % partial)
-        _event(failpoint, "before:unlink-partial:" + label + ":" + item["path"])
-        partial.unlink()
-        _event(failpoint, "after:unlink-partial:" + label + ":" + item["path"])
-        _sync_directory(partial.parent, failpoint, label + ":partial-cleanup")
+    stage_descriptor, stage_identity = _opened_directory(stage, label + " stage")
+    try:
+        _entries, directory_tokens = _snapshot_removal_tree(stage_descriptor, label)
+        for item in expected["artifacts"]:
+            if item["kind"] != "file":
+                continue
+            partial = (stage / item["path"]).with_name(
+                Path(item["path"]).name + ".partial"
+            )
+            relative_parent = str(PurePosixPath(item["path"]).parent)
+            if relative_parent != "." and relative_parent not in directory_tokens:
+                continue
+            parent_descriptor = _open_relative_directory(
+                stage_descriptor,
+                "." if relative_parent == "." else relative_parent,
+                directory_tokens,
+                label,
+            )
+            try:
+                token = _entry_token(parent_descriptor, partial.name)
+                if token is None:
+                    continue
+                details = os.stat(
+                    partial.name, dir_fd=parent_descriptor, follow_symlinks=False
+                )
+                if not stat.S_ISREG(details.st_mode) or details.st_nlink != 1:
+                    raise RecoveryError(
+                        "owned partial path is not a regular file: %s" % partial
+                    )
+                _event(
+                    failpoint,
+                    "before:unlink-partial:" + label + ":" + item["path"],
+                )
+                _require_open_directory(
+                    stage, stage_descriptor, stage_identity, label + " stage"
+                )
+                if _entry_token(parent_descriptor, partial.name) != token:
+                    raise RecoveryError(
+                        "owned partial changed before removal: %s" % partial
+                    )
+                os.unlink(partial.name, dir_fd=parent_descriptor)
+                _event(
+                    failpoint,
+                    "after:unlink-partial:" + label + ":" + item["path"],
+                )
+                _sync_open_directory(
+                    parent_descriptor, failpoint, label + ":partial-cleanup"
+                )
+            finally:
+                os.close(parent_descriptor)
+    finally:
+        os.close(stage_descriptor)
 
 
 def _remove_planned_partial(path: Path, plan: Dict[str, Any], lease: Any,
@@ -1772,13 +2029,27 @@ def _remove_planned_partial(path: Path, plan: Dict[str, Any], lease: Any,
     if not (path.exists() or path.is_symlink()):
         return
     _guard(plan, lease)
-    details = path.lstat()
-    if not stat.S_ISREG(details.st_mode) or details.st_nlink != 1:
-        raise RecoveryError("planned partial path has unexpected content: %s" % path)
-    _event(failpoint, "before:unlink-planned-partial:" + label)
-    path.unlink()
-    _event(failpoint, "after:unlink-planned-partial:" + label)
-    _sync_directory(path.parent, failpoint, label + ":planned-partial-cleanup")
+    parent_descriptor, parent_identity = _opened_directory(
+        path.parent, label + " parent"
+    )
+    try:
+        token = _entry_token(parent_descriptor, path.name)
+        details = os.stat(path.name, dir_fd=parent_descriptor, follow_symlinks=False)
+        if not stat.S_ISREG(details.st_mode) or details.st_nlink != 1:
+            raise RecoveryError("planned partial path has unexpected content: %s" % path)
+        _event(failpoint, "before:unlink-planned-partial:" + label)
+        _require_open_directory(
+            path.parent, parent_descriptor, parent_identity, label + " parent"
+        )
+        if _entry_token(parent_descriptor, path.name) != token:
+            raise RecoveryError("planned partial changed before removal: %s" % path)
+        os.unlink(path.name, dir_fd=parent_descriptor)
+        _event(failpoint, "after:unlink-planned-partial:" + label)
+        _sync_open_directory(
+            parent_descriptor, failpoint, label + ":planned-partial-cleanup"
+        )
+    finally:
+        os.close(parent_descriptor)
 
 
 def _materialize(source: Path, stage: Path, expected: Dict[str, Any], plan: Dict[str, Any],
@@ -1885,42 +2156,161 @@ def _validate_unit_auxiliaries(unit: Dict[str, Any], goal: str) -> None:
             raise RecoveryError("%s planned partial contains unknown content" % unit["unit_id"])
 
 
+def _snapshot_removal_tree(root_descriptor: int, label: str
+                           ) -> Tuple[List[Dict[str, Any]], Dict[str, Tuple[int, int, int]]]:
+    entries: List[Dict[str, Any]] = []
+    root_details = os.fstat(root_descriptor)
+    directories: Dict[str, Tuple[int, int, int]] = {
+        ".": (root_details.st_dev, root_details.st_ino, root_details.st_mode)
+    }
+
+    def visit(descriptor: int, relative_parent: str) -> None:
+        with os.scandir(descriptor) as iterator:
+            names = sorted(entry.name for entry in iterator)
+        for name in names:
+            details = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+            token = _stat_token(details)
+            relative = name if relative_parent == "." else relative_parent + "/" + name
+            if stat.S_ISREG(details.st_mode) and details.st_nlink == 1:
+                kind = "file"
+            elif stat.S_ISDIR(details.st_mode) and not stat.S_ISLNK(details.st_mode):
+                kind = "directory"
+                child = os.open(
+                    name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                    dir_fd=descriptor,
+                )
+                try:
+                    if _stat_token(os.fstat(child)) != token:
+                        raise RecoveryError("%s stage changed while enumerating" % label)
+                    directories[relative] = (
+                        details.st_dev, details.st_ino, details.st_mode
+                    )
+                    visit(child, relative)
+                finally:
+                    os.close(child)
+            else:
+                raise RecoveryError("%s stage contains unsupported content" % label)
+            entries.append(
+                {"relative": relative, "parent": relative_parent, "name": name,
+                 "kind": kind, "token": token}
+            )
+            if len(entries) > MAX_ARTIFACTS * 2:
+                raise RecoveryError("%s stage removal exceeds its bound" % label)
+
+    visit(root_descriptor, ".")
+    entries.sort(
+        key=lambda item: (len(PurePosixPath(item["relative"]).parts), item["relative"]),
+        reverse=True,
+    )
+    return entries, directories
+
+
+def _open_relative_directory(root_descriptor: int, relative: str,
+                             identities: Dict[str, Tuple[int, int, int]], label: str) -> int:
+    descriptor = os.dup(root_descriptor)
+    current = "."
+    try:
+        for component in (() if relative == "." else PurePosixPath(relative).parts):
+            expected = identities[current if current != "." else "."]
+            details = os.fstat(descriptor)
+            if (details.st_dev, details.st_ino, details.st_mode) != expected:
+                raise RecoveryError("%s stage parent changed during removal" % label)
+            child = os.open(
+                component,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                dir_fd=descriptor,
+            )
+            os.close(descriptor)
+            descriptor = child
+            current = component if current == "." else current + "/" + component
+            details = os.fstat(descriptor)
+            if (details.st_dev, details.st_ino, details.st_mode) != identities[current]:
+                raise RecoveryError("%s stage parent changed during removal" % label)
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
 def _remove_owned_stage(stage: Path, expected: Dict[str, Any], plan: Dict[str, Any],
                         lease: Any, failpoint: Failpoint, label: str) -> None:
     _guard(plan, lease)
-    if expected["kind"] == "file":
-        if not state_matches(stage, expected):
-            raise RecoveryError("%s is not the known disposable stage" % label)
-        _event(failpoint, "before:unlink-stage:" + label)
-        stage.unlink()
-        _event(failpoint, "after:unlink-stage:" + label)
-        _sync_directory(stage.parent, failpoint, label + ":stage-removed")
-        return
-    if not state_matches(stage, expected) and not _partial_tree_is_known(stage, expected):
-        raise RecoveryError("%s is not the known disposable stage" % label)
-    entries = sorted(
-        (path for path in stage.rglob("*")),
-        key=lambda path: (len(path.relative_to(stage).parts), str(path)),
-        reverse=True,
+    parent_descriptor, parent_identity = _opened_directory(
+        stage.parent, label + " parent"
     )
-    for path in entries:
-        details = path.lstat()
-        relative = str(path.relative_to(stage).as_posix())
-        if stat.S_ISREG(details.st_mode) and details.st_nlink == 1:
-            _event(failpoint, "before:unlink-stage:" + label + ":" + relative)
-            path.unlink()
-            _event(failpoint, "after:unlink-stage:" + label + ":" + relative)
-        elif stat.S_ISDIR(details.st_mode) and not stat.S_ISLNK(details.st_mode):
-            _event(failpoint, "before:rmdir-stage:" + label + ":" + relative)
-            path.rmdir()
-            _event(failpoint, "after:rmdir-stage:" + label + ":" + relative)
-        else:
-            raise RecoveryError("%s stage changed during bounded removal" % label)
-        _sync_directory(path.parent, failpoint, label + ":" + relative)
-    _event(failpoint, "before:rmdir-stage:" + label)
-    stage.rmdir()
-    _event(failpoint, "after:rmdir-stage:" + label)
-    _sync_directory(stage.parent, failpoint, label + ":stage-removed")
+    stage_identity = _entry_identity(parent_descriptor, stage.name)
+    if expected["kind"] == "file":
+        try:
+            if not state_matches(stage, expected):
+                raise RecoveryError("%s is not the known disposable stage" % label)
+            _event(failpoint, "before:unlink-stage:" + label)
+            _require_open_directory(
+                stage.parent, parent_descriptor, parent_identity, label + " parent"
+            )
+            if _entry_identity(parent_descriptor, stage.name) != stage_identity:
+                raise RecoveryError("%s stage changed before removal" % label)
+            os.unlink(stage.name, dir_fd=parent_descriptor)
+            _event(failpoint, "after:unlink-stage:" + label)
+            _sync_open_directory(parent_descriptor, failpoint, label + ":stage-removed")
+            return
+        finally:
+            os.close(parent_descriptor)
+    try:
+        if not state_matches(stage, expected) and not _partial_tree_is_known(stage, expected):
+            raise RecoveryError("%s is not the known disposable stage" % label)
+        stage_descriptor = os.open(
+            stage.name,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+            dir_fd=parent_descriptor,
+        )
+        try:
+            opened_stage = os.fstat(stage_descriptor)
+            if ((opened_stage.st_dev, opened_stage.st_ino, opened_stage.st_mode) !=
+                    stage_identity):
+                raise RecoveryError("%s stage changed while opening" % label)
+            entries, directory_tokens = _snapshot_removal_tree(stage_descriptor, label)
+            for entry in entries:
+                event = (
+                    "before:unlink-stage:" if entry["kind"] == "file"
+                    else "before:rmdir-stage:"
+                ) + label + ":" + entry["relative"]
+                _event(failpoint, event)
+                _require_open_directory(
+                    stage.parent, parent_descriptor, parent_identity, label + " parent"
+                )
+                if _entry_identity(parent_descriptor, stage.name) != stage_identity:
+                    raise RecoveryError("%s stage changed before bounded removal" % label)
+                entry_parent = _open_relative_directory(
+                    stage_descriptor, entry["parent"], directory_tokens, label
+                )
+                try:
+                    if _entry_token(entry_parent, entry["name"]) != entry["token"]:
+                        raise RecoveryError("%s stage changed during bounded removal" % label)
+                    if entry["kind"] == "file":
+                        os.unlink(entry["name"], dir_fd=entry_parent)
+                        after_event = "after:unlink-stage:"
+                    else:
+                        os.rmdir(entry["name"], dir_fd=entry_parent)
+                        after_event = "after:rmdir-stage:"
+                    _event(failpoint, after_event + label + ":" + entry["relative"])
+                    _sync_open_directory(
+                        entry_parent, failpoint, label + ":" + entry["relative"]
+                    )
+                finally:
+                    os.close(entry_parent)
+        finally:
+            os.close(stage_descriptor)
+        _event(failpoint, "before:rmdir-stage:" + label)
+        _require_open_directory(
+            stage.parent, parent_descriptor, parent_identity, label + " parent"
+        )
+        if _entry_identity(parent_descriptor, stage.name) != stage_identity:
+            raise RecoveryError("%s stage changed before final removal" % label)
+        os.rmdir(stage.name, dir_fd=parent_descriptor)
+        _event(failpoint, "after:rmdir-stage:" + label)
+        _sync_open_directory(parent_descriptor, failpoint, label + ":stage-removed")
+    finally:
+        os.close(parent_descriptor)
 
 
 def _ensure_unit(unit: Dict[str, Any], goal: str, plan: Dict[str, Any], lease: Any,
@@ -1959,14 +2349,21 @@ def _ensure_unit(unit: Dict[str, Any], goal: str, plan: Dict[str, Any], lease: A
     if (backup.exists() or backup.is_symlink()) and "initial" in labels:
         raise RecoveryError("%s has duplicate active and backed-up initial content" % unit_id)
     if unit["initial"]["exists"] and "initial" in labels and not (backup.exists() or backup.is_symlink()):
-        _rename(parent, destination, backup, plan, lease, failpoint, unit_id + ":preserve-initial")
+        _rename(
+            parent, destination, backup, plan, lease, failpoint,
+            unit_id + ":preserve-initial", [unit["initial"]],
+        )
     elif destination.exists() or destination.is_symlink():
         displaced = objects["displaced"]
         if displaced.exists() or displaced.is_symlink():
             if not any(state_matches(displaced, unit[name]) for name in ("prior", "target")):
                 raise RecoveryError("%s displaced object contains unknown content" % unit_id)
             raise RecoveryError("%s has both an active and displaced known object" % unit_id)
-        _rename(parent, destination, displaced, plan, lease, failpoint, unit_id + ":displace-active")
+        _rename(
+            parent, destination, displaced, plan, lease, failpoint,
+            unit_id + ":displace-active",
+            [unit["initial"], unit["prior"], unit["target"]],
+        )
     if desired["exists"]:
         source = objects[goal]
         stage = objects["stage"]
@@ -1974,7 +2371,10 @@ def _ensure_unit(unit: Dict[str, Any], goal: str, plan: Dict[str, Any], lease: A
             source, stage, desired, plan, lease, failpoint, unit_id + ":" + goal,
             objects["partial"] if desired["kind"] == "file" else None,
         )
-        _rename(parent, stage, destination, plan, lease, failpoint, unit_id + ":activate-" + goal)
+        _rename(
+            parent, stage, destination, plan, lease, failpoint,
+            unit_id + ":activate-" + goal, [desired],
+        )
     if not state_matches(destination, desired):
         raise RecoveryError("%s did not reach its selected state" % unit_id)
 
@@ -2026,6 +2426,8 @@ def _terminal_result(admission: Dict[str, Any], state_root: Path, abort: bool,
     if summary is None:
         raise RecoveryError("terminal lifecycle marker has no certifying ownership receipt")
     receipt = _verify_terminal_receipt(state_root, summary)
+    if admission["roots"] != receipt["roots"]:
+        raise RecoveryError("terminal admission roots differ from the certifying receipt")
     if receipt["outcome"] != admission["status"]:
         raise RecoveryError("terminal receipt outcome differs from admission status")
     _sync_directory(
@@ -2144,8 +2546,7 @@ def main() -> int:
     recovery.add_argument("--abort", action="store_true")
     args = parser.parse_args()
     try:
-        if sys.version_info[:2] < (3, 9):
-            raise RecoveryError("recovery CLI requires Python 3.9 or newer")
+        _validate_compatible_python()
         if not sys.flags.isolated or not sys.flags.dont_write_bytecode:
             raise RecoveryError("recovery CLI requires Python -I -B")
         if args.command == "describe":

@@ -18,7 +18,7 @@ refuses symlinked or otherwise unsafe layouts.
 ## Requirements
 
 - macOS, because Council's runtime trust anchors are macOS-specific
-- Python 3.9 or newer as `python3` on `PATH`
+- CPython 3.9 or newer as `python3` on `PATH`
 - A generated Council release containing root `release_manifest.json` and
   `payload/scripts/council_lifecycle.py`
 - At least two agent sessions to hold Council seats: Codex, Claude Code, and/or
@@ -95,6 +95,27 @@ sh /absolute/path/to/council-release/payload/install/install.sh \
   --maintenance-window-confirmed
 ```
 
+If the fixed payload path is the source clone from the README setup, preserve
+that entire clone before the first managed install. During the same quiescent
+maintenance window, choose a retained path that does not exist and is outside
+both the fixed payload path and the generated release, then run:
+
+```sh
+retained=/absolute/retained/path/council-source-clone
+test ! -e "$retained" || { echo "retained path already exists" >&2; exit 1; }
+mv "$HOME/.claude/skills/council" "$retained"
+sh /absolute/path/to/council-release/payload/install/install.sh \
+  --maintenance-window-confirmed
+```
+
+The move keeps the clone's `.git` directory, local edits, and untracked files
+together at the operator-selected path. It does not move or rewrite the state
+root at `~/.claude/peer-consults` or external runtime configuration. The
+lifecycle engine neither claims nor changes the retained clone. It still
+refuses an in-place source clone and any differing unowned artifact at a fixed
+destination; preserve and resolve each such collision explicitly before
+requesting another plan.
+
 The engine validates the entire release, current ownership, fixed roots, Council
 writer admission, and persisted runtime registrations. Live, unknown, duplicate,
 or incompatible registrations block the transaction. A payload containing
@@ -164,8 +185,40 @@ also does not remove runtime registration or configuration entries.
 Before publishing a transaction intent, every mutating lifecycle command writes
 an exact `recovery-command` JSON argument vector to standard error and flushes
 it. Record that vector. If the lifecycle command is interrupted after intent,
-run those exact arguments; the recovery program is an immutable copy retained
-outside the replaceable payload and works with the payload absent.
+run that complete vector without changing its flags, tool path, or state root.
+The recovery program is a digest-bound immutable copy retained outside the
+replaceable payload and works with the payload absent.
+
+`python3 -I -B scripts/council_lifecycle.py status` has a dedicated read-only
+result for a validated `recovery_required` admission. It keeps the normal
+top-level `status_format`, `roots`, `management`, `payload_cache_count`, and
+`units` fields and adds:
+
+```json
+{
+  "pending_recovery": {
+    "transaction_id": "<transaction-id>",
+    "plan_sha256": "<plan-sha256>",
+    "recovery_command": ["<compatible-python>", "-I", "-B", "<copied-tool>", "recover", "--state-root", "<state-root>"],
+    "python_contract": {
+      "implementation": "CPython",
+      "minimum": [3, 9],
+      "required_flags": ["-I", "-B"],
+      "recorded_path": "<original-python-path>",
+      "recorded_version": [3, 9, 0]
+    }
+  }
+}
+```
+
+Status validates the pending admission, exact plan, fixed roots, and copied
+recovery-tool identity before returning this command. The command uses the
+currently running compatible interpreter and the plan-bound copied tool.
+`recorded_path` and `recorded_version` report transaction provenance; recovery
+does not require the same executable path or patch release. The executing
+interpreter must satisfy the reported contract and the recoverer's required
+runtime feature checks. Missing, malformed, cross-root, or digest-mismatched
+pending records fail closed instead of producing a recovery command.
 
 Recovery holds the same fixed `broker.lock`, validates the pending admission,
 plan, journal, receipts, root identities, and all five artifact units, then
