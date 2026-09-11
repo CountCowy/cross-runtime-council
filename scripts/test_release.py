@@ -122,6 +122,16 @@ class ReleaseTests(unittest.TestCase):
                     self.assertEqual(own_caches(), before)
         self.assertFalse((self.base / "absent-state").exists())
 
+        lifecycle = self.source / "scripts/council_lifecycle.py"
+        before = own_caches()
+        result = subprocess.run(
+            [sys.executable, "-I", "-B", str(lifecycle), "--help"],
+            cwd=self.base, capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("{status,plan,install,upgrade,rollback,uninstall}", result.stdout)
+        self.assertEqual(own_caches(), before)
+
     def test_documentation_and_tests_do_not_change_runtime_cohort(self):
         _, _, original = release(self.source)
         for name in ("README.md", "scripts/test_parity.py"):

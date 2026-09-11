@@ -1,0 +1,47 @@
+{
+  "formats": {
+    "admission": [
+      1
+    ],
+    "journal": [
+      1
+    ],
+    "plan": [
+      1
+    ],
+    "receipt": [
+      1
+    ]
+  },
+  "goals": [
+    "target",
+    "prior"
+  ],
+  "id_pattern": "[A-Za-z0-9][A-Za-z0-9_-]{0,95}",
+  "interface": "council-lifecycle-recovery",
+  "metadata_limit_bytes": 1048576,
+  "python_minimum": [
+    3,
+    9
+  ],
+  "recovery_format": 1,
+  "required_python_flags": [
+    "-I",
+    "-B"
+  ],
+  "required_operations": [
+    "classify-filesystem-v1",
+    "preserve-initial-v1",
+    "materialize-selected-v1",
+    "activate-five-units-v1",
+    "verify-receipt-v1",
+    "publish-admission-v1"
+  ],
+  "unit_ids": [
+    "payload",
+    "opencode-plugin",
+    "opencode-protocol",
+    "opencode-registry",
+    "opencode-tool"
+  ]
+}

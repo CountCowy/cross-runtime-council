@@ -51,6 +51,12 @@ jobs:
       - name: Frozen predecessor reader matrix and negative controls
         run: python3 test_predecessors.py
         working-directory: scripts
+      - name: Managed lifecycle planner and transaction integration
+        run: python3 test_lifecycle.py
+        working-directory: scripts
+      - name: Standalone lifecycle recovery and crash matrix
+        run: python3 test_lifecycle_recovery.py
+        working-directory: scripts
       - name: TypeScript type-check
         run: |
           npm install --no-save --silent typescript@5.6.3 "@opencode-ai/plugin@1.18.21" "@types/node@22.7.5"

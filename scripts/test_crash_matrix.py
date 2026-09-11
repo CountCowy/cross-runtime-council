@@ -270,9 +270,18 @@ class CrashMatrixTests(TerminalDialogueFixture):
         def postcondition(recovered, context, _crashed):
             dialogue = context["dialogue"]
             if self.manifest(dialogue)["phase"] != "complete":
-                result = recovered.submit(
-                    dialogue, "beta", "representation_check", 2, representation_check()
-                )
+                original_utc_now = council.utc_now
+                council.utc_now = lambda: "2999-01-01T00:00:00+00:00"
+                try:
+                    result = recovered.submit(
+                        dialogue,
+                        "beta",
+                        "representation_check",
+                        2,
+                        representation_check(),
+                    )
+                finally:
+                    council.utc_now = original_utc_now
                 self.assertEqual(result["phase"], "complete")
             self.assertTrue(
                 (self.root / "dialogues" / dialogue / "final.json").is_file()

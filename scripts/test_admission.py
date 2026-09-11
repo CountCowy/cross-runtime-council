@@ -85,6 +85,36 @@ def bind(broker, **overrides):
     return broker.bind(**args)
 
 
+def relay_route(runtime="claude", **overrides):
+    normalized = runtime.lower()
+    route = {
+        "runtime": runtime,
+        "participant": "alpha",
+        "label": "Alpha",
+        "project": "fixture",
+        "bound_at": "fixture",
+        "lease_minutes": 5,
+        "lease_expires_epoch": 200,
+        "capability_hash": "a" * 64,
+        "binding_generation": "gen-alpha",
+        "runtime_cohort": council.RUNTIME_COHORT,
+        "transport": (
+            "claude_mcp_child_relay"
+            if normalized == "claude"
+            else "opencode_plugin_relay"
+        ),
+        "relay_path": "/private/tmp/fixture.sock",
+        "relay_pid": 123,
+        "relay_process_start_epoch": 456,
+    }
+    if normalized == "claude":
+        route["relay_owner_hash"] = "b" * 64
+    else:
+        route["target_session_id"] = "session-alpha"
+    route.update(overrides)
+    return route
+
+
 def isolate_admission_roots(test, base):
     inspect = admission.inspect_admission
 
@@ -320,6 +350,48 @@ class InspectionTests(unittest.TestCase):
         report = inspection.inspect_state(self.root)
         self.assertEqual(report["artifacts"]["unsupported_schema_count"], 1)
 
+    def test_missing_required_artifact_schema_fields_are_unsupported(self):
+        cases = (
+            (
+                "manifest-schema",
+                "dialogues/dlg-fixture/manifest.json",
+                {"dialogue_schema_version": council.DIALOGUE_SCHEMA_VERSION},
+                1,
+            ),
+            (
+                "manifest-dialogue-schema",
+                "dialogues/dlg-fixture/manifest.json",
+                {"schema_version": council.SCHEMA_VERSION},
+                1,
+            ),
+            ("final-both-schemas", "dialogues/dlg-fixture/final.json", {}, 2),
+            (
+                "submission-schema",
+                "dialogues/dlg-fixture/submissions/alpha.json",
+                {},
+                1,
+            ),
+            ("outbox-envelope", "outbox/alpha/message.json", {"status": "staged"}, 1),
+            (
+                "outbox-envelope-schema",
+                "outbox/alpha/message.json",
+                {"status": "staged", "envelope": {}},
+                1,
+            ),
+        )
+        for label, relative, value, expected in cases:
+            with self.subTest(label=label):
+                root = Path(self.temp.name) / ("missing-" + label)
+                write(root / relative, value)
+                before = inventory(root)
+                report = inspection.inspect_state(root)
+                self.assertEqual(report["artifacts"]["malformed_count"], 0)
+                self.assertEqual(
+                    report["artifacts"]["unsupported_schema_count"], expected
+                )
+                self.assertFalse(report["artifacts"].get("inventory_error", False))
+                self.assertEqual(inventory(root), before)
+
     def test_unicode_and_recursive_json_become_malformed_evidence(self):
         route = {
             "runtime": "codex",
@@ -494,12 +566,7 @@ class InspectionTests(unittest.TestCase):
             self.assertEqual(report["verified_count"], 0)
 
     def test_positive_liveness_matrix_and_cached_probes(self):
-        route = {
-            "runtime": "claude",
-            "lease_expires_epoch": 200,
-            "relay_pid": 123,
-            "relay_process_start_epoch": 456,
-        }
+        route = relay_route()
         record = ("alpha.json", None, None, route, None)
         cases = [
             (inspection.ProcessEvidence("absent"), "dead"),
@@ -531,7 +598,11 @@ class InspectionTests(unittest.TestCase):
         for expiry in (True, False, float("nan"), float("inf"), None, "0"):
             route["lease_expires_epoch"] = expiry
             self.assertEqual(inspection.classify_registration(record, 100), "unknown")
-        route.update(runtime="codex", lease_expires_epoch=200)
+        route.update(
+            runtime="codex",
+            lease_expires_epoch=200,
+            target_thread_id="thread-alpha",
+        )
         self.assertEqual(
             inspection.classify_registration(
                 record, 100, lambda _: inspection.ProcessEvidence("absent")
@@ -558,6 +629,37 @@ class InspectionTests(unittest.TestCase):
         inspection.registration_report(snapshot, 100, probe)
         probe.assert_called_once_with(123)
 
+    def test_mixed_case_runtime_uses_normalized_liveness_fields(self):
+        cases = (
+            (inspection.ProcessEvidence("absent"), "dead"),
+            (
+                inspection.ProcessEvidence(
+                    "present", ("legacy-ps-lstart-seconds", 456)
+                ),
+                "live",
+            ),
+            (inspection.ProcessEvidence("unknown"), "unknown"),
+            (
+                inspection.ProcessEvidence(
+                    "present", ("legacy-ps-lstart-seconds", 457)
+                ),
+                "unknown",
+            ),
+        )
+        for runtime in ("Claude", "OpenCode"):
+            route = relay_route(runtime)
+            before = dict(route)
+            record = ("alpha.json", None, None, route, None)
+            for evidence, expected in cases:
+                with self.subTest(runtime=runtime, evidence=evidence):
+                    probe = mock.Mock(return_value=evidence)
+                    self.assertEqual(
+                        inspection.classify_registration(record, 100, probe),
+                        expected,
+                    )
+                    probe.assert_called_once_with(123)
+                    self.assertEqual(route, before)
+
     def test_owned_child_liveness_and_positive_death(self):
         child = subprocess.Popen(
             [sys.executable, "-B", "-c", "import sys; sys.stdin.read()"],
@@ -570,12 +672,11 @@ class InspectionTests(unittest.TestCase):
                 "alpha.json",
                 None,
                 None,
-                {
-                    "runtime": "claude",
-                    "lease_expires_epoch": time.time() + 60,
-                    "relay_pid": child.pid,
-                    "relay_process_start_epoch": epoch,
-                },
+                relay_route(
+                    lease_expires_epoch=time.time() + 60,
+                    relay_pid=child.pid,
+                    relay_process_start_epoch=epoch,
+                ),
                 None,
             )
             self.assertEqual(
@@ -2129,55 +2230,14 @@ class ProcessBarrierTests(unittest.TestCase):
 
 
 class LegacyFenceTests(unittest.TestCase):
-    def test_every_script_refuses_marker_before_noop_backup_or_purge(self):
-        with tempfile.TemporaryDirectory(
-            prefix="c1-home-", dir="/private/tmp"
-        ) as directory:
-            home = Path(directory)
-            marker = home / ".claude/peer-consults" / admission.NAMESPACE
-            marker.parent.mkdir(parents=True)
-            script_root = home / "source/install"
-            script_root.mkdir(parents=True)
-            for source in (SCRIPTS.parent / "install").glob("*.sh"):
-                # Only fixed-layout variable expansion is redirected in these
-                # disposable copies. Production guard/control flow is unchanged.
-                text = (
-                    source.read_text()
-                    .replace("${HOME}", "${COUNCIL_FIXTURE_HOME}")
-                    .replace("${HOME:-}", "${COUNCIL_FIXTURE_HOME:-}")
-                )
-                (script_root / source.name).write_text(text)
-            for kind in ("directory", "dangling", "file"):
-                if kind == "directory":
-                    marker.mkdir()
-                elif kind == "dangling":
-                    marker.symlink_to("missing")
-                else:
-                    marker.write_text("invalid")
-                before = inventory(home)
-                for script in ("install", "upgrade", "rollback", "uninstall"):
-                    for args in (
-                        ([], ["--purge-state"]) if script == "uninstall" else ([],)
-                    ):
-                        result = subprocess.run(
-                            [
-                                "sh",
-                                str(script_root / (script + ".sh")),
-                                *args,
-                            ],
-                            env={**os.environ, "COUNCIL_FIXTURE_HOME": str(home)},
-                            input="purge\ndelete-clone\n",
-                            capture_output=True,
-                            text=True,
-                            timeout=5,
-                        )
-                        self.assertNotEqual(result.returncode, 0)
-                        self.assertIn("managed Council namespace", result.stderr)
-                        self.assertEqual(inventory(home), before)
-                if kind == "directory":
-                    marker.rmdir()
-                else:
-                    marker.unlink()
+    def test_legacy_shell_mutation_paths_are_replaced_by_the_fixed_engine(self):
+        for command in ("install", "upgrade", "rollback", "uninstall"):
+            text = (SCRIPTS.parent / "install" / (command + ".sh")).read_text()
+            self.assertIn("exec python3 -I -B", text)
+            self.assertIn("scripts/council_lifecycle.py", text)
+            self.assertIn(" " + command + ' "$@"', text)
+            for forbidden in ("rm -rf", "git pull", "mktemp", "broker.sock"):
+                self.assertNotIn(forbidden, text)
 
 
 if __name__ == "__main__":

@@ -1,74 +1,264 @@
-# Installation
+# Installation and lifecycle operations
 
-For the fastest first dialogue (two Claude Code sessions, one runtime), see
-[quickstart.md](quickstart.md); this page covers full multi-runtime setup.
+For the fastest first dialogue between two Claude Code sessions, see
+[quickstart.md](quickstart.md). This page covers generated releases, the managed
+artifact lifecycle, and multi-runtime setup.
 
-Council uses a **fixed layout** (see [compatibility.md](compatibility.md)):
-the payload lives at `~/.claude/skills/council`, shared state at
-`~/.claude/peer-consults`. Other locations are unsupported.
+Council uses three fixed roots:
 
-## Requirements (preflight-enforced)
+| Purpose | Path |
+| --- | --- |
+| Council state and lifecycle control | `~/.claude/peer-consults` |
+| Installed Council payload | `~/.claude/skills/council` |
+| OpenCode artifacts | `~/.config/opencode` |
 
-- macOS (the trust anchors are macOS-specific; nothing else is supported)
-- Python 3.9+ on `PATH`
-- At least two agent sessions to hold seats: Codex (macOS app), Claude Code,
-  and/or OpenCode CLI. Two sessions of one runtime are a valid pair.
-- Optional, tests only: Node 22+ for the Node test suite (never needed at
-  runtime; from <https://nodejs.org> — `npm` ships with it)
+Other roots are unsupported. The lifecycle command validates these paths and
+refuses symlinked or otherwise unsafe layouts.
 
-The install scripts reject unsupported conditions **before touching any file**
-and print the exact reason.
+## Requirements
+
+- macOS, because Council's runtime trust anchors are macOS-specific
+- CPython 3.9 or newer as `python3` on `PATH`
+- A generated Council release containing root `release_manifest.json` and
+  `payload/scripts/council_lifecycle.py`
+- At least two agent sessions to hold Council seats: Codex, Claude Code, and/or
+  OpenCode CLI; two sessions of one runtime are a valid pair
+- Node 22 or newer only for development tests and OpenCode package setup
+
+Every lifecycle launcher executes the Python entrypoint with isolated mode and
+bytecode writes disabled: `python3 -I -B`. Policy, validation, filesystem
+mutation, liveness checks, and recovery all remain in the Python implementation.
+
+## Prepare a generated release
+
+Run the release builder from a separate, quiescent source checkout:
+
+```sh
+python3 scripts/generate_protocol.py --check
+python3 scripts/build_release.py --write
+python3 scripts/build_release.py --check
+python3 scripts/build_release.py --output /absolute/path/to/council-release
+```
+
+The output directory must not already exist and must be outside the checkout.
+The generated release contains the complete tracked payload, the four OpenCode
+copies, and a manifest that binds the exact artifact closure and hashes. The
+lifecycle engine refuses a source checkout or an incomplete, extra, stale, or
+modified release tree.
+
+`build_release.py --write` changes tracked source stamps and the committed
+manifest. A maintainer performs that step during release preparation; an
+operator installing an already generated release does not run it.
+
+## Inspect a plan
+
+Planning is read-only and emits canonical JSON on standard output. From a source
+checkout, pass the generated release explicitly:
+
+```sh
+python3 -I -B scripts/council_lifecycle.py plan install \
+  --release /absolute/path/to/council-release
+python3 -I -B scripts/council_lifecycle.py plan upgrade \
+  --release /absolute/path/to/council-release
+python3 -I -B scripts/council_lifecycle.py plan rollback \
+  --receipt <receipt-id>
+python3 -I -B scripts/council_lifecycle.py plan uninstall
+python3 -I -B scripts/council_lifecycle.py status
+```
+
+A plan reports its blockers and required gates. It is deliberately
+non-executable: the mutating command repeats ownership and registration checks
+while holding the Council writer lease before it publishes an intent.
+
+When the entrypoint is inside `council-release/payload/scripts/`, install and
+upgrade may infer that generated release. Source checkouts never qualify for
+inference and require `--release`.
 
 ## Install
 
-Either clone into place:
+First inspect the plan, finish or cancel Council dialogues, unbind participants,
+and quit the Council runtimes that could still hold loaded writers. An initial
+install or adoption of unmanaged artifacts also requires an explicit maintenance
+window acknowledgement:
 
-```
-git clone <repo-url> ~/.claude/skills/council
-```
-
-or run the installer from any checkout (refuses to clobber an existing
-install):
-
-```
-sh install/install.sh
+```sh
+sh install/install.sh \
+  --release /absolute/path/to/council-release \
+  --maintenance-window-confirmed
 ```
 
-The state root `~/.claude/peer-consults` is created on demand by the runtimes
-with `0700` permissions — do not create or chmod it yourself.
+The copy of the wrapper inside the generated release can infer its enclosing
+release, so the equivalent invocation is:
+
+```sh
+sh /absolute/path/to/council-release/payload/install/install.sh \
+  --maintenance-window-confirmed
+```
+
+If the fixed payload path is the source clone from the README setup, preserve
+that entire clone before the first managed install. During the same quiescent
+maintenance window, choose a retained path that does not exist and is outside
+both the fixed payload path and the generated release, then run:
+
+```sh
+retained=/absolute/retained/path/council-source-clone
+test ! -e "$retained" || { echo "retained path already exists" >&2; exit 1; }
+mv "$HOME/.claude/skills/council" "$retained"
+sh /absolute/path/to/council-release/payload/install/install.sh \
+  --maintenance-window-confirmed
+```
+
+The move keeps the clone's `.git` directory, local edits, and untracked files
+together at the operator-selected path. It does not move or rewrite the state
+root at `~/.claude/peer-consults` or external runtime configuration. The
+lifecycle engine neither claims nor changes the retained clone. It still
+refuses an in-place source clone and any differing unowned artifact at a fixed
+destination; preserve and resolve each such collision explicitly before
+requesting another plan.
+
+The engine validates the entire release, current ownership, fixed roots, Council
+writer admission, and persisted runtime registrations. Live, unknown, duplicate,
+or incompatible registrations block the transaction. A payload containing
+`.git` is an ownership stop; clone preservation or relocation is a separate
+operator decision and is not automated by the lifecycle command.
+
+On success, the engine installs one coherent five-unit artifact set: the Council
+payload plus the OpenCode plugin, protocol, delivery registry, and tool. Existing
+external files that merely happen to match release bytes are not silently made
+owned. The terminal receipt records exactly which artifacts the lifecycle owns.
+
+## Upgrade
+
+Upgrade requires a receipt-certified managed installation and a generated
+release:
+
+```sh
+python3 -I -B scripts/council_lifecycle.py plan upgrade \
+  --release /absolute/path/to/council-release
+sh install/upgrade.sh --release /absolute/path/to/council-release
+```
+
+There is no timestamped backup-directory interface. The transaction retains
+the exact prior artifact set and provenance under the lifecycle namespace and
+publishes an immutable receipt. Local edits, missing owned files, unexpected
+payload content, and unowned destination conflicts refuse before intent.
+
+The lifecycle transaction replaces artifact files only. It does not edit MCP
+registrations, `opencode.json`, package dependencies, executable pins, or running
+host processes. Apply any corresponding runtime configuration change through
+that runtime's separately reviewed procedure, then restart it as required.
+
+## Roll back
+
+Rollback accepts exactly one retained receipt ID:
+
+```sh
+python3 -I -B scripts/council_lifecycle.py plan rollback \
+  --receipt <receipt-id>
+sh install/rollback.sh --receipt <receipt-id>
+```
+
+The receipt must be a supported, committed lifecycle receipt whose retained
+release, provenance, recovery tool, fixed roots, and lock identity still verify.
+The engine revalidates current ownership, writer admission, and registrations as
+a new transaction. A directory path, a timestamped legacy backup, or an
+unsupported predecessor is refused.
+
+## Uninstall
+
+Managed uninstall removes only receipt-owned code artifacts and keeps the state,
+lock, lifecycle namespace, receipts, journals, retained recovery material, and
+unowned matching external files:
+
+```sh
+python3 -I -B scripts/council_lifecycle.py plan uninstall
+sh install/uninstall.sh
+```
+
+`--purge-state` is intentionally unsupported and is rejected before mutation.
+Destructive removal of dialogue state, audit logs, tombstones, receipts, or
+retained recovery data requires a separate bounded retention decision. Uninstall
+also does not remove runtime registration or configuration entries.
+
+## Recovery after interruption
+
+Before publishing a transaction intent, every mutating lifecycle command writes
+an exact `recovery-command` JSON argument vector to standard error and flushes
+it. Record that vector. If the lifecycle command is interrupted after intent,
+run that complete vector without changing its flags, tool path, or state root.
+The recovery program is a digest-bound immutable copy retained outside the
+replaceable payload and works with the payload absent.
+
+`python3 -I -B scripts/council_lifecycle.py status` has a dedicated read-only
+result for a validated `recovery_required` admission. It keeps the normal
+top-level `status_format`, `roots`, `management`, `payload_cache_count`, and
+`units` fields and adds:
+
+```json
+{
+  "pending_recovery": {
+    "transaction_id": "<transaction-id>",
+    "plan_sha256": "<plan-sha256>",
+    "recovery_command": ["<compatible-python>", "-I", "-B", "<copied-tool>", "recover", "--state-root", "<state-root>"],
+    "python_contract": {
+      "implementation": "CPython",
+      "minimum": [3, 9],
+      "required_flags": ["-I", "-B"],
+      "recorded_path": "<original-python-path>",
+      "recorded_version": [3, 9, 0]
+    }
+  }
+}
+```
+
+Status validates the pending admission, exact plan, fixed roots, and copied
+recovery-tool identity before returning this command. The command uses the
+currently running compatible interpreter and the plan-bound copied tool.
+`recorded_path` and `recorded_version` report transaction provenance; recovery
+does not require the same executable path or patch release. The executing
+interpreter must satisfy the reported contract and the recoverer's required
+runtime feature checks. Missing, malformed, cross-root, or digest-mismatched
+pending records fail closed instead of producing a recovery command.
+
+Recovery holds the same fixed `broker.lock`, validates the pending admission,
+plan, journal, receipts, root identities, and all five artifact units, then
+continues the recorded target outcome. Re-running recovery is safe. `--abort`
+may select the validated prior outcome only when the prepared plan advertises
+that goal; it cannot reverse a terminal transaction or guess a missing prior
+state.
+
+Do not select a recovery tool by timestamp or from a backup directory. Do not
+remove `broker.lock`, `.council-lifecycle`, a staged unit, or a pending admission.
+Unknown or corrupt recovery content is a fail-closed condition that requires
+inspection of the exact retained transaction.
+
+See [lifecycle.md](lifecycle.md) for the record formats, ownership rules, and
+crash-boundary model.
 
 ## Per-runtime setup
 
-**Claude Code.** Two steps (steps verified against a working installation,
-not yet clean-room rehearsed):
+Lifecycle installation places code artifacts at their fixed destinations. The
+following registration and host operations remain separate from the artifact
+transaction.
 
-1. Register the Council MCP adapter at user scope:
+### Claude Code
 
-   ```
-   claude mcp add --scope user council -- /usr/bin/python3 ~/.claude/skills/council/scripts/council_mcp.py
-   ```
+Register the Council MCP adapter at user scope:
 
-   New sessions then expose the `council_*` tools. The skill instructions are
-   discoverable automatically once the payload is at
-   `~/.claude/skills/council`.
-2. The session you intend to bind must accept cross-session inbound messages.
-   Binding happens inside that exact session via the `council_*` tools — see
-   [../SKILL.md](../SKILL.md).
+```sh
+claude mcp add --scope user council -- /usr/bin/python3 \
+  ~/.claude/skills/council/scripts/council_mcp.py
+```
 
-Known lifecycle interaction: Claude Code may recycle a session's MCP server
-process after a long idle stretch (a clean host-side shutdown, not a crash).
-A bound seat's council capability lives only in that process's memory — by
-design it is never persisted — so a recycled adapter can neither renew nor
-release its own binding: the broker refuses every operation for that seat
-("only its exact authenticated session may renew it") until the lease
-expires (default 120 minutes), after which a fresh bind under the same name
-receives any pending envelope exactly once. This is the authentication
-model working, not a fault; the practical advice is to keep a bound
-session's dialogue moving rather than leaving it idle for long stretches.
+New sessions then expose the `council_*` tools. The exact session that will bind
+must accept cross-session inbound messages. A bound seat's capability exists
+only in its adapter process memory. If Claude Code recycles that process, the
+replacement cannot renew or release the old binding; wait for its bounded lease
+to expire, then bind again under the same name.
 
-**Codex (macOS app).** Register the same MCP adapter in
-`~/.codex/config.toml` (steps verified against a working installation, not
-yet clean-room rehearsed):
+### Codex
+
+Register the MCP adapter in `~/.codex/config.toml`, using an absolute path:
 
 ```toml
 [mcp_servers.council]
@@ -76,222 +266,88 @@ command = "/usr/bin/python3"
 args = ["/Users/YOUR-USERNAME/.claude/skills/council/scripts/council_mcp.py"]
 ```
 
-Use an absolute path — expand the home directory yourself. Restart the app;
-the planning task you bind calls the `council_*` tools itself.
-([../agents/openai.yaml](../agents/openai.yaml) is interface display metadata
-only — it is not registration configuration.) An idle Codex seat also needs
-the wake router below; without it, an idle task learns of new council work
-only when it next runs `council_wait`.
+Restart Codex. The planning task calls its `council_*` tools directly. An idle
+planning task needs the separately configured, context-isolated wake router to
+learn about queued work without a manual poll; see
+[protocol.md](../references/protocol.md), "Delivery and recovery".
 
-### Codex wake router (optional, recommended for triads)
+Configure the exact router task offline while no broker is active:
 
-An idle Codex planning task is woken by a dedicated, context-isolated router
-task — the planning task itself never polls (see
-[protocol.md](../references/protocol.md), "Delivery and recovery").
-
-1. Create a dedicated Codex task whose only job, on a schedule (five minutes
-   is the default cadence), is one wake poll: lease pending notifications via
-   `council_pending_wakes`, send the fixed wake marker to each notification's
-   exact target task, and record the outcome with `council_wake_ack`. Keep it
-   context-isolated — it must never participate in planning, and it never
-   sees dialogue content (the broker leases it opaque metadata only).
-2. With no broker running, record that exact task offline:
-
-   ```
-   python3 ~/.claude/skills/council/scripts/council.py configure-router --target-thread-id <codex-task-id>
-   ```
-
-   (The command refuses to run while a broker is active.)
-3. The router authenticates and binds itself on its next scheduled run.
-   Disable the schedule whenever standing inbound wake is not wanted.
-
-If the Codex app restarts, the router's in-memory capability is lost and
-every later wake poll fails closed ("wake polling failed" from the router
-task) even though the broker is healthy. Re-run the `configure-router`
-command above (with no broker active) to reset the pairing; the router then
-re-bootstraps on its next scheduled run.
-
-**OpenCode CLI.** Three steps, in order:
-
-1. Register the plugin and native tool files globally (paths verified against
-   a working installation; the clean-room rehearsal re-validates them
-   from scratch):
-
-   ```
-   mkdir -p ~/.config/opencode/tools
-   cp ~/.claude/skills/council/scripts/opencode_council_plugin.ts   ~/.config/opencode/council-plugin.ts
-   cp ~/.claude/skills/council/scripts/opencode_delivery_registry.ts ~/.config/opencode/opencode_delivery_registry.ts
-   cp ~/.claude/skills/council/scripts/council_protocol.ts          ~/.config/opencode/council_protocol.ts
-   cp ~/.claude/skills/council/scripts/tools/council.ts             ~/.config/opencode/tools/council.ts
-   ```
-
-   Then add the plugin to `~/.config/opencode/opencode.json`:
-
-   ```json
-   { "plugin": ["./council-plugin.ts"] }
-   ```
-
-   The plugin imports `@opencode-ai/plugin` (MIT, OpenCode's own SDK). If your
-   OpenCode does not resolve it automatically, add a
-   `~/.config/opencode/package.json` with
-   `{ "dependencies": { "@opencode-ai/plugin": "<your OpenCode version>" } }`
-   and run `npm install` in that directory (`npm` ships with Node — see
-   Requirements; there is no npm-free fallback for this step).
-2. Record the offline executable pin for your OpenCode CLI binary:
-
-   ```
-   python3 ~/.claude/skills/council/scripts/council.py configure-opencode --executable "$(command -v opencode)"
-   ```
-
-   The pin captures the binary's real path, SHA-256, and code-directory
-   hash. Run it while no broker is active (it refuses otherwise).
-3. Restart OpenCode. The participating process must have started **at or
-   after** the latest pin.
-
-Repeat steps 2–3 after **every** OpenCode upgrade — pins never renew
-automatically, and a stale pin fails closed by design.
-
-**OpenCode Desktop is unsupported.** Native tools loading there is not
-evidence of support; the plugin-owned relay must initialize, and it did not
-in the most recent live acceptance.
-
-## Upgrade / rollback / uninstall
-
-```
-sh install/upgrade.sh     # stages new payload, keeps a timestamped backup
-sh install/rollback.sh    # restores the most recent backup
-sh install/uninstall.sh   # removes the payload; PRESERVES user state
+```sh
+python3 ~/.claude/skills/council/scripts/council.py configure-router \
+  --target-thread-id <codex-task-id>
 ```
 
-Run these from a repository checkout. In a clone-into-place install the
-checkout **is** `~/.claude/skills/council`, so the scripts live at
-`~/.claude/skills/council/install/`. An installer-based install contains only
-the payload (no `install/`, docs, or README) — keep the checkout you installed
-from, or clone again to upgrade or uninstall.
+The router sends only fixed wake markers. It never sees dialogue content and
+must never participate in Council planning. Reconfigure it after the Codex app
+loses its in-memory router capability.
 
-Upgrade backups and rollback set-asides live under
-`~/.claude/skills/.council-backups/` — dot-prefixed so Claude Code's skill
-discovery never mistakes a stale copy for a second `council` skill.
+### OpenCode CLI
 
-`uninstall.sh --purge-state` also deletes `~/.claude/peer-consults`
-(dialogue records, audit logs) after an explicit confirmation.
+The managed lifecycle installs these four files from the generated release:
 
-All three refuse to run while a live broker socket exists — finish or cancel
-active dialogues and quit the owning runtime first.
-
-## Rendering a decision packet
-
-```
-python3 ~/.claude/skills/council/scripts/council.py render --dialogue-id <dialogue-id> --output packet.html
+```text
+~/.config/opencode/council-plugin.ts
+~/.config/opencode/council_protocol.ts
+~/.config/opencode/opencode_delivery_registry.ts
+~/.config/opencode/tools/council.ts
 ```
 
-renders a **completed** dialogue's canonical `final.json` into one
-self-contained, offline HTML page: the executive summary, recommendation,
-disagreements, reserved user decisions, evidence gaps, rejected alternatives,
-convergence challenges, and representation/revision checks, all in one static
-file with no scripts, no external assets, and no network access. Output is
-deterministic — identical input bytes always produce identical output bytes.
+Separately add `./council-plugin.ts` to the `plugin` array in
+`~/.config/opencode/opencode.json`. If OpenCode does not resolve
+`@opencode-ai/plugin` itself, declare the matching SDK version in
+`~/.config/opencode/package.json` and install that dependency.
 
-The page carries an explicit verification state, never an unearned badge:
+Record the exact OpenCode CLI executable while no broker is active, then restart
+OpenCode:
 
-- **`--dialogue-id`**: the recomputed digest of `final.json` is compared
-  against the completion record in the dialogue's append-only audit log — an
-  independent artifact written when the dialogue completed. A match renders
-  **VERIFIED**; a mismatch refuses to render.
-- **`--input path/to/final.json --expect-sha256 <hex>`**: renders a bare
-  packet file (no state root needed — this works on the
-  [committed example](../examples/v020-verification-depth/decision-packet.md),
-  whose trusted digest is the committed `final.json.sha256`). **VERIFIED**
-  only on an exact match with a digest you obtained independently; a mismatch
-  refuses to render.
-- **`--input` alone**: the page is labeled **UNVERIFIED FINGERPRINT —
-  self-consistent only**. A self-contained file cannot non-circularly verify
-  itself, and the renderer never pretends otherwise.
-
-The rendered file **contains dialogue content**. It is created with
-owner-only (`0600`) permissions, and it is an immutable, digest-labeled
-point-in-time snapshot: deleting the source dialogue later does not affect
-copies you exported (remove them yourself if you want them gone), while
-`render --dialogue-id` refuses to regenerate a deleted dialogue. A detached
-export cannot observe later deletion; to check whether one is stale, compare
-its displayed digest against the current canonical `final.json`. Once a
-source dialogue has been deleted, that comparison is unavailable — its
-tombstone does not retain the digest.
-
-## Deleting dialogue records
-
-```
-python3 ~/.claude/skills/council/scripts/council.py delete --dialogue-id <dialogue-id>
+```sh
+python3 ~/.claude/skills/council/scripts/council.py configure-opencode \
+  --executable "$(command -v opencode)"
 ```
 
-removes a **terminal** (completed or cancelled) dialogue's content: the
-dialogue directory (manifest, audit log, submissions, canonical `final.json`)
-and every outbox record that referenced it. Active dialogues are refused —
-cancel first. The command refuses to run while a broker is live; quit the
-Council runtimes first.
+Repeat the pin and restart after every OpenCode upgrade. OpenCode Desktop remains
+unsupported until a version-specific live acceptance proves its plugin-owned
+relay initializes and passes the exact-session checks.
 
-What persists is a minimal tombstone at
-`~/.claude/peer-consults/tombstones/<dialogue-id>.json` recording identity,
-time, reason (`--reason`, default `user_requested`), and the ids of the
-outbox records it superseded — never content. The tombstone is written first,
-so a deletion interrupted by a crash is completed automatically at the next
-broker start, and re-running the command is an idempotent no-op. A session
-that never acknowledged its terminal notice for a deleted dialogue will see
-that late acknowledgement fail with "unknown message" — expected and
-harmless. An HTML export made earlier with `render` survives deletion — see
-[Rendering a decision packet](#rendering-a-decision-packet) for exactly what
-that snapshot can and cannot promise. `doctor` reports the tombstone count;
-`uninstall.sh --purge-state` removes tombstones along with the rest of the
-state root.
+## Administrative commands
 
-### Automatic retention (optional, off by default)
+`council.py report --dialogue-id <dialogue-id>` prints the canonical
+post-completion decision packet as JSON. `council.py render` writes that packet
+as a self-contained HTML file after verifying either the dialogue audit binding
+or an explicitly supplied input digest. `doctor` emits a redacted aggregate
+diagnostic, and `ping` is its one-line aggregate form. The administrative CLI
+cannot perform participant operations or launch a production broker.
 
-```
+Terminal dialogue deletion and optional retention remain explicit administrative
+operations:
+
+```sh
+python3 ~/.claude/skills/council/scripts/council.py delete \
+  --dialogue-id <dialogue-id>
 python3 ~/.claude/skills/council/scripts/council.py configure-retention --days 30
 ```
 
-records an offline retention window (`--disable` removes it; like the other
-`configure-*` commands it refuses to run while a broker is live). At every
-broker **startup** — and only then; a long-lived broker never sweeps
-mid-life — terminal dialogues whose completion or cancellation is older than
-the window are deleted through the same primitive above, with
-`retention_sweep` as the tombstone reason. Active dialogues are never
-touched, and a dialogue whose terminal timestamp is missing or malformed is
-skipped rather than deleted. A corrupt `retention.json` fails closed: the
-broker refuses to start until the file is fixed or reconfigured. `doctor`
-reports the configured window.
-
-```
-python3 ~/.claude/skills/council/scripts/council.py doctor
-```
-
-prints a redacted, aggregate-only health report: broker reachability and
-version currency, installed-copy currency, OpenCode plugin/registry/pin
-state, and router configuration. `... council.py ping` is the one-line
-aggregate variant. Neither command can start a broker, perform participant
-operations, or read dialogue content.
+These operations are distinct from lifecycle uninstall. Deletion writes a
+minimal tombstone before removing the selected terminal dialogue and its outbox
+records. Retention is off by default and runs only when the broker starts.
 
 ## Troubleshooting
 
-- **"untrusted daemon" / bind refusals**: the broker authenticates the
-  launcher process chain; shells and unsigned launchers are refused by
-  design. Bind from inside the runtime, not from a terminal.
-- **Claude bind fails with "did not export its messaging socket"**: Claude
-  Code silently disables cross-session messaging when it cannot own its socket
-  directory (default `/tmp/cc-socks` — shared by every user of the Mac; on a
-  multi-user machine only the first user to run Claude Code owns it). Check
-  `ls -ld /tmp/cc-socks`; if another user owns it, start the Claude Code
-  sessions you intend to bind with `CLAUDE_CODE_TMPDIR` pointed at a private
-  `0700` directory you own (see the same entry in
-  [quickstart.md](quickstart.md) for the exact commands).
-- **OpenCode bind fails after an update**: the pin is stale. Re-pin, restart
-  OpenCode, retry.
-- **Broker version mismatch**: an adapter and broker from different versions
-  fail closed; quit the runtimes so the owning runtime restarts the broker.
-- **"STALE broker socket" from the lifecycle scripts**: `broker.sock` was left
-  behind by an unclean shutdown (crash, power loss) and nothing is listening.
-  Remove `~/.claude/peer-consults/broker.sock`, or start and then quit a
-  Council runtime so a fresh broker reclaims it, and re-run the script.
-- **Anything on a configuration not in [compatibility.md](compatibility.md)**:
-  expected to fail closed; report it as an untested-configuration request,
-  not a defect.
+- An `untrusted daemon` or bind refusal means the runtime-origin check failed;
+  bind from the admitted runtime, not from a terminal-launched broker.
+- A maintenance refusal naming registrations means the source transaction did
+  not prove every persisted route positively dead and compatible. Resolve the
+  named host/session state, then inspect a new plan.
+- A lifecycle ownership blocker means the current payload or external artifacts
+  differ from the recorded receipt or include unowned content. Preserve the
+  paths and inspect the reported unit; do not delete around the blocker.
+- A `recovery_required` status means the retained external recovery command owns
+  the next step. Do not run install, upgrade, rollback, or uninstall again.
+- A release error means the supplied directory is not the exact generated
+  manifest closure. Generate a fresh release in a new directory rather than
+  repairing release files by hand.
+- A broker or adapter version mismatch fails closed until the owning runtime
+  restarts on one compatible installed cohort.
+- A configuration outside [compatibility.md](compatibility.md) is an
+  unqualified configuration request and should be reported as such.
