@@ -15,6 +15,7 @@ from unittest import mock
 
 import council_lifecycle as lifecycle
 import council_registration_qualification as qualification
+from generate_protocol import normalized_stamps
 from council_registration import (
     ArtifactReceiptBinding,
     CLAUDE_ENSURE,
@@ -485,30 +486,29 @@ class RegistrationRecoveryTests(unittest.TestCase):
             self.contract["required_operations"],
         )
         self.assertEqual(validate_c2_contract(self.contract), self.contract)
+        # Verify the pin against the sources this checkout actually loads, not
+        # against an ancestor commit object: CI clones at depth 1, so
+        # C2_SOURCE_COMMIT is recorded provenance and is never resolvable here.
+        # The two C2 readers D does not edit differ from the pinned bytes only
+        # in their regenerated identity literals, so re-stamping them with the
+        # landed C2 identity must reproduce the pinned bytes exactly.
+        landed = self.interface["release"]
+        unchanged = ("scripts/council_admission.py", "scripts/council_inspect.py")
+        restamped = {}
+        for key in unchanged:
+            text = normalized_stamps((SCRIPTS.parent / key).read_text())
+            self.assertIn('PACKAGE_ID = "unstamped"', text)
+            text = text.replace(
+                'PACKAGE_ID = "unstamped"',
+                'PACKAGE_ID = "%s"' % landed["package_id"],
+            ).replace(
+                'RUNTIME_COHORT = "unstamped"',
+                'RUNTIME_COHORT = "%s"' % landed["runtime_cohort"],
+            )
+            restamped[key] = hashlib.sha256(text.encode()).hexdigest()
         self.assertEqual(
-            {
-                key: self.contract["source_hashes"][key]
-                for key in (
-                    "scripts/council_admission.py",
-                    "scripts/council_inspect.py",
-                )
-            },
-            {
-                key: hashlib.sha256(
-                    subprocess.check_output(
-                        [
-                            "git",
-                            "show",
-                            "%s:%s" % (self.contract["source_commit"], key),
-                        ],
-                        cwd=SCRIPTS.parent,
-                    )
-                ).hexdigest()
-                for key in (
-                    "scripts/council_admission.py",
-                    "scripts/council_inspect.py",
-                )
-            },
+            {key: self.contract["source_hashes"][key] for key in unchanged},
+            restamped,
         )
         description = RECOVERY.describe()
         self.assertEqual(description["recovery_format"], 2)

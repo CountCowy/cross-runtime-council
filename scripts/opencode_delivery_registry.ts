@@ -1,7 +1,7 @@
 import { ERROR_REASONS, MAX_LINE_BYTES, RUNTIME_COHORT as PROTOCOL_COHORT } from "./council_protocol.ts"
 import type { ToolDefinition } from "@opencode-ai/plugin"
 
-export const PACKAGE_ID = "d78be6f36f86ecf1709ffcfcd9a9ef6882c404c976134e9e45e40a19d7445bc8"
+export const PACKAGE_ID = "b830763cb8ac0c8df46f73dcd052e293746232983b504345319f021f7ee79480"
 export const RUNTIME_COHORT = "8181ae63906b42e4af670df1613dede4d194c48991594e3b8ea9b961877831b5"
 if (RUNTIME_COHORT !== PROTOCOL_COHORT) {
   throw new Error("Council registry/definitions cohort mismatch; refresh the complete runtime set")
