@@ -404,6 +404,11 @@ def check_terminal_references(root):
         record, error = _load_json(path)
         if error or not isinstance(record, dict):
             continue
+        if record.get("status") == "aborted":
+            # The manifest commit point rejected this staged transition, so
+            # its prepared completion reference is not authoritative for a
+            # later independently committed terminal artifact.
+            continue
         envelope = record.get("envelope") or {}
         dialogue_id = envelope.get("dialogue_id")
         if dialogue_id in finals and envelope.get("kind") == "dialogue_complete":

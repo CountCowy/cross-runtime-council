@@ -43,6 +43,34 @@ def run(frozen, state, descriptor):
 
     module.post_to_relay = no_transport
     socket.socket = no_transport
+    if descriptor.get("mode") == "inspect":
+        import council_inspect
+
+        report = council_inspect.inspect_state(
+            state,
+            now=descriptor["clock_epoch"],
+            probe=lambda _pid: council_inspect.ProcessEvidence("absent"),
+            payload_root=descriptor["payload_root"],
+            opencode_root=descriptor["opencode_root"],
+        )
+        loaded = {}
+        for relative in expected:
+            if not relative.startswith("scripts/") or not relative.endswith(".py"):
+                continue
+            name = Path(relative).stem
+            helper = sys.modules.get(name)
+            if helper is None:
+                raise ValueError("frozen inspect helper was not loaded: " + name)
+            path = Path(helper.__file__).resolve()
+            if str(path.relative_to(frozen)) != relative or digest(path) != expected[relative]["sha256"]:
+                raise ValueError("loaded helper identity mismatch")
+            loaded[name] = expected[relative]["sha256"]
+        print(json.dumps({
+            "constructor": "not_invoked",
+            "inspection": report,
+            "loaded": loaded,
+        }, sort_keys=True))
+        return
     result = {
         "constructor": "ok",
         "manifest_phases": {},

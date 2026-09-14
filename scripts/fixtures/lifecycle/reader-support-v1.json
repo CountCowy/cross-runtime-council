@@ -1,0 +1,31 @@
+{
+  "features": [
+    "audit",
+    "dialogues",
+    "lifecycle-v1",
+    "outbox",
+    "registrations",
+    "retention",
+    "router",
+    "tombstones"
+  ],
+  "format": 1,
+  "formats": {
+    "admission": 1,
+    "journal": 1,
+    "plan": 1,
+    "receipt": 1,
+    "recovery": 1
+  },
+  "required_tests": [
+    "scripts/test_admission.py",
+    "scripts/test_lifecycle.py",
+    "scripts/test_lifecycle_recovery.py",
+    "scripts/test_predecessors.py"
+  ],
+  "results": {
+    "external_recoverer": "pass",
+    "managed_writer_admission": "pass",
+    "state_reader": "pass"
+  }
+}

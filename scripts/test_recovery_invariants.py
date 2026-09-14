@@ -15,7 +15,7 @@ from pathlib import Path
 
 import council
 from council import read_json
-from recovery_invariants import check_state_root
+from recovery_invariants import check_state_root, check_terminal_references
 from test_council import restart_broker
 from test_council import TerminalDialogueFixture
 
@@ -43,6 +43,17 @@ class RecoveryInvariantTests(TerminalDialogueFixture):
 
     def manifest_path(self, dialogue):
         return self.root / "dialogues" / dialogue / "manifest.json"
+
+    def completion_record(self, dialogue):
+        for path in self.outbox_records():
+            record = read_json(path)
+            envelope = record.get("envelope") or {}
+            if (
+                envelope.get("dialogue_id") == dialogue
+                and envelope.get("kind") == "dialogue_complete"
+            ):
+                return path, record
+        self.fail("fixture produced no dialogue_complete record")
 
     def test_clean_roots_pass_every_oracle(self):
         self.assertEqual(check_state_root(self.root), [])
@@ -147,6 +158,30 @@ class RecoveryInvariantTests(TerminalDialogueFixture):
         final.write_bytes(final.read_bytes() + b" ")
         os.chmod(final, 0o600)
         self.assert_violation("I6 terminal-reference")
+
+    def test_aborted_completion_reference_does_not_bind_later_final(self):
+        dialogue = self.completed_dialogue()
+        path, record = self.completion_record(dialogue)
+        record["status"] = "aborted"
+        record["envelope"]["payload"]["final_ref"]["sha256"] = "0" * 64
+        write_json_0600(path, record)
+        self.assertEqual(check_terminal_references(self.root), [])
+
+    def test_non_aborted_completion_references_still_bind_final(self):
+        dialogue = self.completed_dialogue()
+        path, original = self.completion_record(dialogue)
+        for status in ("staged", "pending", "claimed", "delivered", "acknowledged"):
+            with self.subTest(status=status):
+                record = json.loads(json.dumps(original))
+                record["status"] = status
+                record["envelope"]["payload"]["final_ref"]["sha256"] = "0" * 64
+                write_json_0600(path, record)
+                self.assertTrue(
+                    any(
+                        "I6 terminal-reference" in violation
+                        for violation in check_terminal_references(self.root)
+                    )
+                )
 
     def test_detects_route_file_hygiene_failures(self):
         self.bind_pair()

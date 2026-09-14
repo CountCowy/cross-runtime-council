@@ -1,0 +1,25 @@
+{
+  "deferred": [],
+  "format": 1,
+  "refused": [
+    "local-owned-artifact-change",
+    "payload-clone-or-unowned-content",
+    "pending-recovery",
+    "release-closure-or-hash-mismatch",
+    "state-purge",
+    "timestamped-or-arbitrary-backup-rollback",
+    "unowned-external-change-or-removal"
+  ],
+  "supported": [
+    "actual-build-release",
+    "atomic-first-namespace-publication",
+    "certified-managed-upgrade-preview",
+    "deterministic-non-executable-preview",
+    "fresh-install-preview",
+    "matching-unowned-external-preservation",
+    "receipt-backed-uninstall-preview",
+    "receipt-selected-managed-rollback",
+    "single-c1-lease-transaction",
+    "staged-external-check-plan"
+  ]
+}
