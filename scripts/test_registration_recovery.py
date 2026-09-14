@@ -1885,6 +1885,65 @@ class RegistrationRecoveryTests(unittest.TestCase):
         self.assertEqual(registration["recovery_state"], "pending")
         self.assertEqual(registration["authenticated_readiness"], "unobserved")
 
+    def test_pending_registration_status_prints_the_confirmed_recovery_vector(self):
+        state, payload, opencode = self.installed_release()
+        planned = lifecycle.plan_registration(
+            "opencode", "register", state, payload, opencode
+        )
+
+        def stop_before_replace(event):
+            if event == "before:replace:registration:opencode-council:target":
+                raise RuntimeError("pending registration vector")
+
+        with self.assertRaisesRegex(RuntimeError, "pending registration vector"):
+            lifecycle.execute_registration(
+                "opencode",
+                "register",
+                state,
+                payload,
+                opencode,
+                quiescent_edit=True,
+                confirm_plan=planned["plan_sha256"],
+                invocation_id="registration-pending-vector",
+                transaction_id="txn-registration-pending-vector",
+                failpoint=stop_before_replace,
+            )
+        pending = lifecycle.status(state, payload, opencode)["pending_recovery"]
+        command = pending["recovery_command"]
+        # The confirmation flags carry the registration preview digest, never
+        # plan.json's, which is what pending_recovery.plan_sha256 reports.
+        self.assertEqual(
+            command[-5:],
+            [
+                "--quiescent-edit",
+                "--confirm-plan",
+                planned["plan_sha256"],
+                "--invocation-id",
+                "<fresh-invocation-id>",
+            ],
+        )
+        self.assertNotEqual(pending["plan_sha256"], planned["plan_sha256"])
+        # Run verbatim: only the invocation-ID placeholder is refused.
+        verbatim = subprocess.run(command, capture_output=True, text=True)
+        self.assertNotEqual(verbatim.returncode, 0)
+        self.assertIn("invocation_id", verbatim.stderr)
+        completed = subprocess.run(
+            [
+                "registration-pending-vector-recover"
+                if item == "<fresh-invocation-id>"
+                else item
+                for item in command
+            ],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(json.loads(completed.stdout)["status"], "committed")
+        self.assertEqual(
+            json.loads((opencode / "opencode.json").read_text())["plugin"],
+            ["./council-plugin.ts"],
+        )
+
     def test_registration_specific_durability_boundaries_recover_to_target(self):
         boundaries = (
             "before:replace:registration:opencode-council:target",

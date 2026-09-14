@@ -21,7 +21,7 @@ from council import (
     CouncilRequestRejected,
 )
 
-PACKAGE_ID = "b830763cb8ac0c8df46f73dcd052e293746232983b504345319f021f7ee79480"
+PACKAGE_ID = "f9c62b9c18ff215b522c1d3b1d0f12127b50ccea1bf102d744a4d5f56d8b2b3e"
 RUNTIME_COHORT = "8181ae63906b42e4af670df1613dede4d194c48991594e3b8ea9b961877831b5"
 if RUNTIME_COHORT != council.RUNTIME_COHORT:
     raise RuntimeError("Council bridge/helper cohort mismatch; refresh the complete runtime set")

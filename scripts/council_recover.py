@@ -1633,6 +1633,22 @@ def rebind_terminal_identity(state_root: Path, payload_root: Path,
     }
 
 
+def _quiescent_recovery_flags(plan_sha256: str) -> List[str]:
+    """Confirmation flags a registration recovery invocation must carry.
+
+    The digest is the registration plan's, not plan.json's, and the invocation
+    ID is a placeholder the operator replaces with a fresh one after again
+    closing the named host.
+    """
+    return [
+        "--quiescent-edit",
+        "--confirm-plan",
+        plan_sha256,
+        "--invocation-id",
+        "<fresh-invocation-id>",
+    ]
+
+
 def inspect_pending_status(state_root: Path, payload_root: Path,
                            opencode_root: Path) -> Dict[str, Any]:
     """Validate and describe one pending transaction without acquiring its lease."""
@@ -1709,7 +1725,13 @@ def inspect_pending_status(state_root: Path, payload_root: Path,
     }
     progress = plan["_progress"]
     result["registrations"] = []
+    command = result["pending_recovery"]["recovery_command"]
     if plan["plan_format"] == REGISTRATION_PLAN_FORMAT:
+        command.extend(
+            _quiescent_recovery_flags(
+                plan["registration"]["quiescent_decision"]["plan_sha256"]
+            )
+        )
         phases = {
             item["operation_id"]: item["phase"]
             for item in progress["registrations"]
@@ -1729,6 +1751,12 @@ def inspect_pending_status(state_root: Path, payload_root: Path,
             for item in plan["registration"]["operations"]
         ]
     elif plan["plan_format"] == NATIVE_PLAN_FORMAT:
+        command.extend(
+            _quiescent_recovery_flags(
+                plan["native_registration"]["quiescent_decision"]["plan_sha256"]
+            )
+            + ["--sequence", "<next-sequence>"]
+        )
         execution = plan["native_registration"]["_execution"]
         attempts = progress["native_registrations"][0]["attempts"]
         result["registrations"] = [
