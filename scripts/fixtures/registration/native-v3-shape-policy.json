@@ -1,0 +1,146 @@
+{
+  "format": "council-native-v3-shape-policy-v1",
+  "policies": [
+    {
+      "accepted_source_form": "strict-json-object-v1",
+      "allowed_initial_states": [
+        "absent"
+      ],
+      "argv_rule": "claude-user-stdio-ensure-v1",
+      "complement_rule": "raw-selected-entry-mask-v1",
+      "environment_allowlist": [
+        "HOME",
+        "LANG",
+        "LC_ALL",
+        "PATH",
+        "TMPDIR"
+      ],
+      "intended_state": "matching",
+      "modes": [
+        "forward",
+        "recovery"
+      ],
+      "neutral_cwd": "/private/tmp",
+      "normalization": "none",
+      "observer_policy_id": "darwin-whole-process-group-v1",
+      "operation": "claude_user_stdio_ensure",
+      "parser": "strict-json-span-v1",
+      "path_rule": "home-dot-claude-json-v1",
+      "policy_id": "claude-user-stdio-ensure-v1",
+      "promised_raw_format_preservation": true,
+      "runtime": "claude",
+      "scope": "claude_user",
+      "source_file_must_exist": true,
+      "stdin": "closed",
+      "target_entry_rule": "fixed-council-stdio-entry-v1",
+      "version": 1,
+      "write_set_rule": "qualification-admission-exact-v1"
+    },
+    {
+      "accepted_source_form": "strict-json-object-v1",
+      "allowed_initial_states": [
+        "matching"
+      ],
+      "argv_rule": "claude-user-stdio-remove-v1",
+      "complement_rule": "raw-selected-entry-mask-v1",
+      "environment_allowlist": [
+        "HOME",
+        "LANG",
+        "LC_ALL",
+        "PATH",
+        "TMPDIR"
+      ],
+      "intended_state": "absent",
+      "modes": [
+        "inverse",
+        "recovery"
+      ],
+      "neutral_cwd": "/private/tmp",
+      "normalization": "none",
+      "observer_policy_id": "darwin-whole-process-group-v1",
+      "operation": "claude_user_stdio_remove",
+      "parser": "strict-json-span-v1",
+      "path_rule": "home-dot-claude-json-v1",
+      "policy_id": "claude-user-stdio-remove-v1",
+      "promised_raw_format_preservation": true,
+      "runtime": "claude",
+      "scope": "claude_user",
+      "source_file_must_exist": true,
+      "stdin": "closed",
+      "target_entry_rule": "fixed-council-stdio-absence-v1",
+      "version": 1,
+      "write_set_rule": "qualification-admission-exact-v1"
+    },
+    {
+      "accepted_source_form": "canonical-toml-subset-no-comments-v1",
+      "allowed_initial_states": [
+        "absent"
+      ],
+      "argv_rule": "codex-user-stdio-ensure-v1",
+      "complement_rule": "semantic-tomllib-without-selected-entry-v1",
+      "environment_allowlist": [
+        "HOME",
+        "LANG",
+        "LC_ALL",
+        "PATH",
+        "TMPDIR"
+      ],
+      "intended_state": "matching",
+      "modes": [
+        "forward",
+        "recovery"
+      ],
+      "neutral_cwd": "/private/tmp",
+      "normalization": "semantic-tomllib-v1",
+      "observer_policy_id": "darwin-whole-process-group-v1",
+      "operation": "codex_user_stdio_ensure",
+      "parser": "stdlib-tomllib-v1",
+      "path_rule": "home-dot-codex-config-toml-v1",
+      "policy_id": "codex-user-stdio-ensure-v1",
+      "promised_raw_format_preservation": false,
+      "runtime": "codex",
+      "scope": "codex_user",
+      "source_file_must_exist": true,
+      "stdin": "closed",
+      "target_entry_rule": "fixed-council-stdio-entry-v1",
+      "version": 1,
+      "write_set_rule": "qualification-admission-exact-v1"
+    },
+    {
+      "accepted_source_form": "canonical-toml-subset-no-comments-v1",
+      "allowed_initial_states": [
+        "matching"
+      ],
+      "argv_rule": "codex-user-stdio-remove-v1",
+      "complement_rule": "semantic-tomllib-without-selected-entry-v1",
+      "environment_allowlist": [
+        "HOME",
+        "LANG",
+        "LC_ALL",
+        "PATH",
+        "TMPDIR"
+      ],
+      "intended_state": "absent",
+      "modes": [
+        "inverse",
+        "recovery"
+      ],
+      "neutral_cwd": "/private/tmp",
+      "normalization": "semantic-tomllib-v1",
+      "observer_policy_id": "darwin-whole-process-group-v1",
+      "operation": "codex_user_stdio_remove",
+      "parser": "stdlib-tomllib-v1",
+      "path_rule": "home-dot-codex-config-toml-v1",
+      "policy_id": "codex-user-stdio-remove-v1",
+      "promised_raw_format_preservation": false,
+      "runtime": "codex",
+      "scope": "codex_user",
+      "source_file_must_exist": true,
+      "stdin": "closed",
+      "target_entry_rule": "fixed-council-stdio-absence-v1",
+      "version": 1,
+      "write_set_rule": "qualification-admission-exact-v1"
+    }
+  ],
+  "qualification_eligible": false
+}

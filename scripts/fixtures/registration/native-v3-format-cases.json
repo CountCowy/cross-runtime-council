@@ -1,0 +1,27 @@
+{
+  "format": "council-native-v3-format-cases-v1",
+  "native_success_activated": false,
+  "required_refusals": [
+    "ambient-module-fallback",
+    "changed-implementation-identity",
+    "changed-owner-qualification-admission",
+    "changed-shape-policy",
+    "changed-source-entry-or-complement",
+    "changed-tuple-or-fixed-path",
+    "late-or-incomplete-observer",
+    "missing-fresh-sequence-quiescence",
+    "possible-live-process-group",
+    "same-sequence-prior-retry",
+    "unverified-copied-module-bytes",
+    "v1-or-v2-native-operation"
+  ],
+  "required_transitions": [
+    "prepared-to-issued",
+    "issued-to-spawn-generation-recorded",
+    "spawn-generation-recorded-to-release-authorized",
+    "release-authorized-to-observed-target",
+    "release-authorized-to-observed-prior",
+    "release-authorized-to-unknown",
+    "observed-prior-sequence-zero-to-fresh-sequence-one"
+  ]
+}

@@ -4,13 +4,20 @@
       1
     ],
     "journal": [
-      1
+      1,
+      2
     ],
     "plan": [
-      1
+      1,
+      2
     ],
     "receipt": [
-      1
+      1,
+      2
+    ],
+    "recovery": [
+      1,
+      2
     ]
   },
   "goals": [
@@ -24,7 +31,22 @@
     3,
     9
   ],
-  "recovery_format": 1,
+  "recovery_format": 2,
+  "registration_operations": [
+    "opencode_global_plugin_ensure",
+    "opencode_global_plugin_remove"
+  ],
+  "registration_required_operations": [
+    "classify-filesystem-v1",
+    "preserve-initial-v1",
+    "materialize-selected-v1",
+    "activate-five-units-v1",
+    "verify-receipt-v1",
+    "publish-admission-v1",
+    "classify-registration-v1",
+    "replace-registration-v1",
+    "verify-registration-receipt-v1"
+  ],
   "required_python_flags": [
     "-I",
     "-B"

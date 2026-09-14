@@ -1,0 +1,12 @@
+{
+  "unrelated": {
+    "secret": "SYNTHETIC_REGISTRATION_SECRET_7f1139",
+    "scientific": 6.022000e+023,
+    "ordered": [3, 2, 1]
+  },
+  "plugin": [
+    "npm:unrelated@1.2.3",
+    ["file:///tmp/unrelated-plugin.ts", {"z": 1e+09, "a": [true, null]}]
+  ],
+  "tail": "preserve me"
+}

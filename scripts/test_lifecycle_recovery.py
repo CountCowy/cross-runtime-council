@@ -787,7 +787,18 @@ class LifecycleRecoveryTests(unittest.TestCase):
         expected = json.loads(
             (Path(__file__).parent / "fixtures/lifecycle/describe-v1.json").read_text()
         )
-        self.assertEqual(source.describe(), expected)
+        description = source.describe()
+        self.assertEqual(
+            {key: description[key] for key in expected},
+            expected,
+        )
+        native = json.loads(
+            (
+                Path(__file__).parent
+                / "fixtures/registration/native-v3-describe.json"
+            ).read_text()
+        )
+        self.assertEqual(description["native_v3"], native)
         described = subprocess.run(
             [sys.executable, "-I", "-B", str(SOURCE), "describe"],
             stdout=subprocess.PIPE,
@@ -795,13 +806,190 @@ class LifecycleRecoveryTests(unittest.TestCase):
             text=True,
         )
         self.assertEqual(described.returncode, 0, described.stderr)
-        self.assertEqual(json.loads(described.stdout), expected)
+        external_description = json.loads(described.stdout)
+        self.assertEqual(
+            {key: external_description[key] for key in expected},
+            expected,
+        )
+        self.assertEqual(external_description["native_v3"], native)
         cases = json.loads(
             (Path(__file__).parent / "fixtures/lifecycle/format-cases-v1.json").read_text()
         )
         self.assertEqual(cases["format"], 1)
         self.assertIn("borrowed-validated-lease", cases["supported"])
         self.assertIn("native-or-configuration-operation", cases["refused"])
+
+    def test_native_v3_closure_loads_only_verified_constant_named_bytes(self):
+        closure = self.root / "native-v3-closure"
+        make_directory(closure)
+        module_root = Path(__file__).parent
+        modules = []
+        for name in source.NATIVE_RECOVERY_MODULES:
+            destination = closure / name
+            shutil.copyfile(module_root / name, destination)
+            destination.chmod(0o600)
+            modules.append(
+                {
+                    "name": name,
+                    "sha256": file_hash(destination),
+                    "size": destination.stat().st_size,
+                    "mode": 0o600,
+                    "owner_uid": os.getuid(),
+                }
+            )
+        manifest = {
+            "format": 1,
+            "implementation_identity_sha256": "1" * 64,
+            "modules": modules,
+        }
+        sentinel = object()
+        prior = sys.modules.get("council_registration")
+        sys.modules["council_registration"] = sentinel
+        try:
+            loaded = source._load_native_recovery_closure(closure, manifest)
+            self.assertEqual(
+                set(loaded),
+                {
+                    "council_registration.py",
+                    "council_registration_qualification.py",
+                },
+            )
+            self.assertTrue(
+                callable(
+                    loaded["council_registration_qualification.py"].fixed_argv
+                )
+            )
+            self.assertIs(sys.modules["council_registration"], sentinel)
+        finally:
+            if prior is None:
+                sys.modules.pop("council_registration", None)
+            else:
+                sys.modules["council_registration"] = prior
+
+        registration = closure / "council_registration.py"
+        replacement = closure / "replacement.py"
+        replacement.write_bytes(registration.read_bytes())
+        replacement.chmod(0o600)
+        registration.unlink()
+        registration.symlink_to(replacement)
+        with self.assertRaisesRegex(source.RecoveryError, "filesystem identity"):
+            source._load_native_recovery_closure(closure, manifest)
+
+    def test_native_v3_progress_states_bind_supervisor_and_result_evidence(self):
+        operation_id = "claude-council"
+        def reference(record):
+            return {
+                "record": record,
+                "sha256": hashlib.sha256(
+                    json.dumps(
+                        record, sort_keys=True, separators=(",", ":")
+                    ).encode()
+                ).hexdigest(),
+            }
+
+        family = reference({"operation_id": operation_id, "stable": True})
+        semantic = reference({"attempt_family_sha256": family["sha256"]})
+        execution_admission = reference(
+            {"quiescent_decision_sha256": "2" * 64}
+        )
+        binding = reference(
+            {
+                "sequence": 0,
+                "attempt_family_sha256": family["sha256"],
+                "execution_admission_sha256": execution_admission["sha256"],
+                "quiescent_decision_sha256": "2" * 64,
+                "previous_attempt_terminal_sha256": None,
+            }
+        )
+        plan = {
+            "plan_format": source.NATIVE_PLAN_FORMAT,
+            "transaction_id": "txn-native-progress",
+            "allowed_goals": ["target", "prior"],
+            "units": [
+                {"unit_id": unit_id} for unit_id in source.UNIT_IDS
+            ],
+            "native_registration": {
+                "_execution": {
+                    "operation_id": operation_id,
+                    "attempt_family": family,
+                    "semantic_result_identity": semantic,
+                }
+            },
+        }
+        progress = {
+            "journal_format": source.NATIVE_JOURNAL_FORMAT,
+            "transaction_id": plan["transaction_id"],
+            "plan_sha256": "1" * 64,
+            "sequence": 0,
+            "goal": "target",
+            "current_attempt_sequence": 0,
+            "units": [
+                {"unit_id": unit_id, "phase": "pending"}
+                for unit_id in source.UNIT_IDS
+            ],
+            "native_registrations": [
+                {
+                    "operation_id": operation_id,
+                    "attempt_family": family,
+                    "semantic_result_identity": semantic,
+                    "attempts": [
+                        {
+                            "sequence": 0,
+                            "invocation_id": "native-progress-initial",
+                            "state": "prepared",
+                            "journal_sha256": None,
+                            "supervisor": None,
+                            "result": None,
+                            "execution_admission": execution_admission,
+                            "attempt_binding": binding,
+                            "previous_attempt_terminal_sha256": None,
+                        }
+                    ],
+                }
+            ],
+        }
+        self.assertEqual(
+            source._validate_progress(progress, plan, "1" * 64), progress
+        )
+        supervisor = {
+            "pid": 123,
+            "pgid": 123,
+            "start_generation_sha256": "2" * 64,
+            "attempt_lock_identity": {"device": 3, "inode": 4},
+            "observer_session_sha256": "5" * 64,
+        }
+        active = copy.deepcopy(progress)
+        item = active["native_registrations"][0]["attempts"][0]
+        item.update(
+            state="release_authorized",
+            journal_sha256="6" * 64,
+            supervisor=supervisor,
+        )
+        self.assertEqual(
+            source._validate_progress(active, plan, "1" * 64), active
+        )
+        terminal = copy.deepcopy(active)
+        item = terminal["native_registrations"][0]["attempts"][0]
+        item["state"] = "observed_target"
+        item["result"] = {
+            "record": {"classification": "observed_target"},
+            "sha256": hashlib.sha256(
+                b'{"classification":"observed_target"}'
+            ).hexdigest(),
+        }
+        self.assertEqual(
+            source._validate_progress(terminal, plan, "1" * 64), terminal
+        )
+        for field, value in (
+            ("pgid", 124),
+            ("observer_session_sha256", None),
+        ):
+            changed = copy.deepcopy(active)
+            changed["native_registrations"][0]["attempts"][0]["supervisor"][
+                field
+            ] = value
+            with self.subTest(field=field), self.assertRaises(source.RecoveryError):
+                source._validate_progress(changed, plan, "1" * 64)
 
     def test_check_plan_is_exact_and_read_only(self):
         fixture = self.fixture()

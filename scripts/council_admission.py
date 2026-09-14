@@ -17,7 +17,7 @@ import threading
 
 import council_protocol as protocol
 
-PACKAGE_ID = "bda16c1b0f3097547ab7f2b4216ddad46c71635bea55da4f856816441878594e"
+PACKAGE_ID = "d78be6f36f86ecf1709ffcfcd9a9ef6882c404c976134e9e45e40a19d7445bc8"
 RUNTIME_COHORT = "8181ae63906b42e4af670df1613dede4d194c48991594e3b8ea9b961877831b5"
 NAMESPACE = ".council-lifecycle"
 _LEASE_PROOF = object()

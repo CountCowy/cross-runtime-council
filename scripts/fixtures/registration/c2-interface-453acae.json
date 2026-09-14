@@ -1,0 +1,77 @@
+{
+  "bundle_keys": [
+    "transaction_id",
+    "kind",
+    "bootstrap",
+    "control_root",
+    "canonical_root",
+    "plan",
+    "tool",
+    "canonical_tool",
+    "pending_admission",
+    "loaded_recoverer",
+    "preview_bytes",
+    "release_snapshot",
+    "recovery_command"
+  ],
+  "contract_format": 1,
+  "external_command": [
+    "<absolute-python>",
+    "-I",
+    "-B",
+    "<state>/.council-lifecycle/v1/recovery/<sha256>.py",
+    "describe|check-plan|recover"
+  ],
+  "format_versions": {
+    "admission": 1,
+    "journal": 1,
+    "namespace": 1,
+    "plan": 1,
+    "receipt": 1,
+    "recovery": 1
+  },
+  "inspection_interfaces": [
+    "inspect_artifacts(payload_root=<default>, opencode_root=<default>, *, release_root=<default>, state_root=<default>)"
+  ],
+  "planner_interfaces": [
+    "validate_release(release_root)",
+    "inspect_ownership(state_root, payload_root, opencode_root)",
+    "plan_ownership(kind, release_snapshot, ownership_snapshot)",
+    "retained_release(state_root, receipt_id)",
+    "prepare_transaction(preview, release_snapshot, lease, *, transaction_id=<default>)",
+    "run_handshake(bundle)",
+    "publish_and_execute(bundle, lease, c1_inspect, registration_snapshot, *, now=<default>, probe=<default>)",
+    "status(state_root, payload_root, opencode_root)",
+    "execute_operation(kind, release_root, state_root, payload_root, opencode_root, *, maintenance_window_confirmed=<default>, receipt_id=<default>, transaction_id=<default>, now=<default>, probe=<default>, recovery_command_sink=<default>)"
+  ],
+  "recovery_interfaces": [
+    "validate_plan(plan_path, *, pre_intent, require_progress=<default>)",
+    "check_plan(plan_path)",
+    "inspect_terminal_ownership(state_root, payload_root, opencode_root)",
+    "recover(state_root, *, abort=<default>, failpoint=<default>)",
+    "_execute_with_lease(state_root, lease_adapter, *, abort=<default>, failpoint=<default>)",
+    "describe()"
+  ],
+  "required_operations": [
+    "classify-filesystem-v1",
+    "preserve-initial-v1",
+    "materialize-selected-v1",
+    "activate-five-units-v1",
+    "verify-receipt-v1",
+    "publish-admission-v1"
+  ],
+  "source_commit": "453acae08d4e95ccff8a7b8d72bf14fa97f19bdf",
+  "source_hashes": {
+    "scripts/council_admission.py": "ed47cfc644cf255f53ef3cf9f576f9ee01c9ecb24978670fd66b2021a53afc33",
+    "scripts/council_inspect.py": "07d4d6cd9f141a51d09eed133cb61c5649f7273ae6aa0d497938fa9eb7a68908",
+    "scripts/council_lifecycle.py": "843b4dc9bc015e551f4e9daab069596ccbcfc69882e711b7bfa8b44c5b7248f0",
+    "scripts/council_recover.py": "ab81f83ff2abd217d96fa9a114624f903ab941d617ae24b4d9457be403251c2b"
+  },
+  "unit_ids": [
+    "payload",
+    "opencode-plugin",
+    "opencode-protocol",
+    "opencode-registry",
+    "opencode-tool"
+  ]
+}
