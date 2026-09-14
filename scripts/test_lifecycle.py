@@ -812,6 +812,78 @@ class LifecyclePlanningTests(unittest.TestCase):
         self.assertTrue((roots[0] / "broker.lock").is_file())
         self.assertFalse(roots[1].exists())
 
+    def test_authorized_adoption_clears_the_unowned_upgrade_blocker(self):
+        release = self.actual_release("adoption")
+        roots = (
+            self.root / "adoption/state",
+            self.root / "adoption/payload-parent/council",
+            self.root / "adoption/opencode",
+        )
+        plugin = roots[2] / "council-plugin.ts"
+        write_file(plugin, (release / "opencode/council-plugin.ts").read_bytes())
+        installed = lifecycle.execute_operation(
+            "install", release, *roots,
+            maintenance_window_confirmed=True,
+            transaction_id="txn-adoption-install",
+        )
+        self.assertEqual(installed["status"], "committed")
+
+        write_file(release / "payload/added.txt", b"second release\n")
+        _restamp_release(release)
+        upgraded_bytes = (release / "opencode/council-plugin.ts").read_bytes()
+        self.assertNotEqual(upgraded_bytes, plugin.read_bytes())
+
+        snapshot = lifecycle.validate_release(release)
+        blocked = lifecycle.plan_ownership(
+            "upgrade", snapshot, lifecycle.inspect_ownership(*roots)
+        )
+        self.assertFalse(blocked["eligible_for_integration"])
+        self.assertIn(
+            "unowned_change_requires_adoption",
+            {item["code"] for item in blocked["blockers"]},
+        )
+        with self.assertRaisesRegex(
+            lifecycle.LifecyclePlanningError, "ownership blockers"
+        ):
+            lifecycle.execute_operation(
+                "upgrade", release, *roots, transaction_id="txn-adoption-refused"
+            )
+
+        adopting = lifecycle.plan_ownership(
+            "upgrade", snapshot, lifecycle.inspect_ownership(*roots), adopt_unowned=True
+        )
+        self.assertTrue(adopting["eligible_for_integration"])
+        self.assertIn("user-authorized-unowned-adoption", adopting["required_gates"])
+        result = lifecycle.execute_operation(
+            "upgrade", release, *roots, adopt_unowned=True,
+            transaction_id="txn-adoption-upgrade",
+        )
+        self.assertEqual(result["status"], "committed")
+        self.assertEqual(plugin.read_bytes(), upgraded_bytes)
+
+        write_file(release / "payload/added.txt", b"third release\n")
+        _restamp_release(release)
+        later = lifecycle.execute_operation(
+            "upgrade", release, *roots, transaction_id="txn-adoption-later"
+        )
+        self.assertEqual(later["status"], "committed")
+        self.assertEqual(
+            plugin.read_bytes(), (release / "opencode/council-plugin.ts").read_bytes()
+        )
+
+    def test_adoption_is_refused_for_install_and_uninstall_planning(self):
+        release = lifecycle.validate_release(synthetic_release(self.root, "adopt-guard"))
+        state, payload, opencode = self.roots("adopt-guard-")
+        ownership = lifecycle.inspect_ownership(state, payload, opencode)
+        for kind, snapshot in (("install", release), ("uninstall", None)):
+            with self.subTest(kind=kind):
+                with self.assertRaisesRegex(
+                    lifecycle.LifecyclePlanningError, "upgrade and rollback"
+                ):
+                    lifecycle.plan_ownership(
+                        kind, snapshot, ownership, adopt_unowned=True
+                    )
+
     def test_retained_state_change_cannot_publish_bootstrap_intent(self):
         release = lifecycle.validate_release(self.actual_release("blocked"))
         state, payload, opencode = self.roots("blocked-")

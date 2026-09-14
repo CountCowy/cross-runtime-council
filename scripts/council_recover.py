@@ -1181,7 +1181,15 @@ def _validate_prior_ownership(plan: Dict[str, Any], prior_receipt: Optional[Dict
         old_ownership = previous[key]["ownership"]
         new_ownership = proposed[key]["ownership"]
         if old_ownership == "matching_preexisting_unowned" and new_ownership != old_ownership:
-            raise RecoveryError("new plan attempts to adopt a previously unowned artifact")
+            # Authorized adoption is the one permitted departure from an unowned
+            # class, and only in the shape the blocker it resolves can produce: the
+            # artifact becomes owned, it stays present, the release actually changes
+            # it, and the loop above already proved it still holds exactly the bytes
+            # the prior receipt recorded. Nothing unowned is deleted or claimed idly.
+            if (new_ownership != "already_owned" or
+                    not proposed[key]["intended"]["exists"] or
+                    proposed[key]["intended"] == previous[key]["intended"]):
+                raise RecoveryError("new plan attempts to adopt a previously unowned artifact")
         if old_ownership != "matching_preexisting_unowned" and new_ownership == "matching_preexisting_unowned":
             raise RecoveryError("new plan drops established artifact ownership")
 

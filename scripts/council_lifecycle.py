@@ -628,10 +628,15 @@ def _record_blocker(blockers: List[Dict[str, str]], code: str, unit_id: str,
 
 
 def plan_ownership(kind: str, release_snapshot: Optional[Dict[str, Any]],
-                   ownership_snapshot: Dict[str, Any]) -> Dict[str, Any]:
+                   ownership_snapshot: Dict[str, Any], *,
+                   adopt_unowned: bool = False) -> Dict[str, Any]:
     """Return a deterministic non-executable ownership preview; never stages or writes."""
     if kind not in PLANNING_KINDS:
         raise LifecyclePlanningError("unsupported planning kind")
+    if adopt_unowned and kind not in ("upgrade", "rollback"):
+        raise LifecyclePlanningError(
+            "unowned adoption applies only to upgrade and rollback"
+        )
     ownership = _validate_ownership_snapshot(ownership_snapshot)
     release = None
     if kind == "uninstall":
@@ -643,6 +648,7 @@ def plan_ownership(kind: str, release_snapshot: Optional[Dict[str, Any]],
         release = _validated_release_source(kind, release_snapshot)
     management = ownership["management"]
     blockers: List[Dict[str, str]] = []
+    adopted = False
     if kind == "install":
         if management["status"] not in ("legacy_unmanaged", "uninstalled"):
             _record_blocker(blockers, "managed_installation_present", "payload", ".",
@@ -698,6 +704,12 @@ def plan_ownership(kind: str, release_snapshot: Optional[Dict[str, Any]],
                 elif kind == "uninstall":
                     intended = old["intended"]
                     disposition = "matching_preexisting_unowned"
+                elif adopt_unowned and intended["exists"] and prior == old["intended"]:
+                    # The operator authorized adoption and the artifact still holds
+                    # exactly the bytes the receipt recorded, so claiming it replaces
+                    # no content the operator has since written.
+                    disposition = "already_owned"
+                    adopted = True
                 else:
                     disposition = "unresolved"
                     _record_blocker(
@@ -766,6 +778,8 @@ def plan_ownership(kind: str, release_snapshot: Optional[Dict[str, Any]],
         required_gates.add("user-maintenance-window-for-first-adoption")
     if kind == "rollback":
         required_gates.add("supported-managed-rollback-target")
+    if adopted:
+        required_gates.add("user-authorized-unowned-adoption")
     return {
         "planning_preview_format": PLANNING_PREVIEW_FORMAT,
         "executable": False,
@@ -2038,6 +2052,7 @@ def _prepare_transaction(preview: Dict[str, Any], release_snapshot: Optional[Dic
         "pending_admission": pending, "loaded_recoverer": loaded,
         "preview_bytes": canonical_preview_bytes(preview),
         "release_snapshot": source,
+        "adopt_unowned": "user-authorized-unowned-adoption" in preview["required_gates"],
         "recovery_command": [str(Path(sys.executable).resolve()), "-I", "-B", str(canonical_tool),
                              "recover", "--state-root", str(state_root)],
     })
@@ -2127,7 +2142,8 @@ def _publish_and_execute(bundle: Dict[str, Any], lease: Any, c1_inspect: Any,
             Path(roots["state"]), Path(roots["payload"]), Path(roots["opencode"])
         )
         refreshed = plan_ownership(
-            bundle["kind"], bundle["release_snapshot"], ownership
+            bundle["kind"], bundle["release_snapshot"], ownership,
+            adopt_unowned=bundle["adopt_unowned"],
         )
         if canonical_preview_bytes(refreshed) != bundle["preview_bytes"]:
             raise LifecyclePlanningError("ownership/release inputs changed before intent")
@@ -2181,6 +2197,7 @@ def _create_fixed_directory(path: Path) -> None:
 def execute_operation(kind: str, release_root: Optional[Path], state_root: Path,
                       payload_root: Path, opencode_root: Path, *,
                       maintenance_window_confirmed: bool = False,
+                      adopt_unowned: bool = False,
                       receipt_id: Optional[str] = None,
                       transaction_id: Optional[str] = None,
                       now: Optional[float] = None,
@@ -2204,7 +2221,8 @@ def execute_operation(kind: str, release_root: Optional[Path], state_root: Path,
     if kind != "uninstall" and release is None:
         raise LifecyclePlanningError("install and upgrade require a generated release")
     preflight = plan_ownership(
-        kind, release, inspect_ownership(state_input, payload_input, opencode_input)
+        kind, release, inspect_ownership(state_input, payload_input, opencode_input),
+        adopt_unowned=adopt_unowned,
     )
     if not preflight["eligible_for_integration"]:
         raise LifecyclePlanningError("lifecycle preflight has ownership blockers")
@@ -2223,7 +2241,9 @@ def execute_operation(kind: str, release_root: Optional[Path], state_root: Path,
             _create_fixed_directory(opencode_input / "tools")
             _reconcile_preparations(state_input, lease)
             current = inspect_ownership(state_input, payload_input, opencode_input)
-            preview = plan_ownership(kind, release, current)
+            preview = plan_ownership(
+                kind, release, current, adopt_unowned=adopt_unowned
+            )
             if not preview["eligible_for_integration"]:
                 raise LifecyclePlanningError(
                     "lifecycle inputs changed or are blocked after exclusion"
@@ -2277,7 +2297,8 @@ def _release_argument(value: Optional[Path]) -> Path:
 
 
 def _plan_command(kind: str, release_value: Optional[Path], receipt_id: Optional[str],
-                  roots: Tuple[Path, Path, Path]) -> Dict[str, Any]:
+                  roots: Tuple[Path, Path, Path],
+                  adopt_unowned: bool = False) -> Dict[str, Any]:
     state_root, payload_root, opencode_root = roots
     if kind == "rollback":
         if receipt_id is None or release_value is not None:
@@ -2292,7 +2313,8 @@ def _plan_command(kind: str, release_value: Optional[Path], receipt_id: Optional
             raise LifecyclePlanningError("receipt selection is supported only for rollback")
         release = validate_release(_release_argument(release_value))
     return plan_ownership(
-        kind, release, inspect_ownership(state_root, payload_root, opencode_root)
+        kind, release, inspect_ownership(state_root, payload_root, opencode_root),
+        adopt_unowned=adopt_unowned,
     )
 
 
@@ -2305,16 +2327,21 @@ def _parser() -> argparse.ArgumentParser:
     for kind in ("install", "upgrade"):
         action = plan_actions.add_parser(kind)
         action.add_argument("--release", type=Path)
+        if kind == "upgrade":
+            action.add_argument("--adopt-unowned", action="store_true")
     rollback_plan = plan_actions.add_parser("rollback")
     rollback_plan.add_argument("--receipt", required=True)
+    rollback_plan.add_argument("--adopt-unowned", action="store_true")
     plan_actions.add_parser("uninstall")
     install = commands.add_parser("install", help="adopt an eligible generated release")
     install.add_argument("--release", type=Path)
     install.add_argument("--maintenance-window-confirmed", action="store_true")
     upgrade = commands.add_parser("upgrade", help="replace a managed artifact set")
     upgrade.add_argument("--release", type=Path)
+    upgrade.add_argument("--adopt-unowned", action="store_true")
     rollback = commands.add_parser("rollback", help="restore an exact retained receipt")
     rollback.add_argument("--receipt", required=True)
+    rollback.add_argument("--adopt-unowned", action="store_true")
     commands.add_parser("uninstall", help="remove only receipt-owned code artifacts")
     return parser
 
@@ -2332,6 +2359,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             result = _plan_command(
                 args.kind, getattr(args, "release", None),
                 getattr(args, "receipt", None), roots,
+                getattr(args, "adopt_unowned", False),
             )
         else:
             release_root = (
@@ -2351,6 +2379,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 maintenance_window_confirmed=getattr(
                     args, "maintenance_window_confirmed", False
                 ),
+                adopt_unowned=getattr(args, "adopt_unowned", False),
                 receipt_id=getattr(args, "receipt", None),
                 recovery_command_sink=announce,
             )

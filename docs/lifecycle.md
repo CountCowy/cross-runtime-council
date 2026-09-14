@@ -100,6 +100,30 @@ file, missing owned file, unexpected payload entry, unowned conflict, payload
 underlying ownership decision outside the lifecycle engine and requests a fresh
 plan; the engine does not select, delete, or relocate the content.
 
+Every blocker carries a stable code:
+
+| Code | Meaning |
+| --- | --- |
+| `managed_installation_present` | Install requires an unmanaged or uninstalled current state |
+| `uncertified_lifecycle_marker` | An uninstalled marker has no certifying receipt |
+| `certified_installation_required` | Upgrade, rollback, and uninstall require a certified committed install |
+| `source_clone` | The payload path contains a `.git` ownership stop |
+| `unowned_payload` | Unmanaged payload content cannot be changed or claimed |
+| `unowned_collision` | An unmanaged external file differs from the release artifact |
+| `unowned_change_requires_adoption` | The release would change a matching pre-existing unowned artifact |
+
+`unowned_change_requires_adoption` is the one blocker with an in-engine remedy,
+because every release changes the four external files by construction: their
+embedded package identity is derived from the payload. An operator who copied
+those files in by hand before the first managed install keeps them unowned, and
+the next upgrade reports this blocker for each one. Passing `--adopt-unowned` to
+`upgrade` or `rollback` claims them as managed artifacts, and only when each one
+still holds exactly the bytes the receipt recorded, so adoption can never
+replace content the operator wrote afterwards. Adoption is a one-time decision:
+the resulting receipt records the artifacts as owned, and later operations need
+no flag. Without the flag, or with a locally changed artifact, the plan stays
+blocked and the engine changes nothing.
+
 For the README source-clone layout, the supported first-install migration is an
 operator move of the complete fixed-path clone to an explicitly chosen retained
 path during the required quiescent maintenance window, followed by generated

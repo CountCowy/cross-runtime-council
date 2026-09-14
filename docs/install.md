@@ -143,6 +143,23 @@ the exact prior artifact set and provenance under the lifecycle namespace and
 publishes an immutable receipt. Local edits, missing owned files, unexpected
 payload content, and unowned destination conflicts refuse before intent.
 
+If the first managed install left hand-copied external files unowned, the plan
+reports `unowned_change_requires_adoption` for each of them, because every
+release changes those four files. Adopt them deliberately, after reading the
+plan:
+
+```sh
+python3 -I -B scripts/council_lifecycle.py plan upgrade \
+  --release /absolute/path/to/council-release --adopt-unowned
+sh install/upgrade.sh --release /absolute/path/to/council-release --adopt-unowned
+```
+
+Adoption applies only where the artifact still holds exactly the bytes the
+receipt recorded, so it never replaces a later local edit; such an artifact
+stays blocked and must be preserved or reverted by hand. `rollback` accepts the
+same flag. Once adopted, the artifacts are owned and later operations need it no
+longer.
+
 The lifecycle transaction replaces artifact files only. It does not edit MCP
 registrations, `opencode.json`, package dependencies, executable pins, or running
 host processes. Apply any corresponding runtime configuration change through
