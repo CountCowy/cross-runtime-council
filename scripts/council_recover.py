@@ -4031,6 +4031,21 @@ def _completed_outcome_result(outcome: Dict[str, Any], state_root: Path) -> Dict
     return result
 
 
+def _registration_progress_started(progress: Dict[str, Any]) -> bool:
+    """Report whether a format-2 transaction has left its prepared state.
+
+    This is the exact negation of the pristine journal `_prepare_transaction`
+    requires before intent, so the prepared invocation stays usable for the one
+    execution it was admitted for and is replay-rejected from then on.
+    """
+    return (
+        progress["sequence"] != 0
+        or progress["goal"] != "target"
+        or any(unit["phase"] != "pending" for unit in progress["units"])
+        or any(item["phase"] != "pending" for item in progress["registrations"])
+    )
+
+
 def _validate_quiescent_invocation(plan: Dict[str, Any], goal: str,
                                    decision: Any,
                                    progress: Any = None) -> None:
@@ -4055,6 +4070,12 @@ def _validate_quiescent_invocation(plan: Dict[str, Any], goal: str,
         ):
             raise RecoveryError("quiescent invocation does not bind this plan and goal")
         checked_id(decision["invocation_id"], "quiescent invocation_id")
+        if decision["invocation_id"] == expected["invocation_id"] and (
+            not isinstance(progress, dict) or _registration_progress_started(progress)
+        ):
+            raise RecoveryError(
+                "registration recovery requires a fresh quiescent invocation"
+            )
         return
     exact_keys(
         decision,

@@ -873,6 +873,77 @@ class RegistrationRecoveryTests(unittest.TestCase):
             ["./council-plugin.ts"],
         )
 
+    def test_registration_recovery_refuses_a_replayed_quiescent_invocation(self):
+        state, payload, opencode = self.installed_release()
+        planned = lifecycle.plan_registration(
+            "opencode", "register", state, payload, opencode
+        )
+
+        def stop(event):
+            if event == "before:replace:registration:opencode-council:target":
+                raise RuntimeError("registration replay fixture")
+
+        with self.assertRaisesRegex(RuntimeError, "registration replay fixture"):
+            lifecycle.execute_registration(
+                "opencode",
+                "register",
+                state,
+                payload,
+                opencode,
+                quiescent_edit=True,
+                confirm_plan=planned["plan_sha256"],
+                invocation_id="registration-replay-original",
+                transaction_id="txn-registration-replay",
+                failpoint=stop,
+            )
+        admission_value = json.loads(
+            (state / ".council-lifecycle/admission.json").read_text()
+        )
+        self.assertEqual(admission_value["status"], "recovery_required")
+        plan = json.loads(
+            (
+                state
+                / ".council-lifecycle/v1/transactions"
+                / admission_value["transaction_id"]
+                / "plan.json"
+            ).read_text()
+        )
+        command = [
+            sys.executable,
+            "-I",
+            "-B",
+            plan["recovery"]["tool_path"],
+            "recover",
+            "--state-root",
+            str(state),
+            "--quiescent-edit",
+            "--confirm-plan",
+            planned["plan_sha256"],
+            "--invocation-id",
+        ]
+        # The identifier recorded inside the readable plan is history, not
+        # current authority: the transaction has progressed past its prepared
+        # journal, so replaying it must refuse the configuration write.
+        self.assertEqual(
+            plan["registration"]["quiescent_decision"]["invocation_id"],
+            "registration-replay-original",
+        )
+        replayed = subprocess.run(
+            command + ["registration-replay-original"],
+            capture_output=True,
+            text=True,
+        )
+        self.assertNotEqual(replayed.returncode, 0)
+        self.assertIn("fresh quiescent invocation", replayed.stderr)
+        self.assertEqual(
+            json.loads((opencode / "opencode.json").read_text())["plugin"], []
+        )
+        completed = subprocess.run(
+            command + ["registration-replay-fresh"], capture_output=True, text=True
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(json.loads(completed.stdout)["status"], "committed")
+
     def test_matching_preexisting_registration_is_receipted_unowned_and_never_removed(self):
         state, payload, opencode = self.installed_release()
         config_path = opencode / "opencode.json"
