@@ -492,9 +492,17 @@ def retained_release(state_root: Path, receipt_id: str) -> Dict[str, Any]:
         ),
         "opencode": recovery.directory_identity(Path(roots["opencode"]), "OpenCode root"),
     }
-    if expected_identities != receipt["root_identities"]:
+    # A re-bind is a statement about the fixed roots as they are now, so it governs
+    # the identity fields of every receipt in this state root's history, not only
+    # the terminal one it was verified against.
+    terminal = admission_value["committed"]
+    authorized_roots, authorized_lock = recovery.authorized_identities(
+        state_root, terminal["receipt_id"], terminal["receipt_sha256"],
+        receipt["root_identities"], receipt["lock_identity"],
+    )
+    if expected_identities != authorized_roots:
         raise LifecyclePlanningError("rollback receipt root identity changed")
-    if recovery.lock_path_identity(state_root / "broker.lock") != receipt["lock_identity"]:
+    if recovery.lock_path_identity(state_root / "broker.lock") != authorized_lock:
         raise LifecyclePlanningError("rollback receipt broker.lock identity changed")
     manifest, support = recovery._validate_receipt_provenance(state_root, receipt)
     manifest_path, support_path = recovery._receipt_provenance_paths(state_root, receipt_id)
@@ -1403,7 +1411,8 @@ def _reconcile_preparations(state_root: Path, lease: Any) -> None:
                 admission_value = recovery.validate_admission(
                     admission_value, record["roots"]
                 )
-            except (OSError, ValueError, UnicodeError):
+            except (LifecyclePlanningError, recovery.RecoveryError, OSError,
+                    UnicodeError, ValueError):
                 admission_value = None
             if (admission_value is not None and
                     admission_value["status"] == "recovery_required"):
@@ -1417,7 +1426,8 @@ def _reconcile_preparations(state_root: Path, lease: Any) -> None:
                     receipt = recovery._verify_terminal_receipt(
                         state_root, admission_value["committed"]
                     )
-                except (OSError, ValueError, UnicodeError):
+                except (LifecyclePlanningError, recovery.RecoveryError, OSError,
+                        UnicodeError, ValueError):
                     receipt = None
                 if receipt is not None and receipt["transaction_id"] == record["transaction_id"]:
                     intent_matches = True
@@ -1442,7 +1452,8 @@ def _cleanup_preintent_bundle(bundle: _PreparedBundle) -> None:
         try:
             current, _ = recovery.read_object(canonical / "admission.json", "admission")
             current = recovery.validate_admission(current)
-        except (OSError, ValueError, UnicodeError):
+        except (LifecyclePlanningError, recovery.RecoveryError, OSError,
+                UnicodeError, ValueError):
             guard.preserve()
         else:
             if current == bundle["pending_admission"] or current["transaction_id"] is not None:
@@ -2182,6 +2193,25 @@ def status(state_root: Path, payload_root: Path, opencode_root: Path) -> Dict[st
     }
 
 
+def rebind_identity(state_root: Path, payload_root: Path,
+                    opencode_root: Path) -> Dict[str, Any]:
+    """Re-certify a byte-identical managed installation after a re-created fixed root
+    or broker.lock. Artifacts are verified, never written."""
+    state_input = _lexical_root(state_root)
+    payload_input = _lexical_root(payload_root)
+    opencode_input = _lexical_root(opencode_root)
+    state_path = _real_directory(state_input, "state root")
+    payload_path = _payload_path(payload_input)
+    opencode_path = _real_directory(opencode_input, "OpenCode root")
+    with admission.acquire_writer_lease(state_path) as lease:
+        with lease.operation():
+            result = recovery.rebind_terminal_identity(
+                state_path, payload_path, opencode_path
+            )
+            lease.validate()
+    return result
+
+
 def _create_fixed_directory(path: Path) -> None:
     if _observed_root(path) != path:
         raise LifecyclePlanningError("installation root changed during observation")
@@ -2343,6 +2373,9 @@ def _parser() -> argparse.ArgumentParser:
     rollback.add_argument("--receipt", required=True)
     rollback.add_argument("--adopt-unowned", action="store_true")
     commands.add_parser("uninstall", help="remove only receipt-owned code artifacts")
+    commands.add_parser(
+        "rebind", help="re-certify identities after a re-created fixed root or lock"
+    )
     return parser
 
 
@@ -2355,6 +2388,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         roots = _production_roots()
         if args.command == "status":
             result = status(*roots)
+        elif args.command == "rebind":
+            result = rebind_identity(*roots)
         elif args.command == "plan":
             result = _plan_command(
                 args.kind, getattr(args, "release", None),

@@ -249,6 +249,27 @@ remove `broker.lock`, `.council-lifecycle`, a staged unit, or a pending admissio
 Unknown or corrupt recovery content is a fail-closed condition that requires
 inspection of the exact retained transaction.
 
+## Re-bind after a re-created root or lock
+
+A receipt binds the `(device, inode)` identity of the three fixed roots and of
+`broker.lock`. A remount, a restore, a home-directory migration, or a
+`broker.lock` that was removed and re-created changes those numbers while the
+installation stays byte-identical. `status` then reports `committed` but
+uncertified, naming the identity that changed, and every operation refuses.
+Re-certify it:
+
+```sh
+python3 -I -B scripts/council_lifecycle.py status
+python3 -I -B scripts/council_lifecycle.py rebind
+```
+
+`rebind` re-verifies the receipt, its provenance, the retained recovery tool,
+and all five artifact units under the writer lease before recording the observed
+identities. It writes no artifact and refuses an installation whose content
+actually changed; such a state is a content blocker, not an identity one, and is
+resolved by restoring the artifact. Never delete the lifecycle namespace to
+clear an identity mismatch.
+
 See [lifecycle.md](lifecycle.md) for the record formats, ownership rules, and
 crash-boundary model.
 

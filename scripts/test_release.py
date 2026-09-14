@@ -129,7 +129,9 @@ class ReleaseTests(unittest.TestCase):
             cwd=self.base, capture_output=True, text=True,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("{status,plan,install,upgrade,rollback,uninstall}", result.stdout)
+        self.assertIn(
+            "{status,plan,install,upgrade,rollback,uninstall,rebind}", result.stdout
+        )
         self.assertEqual(own_caches(), before)
 
     def test_documentation_and_tests_do_not_change_runtime_cohort(self):

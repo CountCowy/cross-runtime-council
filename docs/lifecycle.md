@@ -100,6 +100,22 @@ file, missing owned file, unexpected payload entry, unowned conflict, payload
 underlying ownership decision outside the lifecycle engine and requests a fresh
 plan; the engine does not select, delete, or relocate the content.
 
+Inspection reports these conditions; it does not refuse them. `status` and
+`plan` always describe the state they find, so an installation that drifted from
+its receipt reads as `committed` but uncertified with the reason attached, and
+the plan lists its blockers. Mutation stays strict: an uncertified installation
+is ineligible for install, upgrade, rollback, and uninstall alike.
+
+A receipt also binds the `(device, inode)` identity of the three fixed roots and
+of `broker.lock`. A remount, a restore, a migration, or a cleared stale lock
+changes those numbers without touching one byte of the installation, which then
+reads as uncertified with an identity reason. `rebind` re-certifies exactly that
+case. It re-verifies the receipt digest, provenance, recovery tool, and every
+artifact under the writer lease, and records the observed identities for that
+one receipt. It never writes an artifact, and it refuses an installation whose
+content has actually changed. The record is scoped to the receipt it names, so
+the next transaction's receipt supersedes it.
+
 Every blocker carries a stable code:
 
 | Code | Meaning |
@@ -162,6 +178,7 @@ The namespace retains:
 .council-lifecycle/
 ├── admission.json
 └── v1/
+    ├── identity-binding.json   (only after a rebind)
     ├── receipts/
     ├── recovery/
     └── transactions/<transaction-id>/

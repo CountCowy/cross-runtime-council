@@ -63,6 +63,7 @@ REQUIRED_OPERATIONS = (
 )
 KINDS = {"install", "upgrade", "rollback", "uninstall"}
 OWNERSHIP = {"absent", "created", "already_owned", "matching_preexisting_unowned"}
+IDENTITY_BINDING_FORMAT = 1
 VOLATILE_STATE_NAMES = {"broker.lock", "broker.sock", "broker.log"}
 PREPARATION_ROOT_NAME = ".council-lifecycle-preparations"
 
@@ -893,7 +894,59 @@ def _validate_receipt_provenance(state_root: Path, receipt: Dict[str, Any]) -> T
     return manifest, support
 
 
-def _verify_terminal_receipt(state_root: Path, summary: Dict[str, Any]) -> Dict[str, Any]:
+def _identity_binding_path(state_root: Path) -> Path:
+    return state_root / ".council-lifecycle/v1/identity-binding.json"
+
+
+def validate_identity_binding(value: Any) -> Dict[str, Any]:
+    if not isinstance(value, dict):
+        raise RecoveryError("identity binding must be an object")
+    exact_keys(
+        value,
+        ("format", "receipt_id", "receipt_sha256", "root_identities", "lock_identity"),
+        "identity binding",
+    )
+    if exact_int(value["format"], "identity binding format", 1) != IDENTITY_BINDING_FORMAT:
+        raise RecoveryError("unsupported identity binding record")
+    checked_id(value["receipt_id"], "identity binding receipt_id")
+    checked_hash(value["receipt_sha256"], "identity binding receipt_sha256")
+    identities = value["root_identities"]
+    if not isinstance(identities, dict):
+        raise RecoveryError("identity binding root_identities must be an object")
+    exact_keys(
+        identities, ("state", "payload_parent", "opencode"),
+        "identity binding root_identities",
+    )
+    for name in identities:
+        validate_identity(identities[name], "identity binding %s identity" % name)
+    validate_identity(value["lock_identity"], "identity binding lock_identity")
+    return value
+
+
+def authorized_identities(state_root: Path, receipt_id: str, receipt_sha256: str,
+                          own_roots: Dict[str, Any],
+                          own_lock: Dict[str, int]) -> Tuple[Dict[str, Any], Dict[str, int]]:
+    """Identities certified for the terminal receipt named by receipt_id/sha256. A
+    receipt binds (device, inode) for the three fixed roots and broker.lock, which a
+    remount, a restore, or a cleared stale lock changes without touching one byte of
+    the installation. The operator re-binds those fields with ``rebind``; the record
+    names the receipt it was verified against, so it never carries over to a later
+    transaction. Falls back to the caller's own recorded identities."""
+    own = (own_roots, own_lock)
+    try:
+        value, _data = read_object(_identity_binding_path(state_root), "identity binding")
+        value = validate_identity_binding(value)
+    except (RecoveryError, OSError):
+        return own
+    if value["receipt_id"] != receipt_id or value["receipt_sha256"] != receipt_sha256:
+        # A record left behind by an earlier receipt grants nothing; the receipt now
+        # in force records its own identities, so the binding can never wedge.
+        return own
+    return value["root_identities"], value["lock_identity"]
+
+
+def _verify_terminal_receipt(state_root: Path, summary: Dict[str, Any], *,
+                             bind_identities: bool = True) -> Dict[str, Any]:
     receipt_id = summary["receipt_id"]
     receipt_path = state_root / ".council-lifecycle/v1/receipts" / (receipt_id + ".json")
     receipt, receipt_data = read_object(receipt_path, "terminal receipt")
@@ -911,10 +964,16 @@ def _verify_terminal_receipt(state_root: Path, summary: Dict[str, Any]) -> Dict[
         "payload_parent": directory_identity(Path(roots["payload"]).parent, "payload parent"),
         "opencode": directory_identity(Path(roots["opencode"]), "OpenCode root"),
     }
-    if actual_identities != receipt["root_identities"]:
-        raise RecoveryError("terminal receipt root identity changed")
-    if lock_path_identity(state_root / "broker.lock") != receipt["lock_identity"]:
-        raise RecoveryError("terminal receipt broker.lock identity changed")
+    actual_lock = lock_path_identity(state_root / "broker.lock")
+    if bind_identities:
+        expected_roots, expected_lock = authorized_identities(
+            state_root, receipt["receipt_id"], summary["receipt_sha256"],
+            receipt["root_identities"], receipt["lock_identity"],
+        )
+        if actual_identities != expected_roots:
+            raise RecoveryError("terminal receipt root identity changed")
+        if actual_lock != expected_lock:
+            raise RecoveryError("terminal receipt broker.lock identity changed")
     manifest, _support = _validate_receipt_provenance(state_root, receipt)
     states = _receipt_unit_states(receipt)
     _terminal_states_match(roots, states)
@@ -979,11 +1038,27 @@ def inspect_terminal_ownership(state_root: Path, payload_root: Path,
             "receipt": None,
             "payload_cache": [],
         }
-    receipt = _verify_terminal_receipt(state_root, summary)
-    if receipt["outcome"] != admission["status"]:
-        raise RecoveryError("terminal receipt outcome differs from admission status")
-    states = _receipt_unit_states(receipt)
-    caches = _terminal_states_match(roots, states)
+    try:
+        receipt = _verify_terminal_receipt(state_root, summary)
+        if receipt["outcome"] != admission["status"]:
+            raise RecoveryError("terminal receipt outcome differs from admission status")
+        states = _receipt_unit_states(receipt)
+        caches = _terminal_states_match(roots, states)
+    except (RecoveryError, OSError) as error:
+        # Inspection reports what it found; it does not refuse. Every drift the
+        # blocker list documents - a changed, missing, or extra artifact, or a
+        # re-created root or lock - leaves the installation uncertified, and
+        # planning then records its blocker. Mutation stays strict: an uncertified
+        # installation is ineligible for every operation.
+        return {
+            "status": admission["status"],
+            "certified": False,
+            "reason": "terminal ownership is not certified: %s" % error,
+            "roots": roots,
+            "summary": summary,
+            "receipt": None,
+            "payload_cache": [],
+        }
     current, current_data = read_object(admission_path, "admission")
     if current_data != admission_data or validate_admission(current, roots) != admission:
         raise RecoveryError("admission changed during ownership inspection")
@@ -995,6 +1070,58 @@ def inspect_terminal_ownership(state_root: Path, payload_root: Path,
         "summary": summary,
         "receipt": receipt,
         "payload_cache": caches,
+    }
+
+
+def rebind_terminal_identity(state_root: Path, payload_root: Path,
+                             opencode_root: Path) -> Dict[str, Any]:
+    """Re-certify an otherwise byte-identical managed installation whose fixed roots
+    or broker.lock were re-created. Only the volatile (device, inode) fields are
+    re-bound, and only once everything a certification checks - receipt digest,
+    provenance, recovery tool, and every artifact - still verifies unchanged."""
+    _validate_compatible_python()
+    state_root = Path(state_root).resolve(strict=True)
+    opencode_root = Path(opencode_root).resolve(strict=True)
+    payload_input = Path(payload_root)
+    payload_root = payload_input.parent.resolve(strict=True) / payload_input.name
+    if payload_root.is_symlink():
+        raise RecoveryError("payload root must not be a symlink")
+    roots = validate_roots(
+        {"state": str(state_root), "payload": str(payload_root), "opencode": str(opencode_root)}
+    )
+    lifecycle = state_root / ".council-lifecycle"
+    if lifecycle.is_symlink() or not lifecycle.is_dir():
+        raise RecoveryError("lifecycle namespace must be a real directory")
+    admission, _admission_data = read_object(lifecycle / "admission.json", "admission")
+    admission = validate_admission(admission, roots)
+    summary = admission["committed"]
+    if summary is None:
+        raise RecoveryError("identity re-bind requires a certifying terminal receipt")
+    receipt = _verify_terminal_receipt(state_root, summary, bind_identities=False)
+    if receipt["outcome"] != admission["status"]:
+        raise RecoveryError("terminal receipt outcome differs from admission status")
+    binding = {
+        "format": IDENTITY_BINDING_FORMAT,
+        "receipt_id": receipt["receipt_id"],
+        "receipt_sha256": summary["receipt_sha256"],
+        "root_identities": {
+            "state": directory_identity(state_root, "state root"),
+            "payload_parent": directory_identity(
+                Path(roots["payload"]).parent, "payload parent"
+            ),
+            "opencode": directory_identity(Path(roots["opencode"]), "OpenCode root"),
+        },
+        "lock_identity": lock_path_identity(state_root / "broker.lock"),
+    }
+    validate_identity_binding(binding)
+    _atomic_json(
+        _identity_binding_path(state_root), binding, None, "identity-binding"
+    )
+    return {
+        "rebind_format": IDENTITY_BINDING_FORMAT,
+        "receipt_id": binding["receipt_id"],
+        "root_identities": binding["root_identities"],
+        "lock_identity": binding["lock_identity"],
     }
 
 

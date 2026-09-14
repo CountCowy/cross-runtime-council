@@ -464,9 +464,9 @@ class LifecyclePlanningTests(unittest.TestCase):
         self.assertEqual(plugin["ownership"], "matching_preexisting_unowned")
         self.assertEqual(plugin["prior"], plugin["intended"])
 
-    def test_managed_local_change_missing_extra_and_pending_state_refuse(self):
-        actions = ("edit", "missing", "extra", "pending")
-        for action in actions:
+    def test_managed_local_change_missing_and_extra_report_and_block(self):
+        release = lifecycle.validate_release(synthetic_release(self.root, "drift"))
+        for action in ("edit", "missing", "extra"):
             with self.subTest(action=action):
                 fixture = Fixture(self.root / ("managed-" + action))
                 fixture.publish_intent()
@@ -475,15 +475,44 @@ class LifecyclePlanningTests(unittest.TestCase):
                     (fixture.payload / "SKILL.md").write_text("changed\n")
                 elif action == "missing":
                     (fixture.payload / "SKILL.md").unlink()
-                elif action == "extra":
-                    write_file(fixture.payload / "extra.txt", b"extra")
                 else:
-                    fixture.prepare_managed_transaction("upgrade")
-                    fixture.publish_intent()
-                with self.assertRaises(recovery.RecoveryError):
-                    lifecycle.inspect_ownership(
-                        fixture.state, fixture.payload, fixture.opencode
+                    write_file(fixture.payload / "extra.txt", b"extra")
+                current = lifecycle.status(
+                    fixture.state, fixture.payload, fixture.opencode
+                )
+                self.assertEqual(current["management"]["status"], "committed")
+                self.assertFalse(current["management"]["certified"])
+                self.assertIn(
+                    "not certified", current["management"]["reason"]
+                )
+                ownership = lifecycle.inspect_ownership(
+                    fixture.state, fixture.payload, fixture.opencode
+                )
+                for kind, snapshot in (("upgrade", release), ("uninstall", None)):
+                    preview = lifecycle.plan_ownership(kind, snapshot, ownership)
+                    self.assertFalse(preview["eligible_for_integration"])
+                    self.assertIn(
+                        "certified_installation_required",
+                        {item["code"] for item in preview["blockers"]},
                     )
+                with self.assertRaisesRegex(
+                    lifecycle.LifecyclePlanningError, "ownership blockers"
+                ):
+                    lifecycle.execute_operation(
+                        "uninstall", None, fixture.state, fixture.payload,
+                        fixture.opencode,
+                    )
+
+    def test_pending_recovery_still_refuses_ownership_inspection(self):
+        fixture = Fixture(self.root / "managed-pending")
+        fixture.publish_intent()
+        fixture.engine.recover(fixture.state)
+        fixture.prepare_managed_transaction("upgrade")
+        fixture.publish_intent()
+        with self.assertRaises(recovery.RecoveryError):
+            lifecycle.inspect_ownership(
+                fixture.state, fixture.payload, fixture.opencode
+            )
 
     def test_known_cache_is_listed_for_backup_and_not_in_target(self):
         fixture = Fixture(self.root / "managed-cache")
@@ -504,8 +533,11 @@ class LifecyclePlanningTests(unittest.TestCase):
         self.assertFalse(any("__pycache__" in item["path"] for item in payload_target["artifacts"]))
 
         write_file(fixture.payload / "scripts/__pycache__/unexpected.txt", b"not bytecode")
-        with self.assertRaisesRegex(recovery.RecoveryError, "unknown file type"):
-            lifecycle.inspect_ownership(fixture.state, fixture.payload, fixture.opencode)
+        management = lifecycle.inspect_ownership(
+            fixture.state, fixture.payload, fixture.opencode
+        )["management"]
+        self.assertFalse(management["certified"])
+        self.assertIn("unknown file type", management["reason"])
 
     def test_rollback_and_receipt_backed_reinstall_previews_remain_non_executable(self):
         fixture = Fixture(self.root / "rollback")
@@ -883,6 +915,95 @@ class LifecyclePlanningTests(unittest.TestCase):
                     lifecycle.plan_ownership(
                         kind, snapshot, ownership, adopt_unowned=True
                     )
+
+    def test_recreated_broker_lock_reports_then_rebinds(self):
+        release = self.actual_release("rebind")
+        roots = (
+            self.root / "rebind/state",
+            self.root / "rebind/payload-parent/council",
+            self.root / "rebind/opencode",
+        )
+        lifecycle.execute_operation(
+            "install", release, *roots,
+            maintenance_window_confirmed=True,
+            transaction_id="txn-rebind-install",
+        )
+        lock = roots[0] / "broker.lock"
+        data = lock.read_bytes()
+        lock.unlink()
+        write_file(lock, data, 0o600)
+
+        drifted = lifecycle.status(*roots)
+        self.assertEqual(drifted["management"]["status"], "committed")
+        self.assertFalse(drifted["management"]["certified"])
+        self.assertIn("broker.lock identity changed", drifted["management"]["reason"])
+        with self.assertRaisesRegex(
+            lifecycle.LifecyclePlanningError, "ownership blockers"
+        ):
+            lifecycle.execute_operation(
+                "uninstall", None, *roots, transaction_id="txn-rebind-blocked"
+            )
+
+        rebound = lifecycle.rebind_identity(*roots)
+        self.assertEqual(rebound["lock_identity"], recovery.lock_path_identity(lock))
+        recertified = lifecycle.status(*roots)
+        self.assertTrue(recertified["management"]["certified"])
+        self.assertEqual(
+            lifecycle.retained_release(roots[0], "receipt-rebind-install")["receipt_id"],
+            "receipt-rebind-install",
+        )
+        removed = lifecycle.execute_operation(
+            "uninstall", None, *roots, transaction_id="txn-rebind-uninstall"
+        )
+        self.assertEqual(removed["status"], "uninstalled")
+        self.assertTrue(lifecycle.status(*roots)["management"]["certified"])
+
+    def test_rebind_refuses_a_changed_installation(self):
+        release = self.actual_release("rebind-changed")
+        roots = (
+            self.root / "rebind-changed/state",
+            self.root / "rebind-changed/payload-parent/council",
+            self.root / "rebind-changed/opencode",
+        )
+        lifecycle.execute_operation(
+            "install", release, *roots,
+            maintenance_window_confirmed=True,
+            transaction_id="txn-rebind-changed-install",
+        )
+        write_file(roots[1] / "SKILL.md", b"local edit\n")
+        with self.assertRaises(recovery.RecoveryError):
+            lifecycle.rebind_identity(*roots)
+        self.assertFalse(
+            recovery._identity_binding_path(roots[0].resolve()).exists()
+        )
+        self.assertFalse(lifecycle.status(*roots)["management"]["certified"])
+
+    def test_reconcile_cleans_a_preparation_whose_receipt_cannot_verify(self):
+        fixture = Fixture(self.root / "reconcile-unverifiable")
+        fixture.publish_intent()
+        fixture.engine.recover(fixture.state)
+        state_root = fixture.state.resolve()
+        roots = {
+            "state": str(state_root),
+            "payload": str(fixture.payload),
+            "opencode": str(fixture.opencode.resolve()),
+        }
+        failure = recovery.RecoveryError(
+            "terminal artifact set is not coherent: payload"
+        )
+        with lifecycle.admission.acquire_writer_lease(state_root) as lease:
+            with lease.operation():
+                guard = lifecycle._PreparationGuard(
+                    lease, "txn-abandoned", roots, False,
+                    state_root / ".council-lifecycle",
+                )
+                record_path = guard.record_path
+                self.assertTrue(record_path.is_file())
+                with mock.patch.object(
+                    lifecycle.recovery, "_verify_terminal_receipt", side_effect=failure
+                ):
+                    lifecycle._reconcile_preparations(state_root, lease)
+                self.assertFalse(record_path.exists())
 
     def test_retained_state_change_cannot_publish_bootstrap_intent(self):
         release = lifecycle.validate_release(self.actual_release("blocked"))

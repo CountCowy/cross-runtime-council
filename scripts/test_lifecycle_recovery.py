@@ -1766,12 +1766,11 @@ class LifecycleRecoveryTests(unittest.TestCase):
         admission = json.loads(admission_path.read_text())
         admission["status"] = "uninstalled"
         write_json(admission_path, admission)
-        with self.assertRaisesRegex(
-            committed.engine.RecoveryError, "outcome differs"
-        ):
-            committed.engine.inspect_terminal_ownership(
-                committed.state, committed.payload, committed.opencode
-            )
+        terminal = committed.engine.inspect_terminal_ownership(
+            committed.state, committed.payload, committed.opencode
+        )
+        self.assertFalse(terminal["certified"])
+        self.assertIn("outcome differs", terminal["reason"])
 
         uninstalled = self.fixture()
         uninstalled.publish_intent()
@@ -1783,12 +1782,11 @@ class LifecycleRecoveryTests(unittest.TestCase):
         admission = json.loads(admission_path.read_text())
         admission["status"] = "committed"
         write_json(admission_path, admission)
-        with self.assertRaisesRegex(
-            uninstalled.engine.RecoveryError, "outcome differs"
-        ):
-            uninstalled.engine.inspect_terminal_ownership(
-                uninstalled.state, uninstalled.payload, uninstalled.opencode
-            )
+        terminal = uninstalled.engine.inspect_terminal_ownership(
+            uninstalled.state, uninstalled.payload, uninstalled.opencode
+        )
+        self.assertFalse(terminal["certified"])
+        self.assertIn("outcome differs", terminal["reason"])
 
     def test_pending_admission_must_match_all_plan_roots_before_unit_work(self):
         for root_name in ("payload", "opencode"):
