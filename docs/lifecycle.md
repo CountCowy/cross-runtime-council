@@ -111,7 +111,10 @@ digest without writing control or configuration state. That one-source rule
 decides where a *new* entry goes. Removing an entry the receipt already owns
 targets the exact file that receipt names instead, so a second, unrelated
 configuration file the transaction never touches cannot block `unregister` or
-`uninstall`. Removing an entry that is already absent is a no-op, not a refusal. Apply requires
+`uninstall`. That targeting lasts only while the receipt owns the entry: once
+the entry is removed the receipt names no target, so a repeated `unregister`
+falls back to the one-source rule and refuses rather than reporting a no-op.
+Apply requires
 `--quiescent-edit`, that exact digest, and a fresh invocation ID. It changes only
 the selected `plugin` member through a reversible byte patch.
 

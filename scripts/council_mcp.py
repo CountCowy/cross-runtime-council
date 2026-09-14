@@ -39,7 +39,7 @@ from council import (
     validate_extension_result,
 )
 
-PACKAGE_ID = "dc73c72c5d457d1d2410dcafe8f449bc9e24e754adb71bc7aeb92f1ae808535d"
+PACKAGE_ID = "1921c3b322d19beabe5a50f80e0f5f7c20f48e7905ef9e37a844519ebb5edd3b"
 RUNTIME_COHORT = "8181ae63906b42e4af670df1613dede4d194c48991594e3b8ea9b961877831b5"
 if RUNTIME_COHORT != council.RUNTIME_COHORT:
     raise RuntimeError("Council MCP/helper cohort mismatch; refresh the complete runtime set")

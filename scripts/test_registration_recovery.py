@@ -1256,6 +1256,64 @@ class RegistrationRecoveryTests(unittest.TestCase):
             json.loads((opencode / "opencode.json").read_text())["plugin"], []
         )
 
+    def test_repeated_unregister_refuses_once_the_entry_is_gone(self):
+        state, payload, opencode = self.installed_release()
+        register_plan = lifecycle.plan_registration(
+            "opencode", "register", state, payload, opencode
+        )
+        lifecycle.execute_registration(
+            "opencode",
+            "register",
+            state,
+            payload,
+            opencode,
+            quiescent_edit=True,
+            confirm_plan=register_plan["plan_sha256"],
+            invocation_id="register-before-repeat-unregister",
+            transaction_id="txn-registration-repeat-unregister",
+        )
+        remove_plan = lifecycle.plan_registration(
+            "opencode", "unregister", state, payload, opencode
+        )
+        lifecycle.execute_registration(
+            "opencode",
+            "unregister",
+            state,
+            payload,
+            opencode,
+            quiescent_edit=True,
+            confirm_plan=remove_plan["plan_sha256"],
+            invocation_id="unregister-before-repeat",
+            transaction_id="txn-unregister-before-repeat",
+        )
+        self.assertEqual(
+            json.loads((opencode / "opencode.json").read_text())["plugin"], []
+        )
+        # The removal row records no resulting entry digest, so the receipt
+        # owns nothing to remove and names no target for a repeat.
+        receipt = lifecycle.inspect_ownership(state, payload, opencode)["receipt"]
+        self.assertEqual(lifecycle._owned_opencode_records(receipt), [])
+        settled = (opencode / "opencode.json").read_bytes()
+        with self.assertRaises(RegistrationInputError):
+            lifecycle.plan_registration(
+                "opencode", "unregister", state, payload, opencode
+            )
+        self.assertEqual((opencode / "opencode.json").read_bytes(), settled)
+        # With no receipt-named target the one-source rule governs again, so a
+        # second configuration file refuses the repeat rather than no-opping.
+        (opencode / "opencode.jsonc").write_bytes(b'{"theme":"unrelated"}\n')
+        with self.assertRaises(lifecycle.LifecyclePlanningError) as caught:
+            lifecycle.plan_registration(
+                "opencode", "unregister", state, payload, opencode
+            )
+        self.assertIn("exactly one opencode.json", str(caught.exception))
+        # Uninstall plans an OpenCode removal only while the receipt owns an
+        # entry, so the second file does not reach it.
+        uninstall_plan = lifecycle._plan_command(
+            "uninstall", None, None, (state, payload, opencode)
+        )
+        self.assertNotIn("registration", uninstall_plan)
+
     def test_drifted_owned_entry_refusals_name_the_real_cause(self):
         state, payload, opencode = self.installed_release()
         register_plan = lifecycle.plan_registration(
