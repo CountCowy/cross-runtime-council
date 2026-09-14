@@ -58,6 +58,58 @@ class PublicDigestRecord:
         ).hexdigest()
 
 
+class SyntheticTomllib:
+    """Parse the TOML subset these fixtures use, independent of the interpreter.
+
+    CI pins Python 3.9, where stdlib ``tomllib`` is absent. Skipping the Codex
+    classification tests there left ``_toml_stdio_state`` with no coverage on the
+    interpreter that actually runs them, so the tests drive this parser instead
+    and additionally re-run against the stdlib parser wherever it exists.
+    """
+
+    @staticmethod
+    def loads(text):
+        document = {}
+        table = document
+        for raw in text.splitlines():
+            line = raw.split("#", 1)[0].strip()
+            if not line:
+                continue
+            if line.startswith("[") and line.endswith("]"):
+                table = document
+                for part in line[1:-1].split("."):
+                    table = table.setdefault(part.strip(), {})
+                continue
+            key, separator, value = line.partition("=")
+            if not separator:
+                raise ValueError("unsupported synthetic TOML line")
+            table[key.strip()] = SyntheticTomllib._value(value.strip())
+        return document
+
+    @staticmethod
+    def _value(text):
+        if text.startswith("[") and text.endswith("]"):
+            inner = text[1:-1].strip()
+            return [
+                SyntheticTomllib._value(item.strip())
+                for item in inner.split(",")
+                if item.strip()
+            ]
+        if text in ("true", "false"):
+            return text == "true"
+        if len(text) >= 2 and text[0] == text[-1] == '"':
+            return text[1:-1]
+        raise ValueError("unsupported synthetic TOML value")
+
+
+def toml_parsers():
+    """The TOML parsers available here: the synthetic one, plus stdlib if present."""
+    parsers = [("synthetic", SyntheticTomllib)]
+    if registration._tomllib is not None:
+        parsers.append(("stdlib", registration._tomllib))
+    return parsers
+
+
 class RegistrationTests(unittest.TestCase):
     def setUp(self):
         self.spec = StdioSpec(
@@ -585,6 +637,18 @@ class RegistrationTests(unittest.TestCase):
                 observation.parser_capability.endswith(":" + os.sys.executable)
             )
         self.assertFalse(observation.automatic_eligible)
+        for label, parser in toml_parsers():
+            with self.subTest(parser=label), mock.patch.object(
+                registration, "_tomllib", parser
+            ):
+                parsed = observe_codex_config(
+                    document, self.spec, layer_inputs_complete=True
+                )
+            self.assertEqual(parsed.state, "matching")
+            self.assertTrue(
+                parsed.parser_capability.endswith(":" + os.sys.executable)
+            )
+            self.assertFalse(parsed.automatic_eligible)
 
     def test_codex_explicit_parser_unavailable_fallback(self):
         document = self.codex(b'[mcp_servers.council]\ncommand="secret"\n')
@@ -596,8 +660,7 @@ class RegistrationTests(unittest.TestCase):
         self.assertIsNone(observation.entry_sha256)
         self.assertNotIn("secret", json.dumps(observation.public_dict()))
 
-    @unittest.skipIf(registration._tomllib is None, "stdlib tomllib requires Python 3.11+")
-    def test_codex_unknown_fields_and_aliases_refuse_when_parser_available(self):
+    def test_codex_unknown_fields_and_aliases_refuse_with_a_toml_parser(self):
         unknown = self.codex(
             b'[mcp_servers.council]\ncommand="/usr/bin/python3"\n'
             b'args=["/opt/council/scripts/council_mcp.py"]\nenabled=false\n'
@@ -606,17 +669,21 @@ class RegistrationTests(unittest.TestCase):
             b'[mcp_servers.alias]\ncommand="/usr/bin/python3"\n'
             b'args=["/opt/council/scripts/council_mcp.py"]\n'
         )
-        first = observe_codex_config(
-            unknown, self.spec, layer_inputs_complete=True
-        )
-        second = observe_codex_config(
-            alias, self.spec, layer_inputs_complete=True
-        )
-        self.assertEqual(first.state, "disabled")
-        self.assertEqual(first.unknown_fields, ("enabled",))
-        self.assertEqual(second.state, "ambiguous_identity")
-        self.assertFalse(first.automatic_eligible)
-        self.assertFalse(second.automatic_eligible)
+        for label, parser in toml_parsers():
+            with self.subTest(parser=label), mock.patch.object(
+                registration, "_tomllib", parser
+            ):
+                first = observe_codex_config(
+                    unknown, self.spec, layer_inputs_complete=True
+                )
+                second = observe_codex_config(
+                    alias, self.spec, layer_inputs_complete=True
+                )
+            self.assertEqual(first.state, "disabled")
+            self.assertEqual(first.unknown_fields, ("enabled",))
+            self.assertEqual(second.state, "ambiguous_identity")
+            self.assertFalse(first.automatic_eligible)
+            self.assertFalse(second.automatic_eligible)
 
     def test_redacted_reports_never_include_unrelated_secret_sentinels(self):
         before = (FIXTURES / "opencode-preserve.json").read_bytes()

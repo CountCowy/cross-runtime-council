@@ -1318,6 +1318,14 @@ class QualificationCollectionTests(unittest.TestCase):
         self.assertNotIn("SYNTHETIC_WRITE_SECRET", encoded)
 
     def test_all_four_native_operations_are_fixed_one_attempt_surfaces(self):
+        # CI pins Python 3.9, where stdlib `tomllib` is absent. Skipping the two
+        # Codex iterations there ran this test at half coverage on the only
+        # interpreter that runs it, so drive the parser the way
+        # `test_admitted_native_v3_attempts_cover_all_operations_and_modes` does.
+        with mock.patch.object(registration, "_tomllib", SyntheticTomllib):
+            self._all_four_native_operations_surface()
+
+    def _all_four_native_operations_surface(self):
         for operation in (
             CLAUDE_ENSURE, CLAUDE_REMOVE, CODEX_ENSURE, CODEX_REMOVE
         ):
@@ -1326,9 +1334,6 @@ class QualificationCollectionTests(unittest.TestCase):
                 self.claude_tuple if case.runtime == "claude" else self.codex_tuple
             )
             decision = self.decision(case, runtime_tuple)
-            if case.runtime == "codex" and registration._tomllib is None:
-                self.assertEqual(decision.runtime, "codex")
-                continue
             after = (
                 self.claude_target if operation == CLAUDE_ENSURE else
                 self.claude_absent if operation == CLAUDE_REMOVE else
