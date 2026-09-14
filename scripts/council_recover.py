@@ -11,6 +11,7 @@ from pathlib import Path, PurePosixPath
 import platform
 import posixpath
 import re
+import signal
 import stat
 import subprocess
 import sys
@@ -3303,7 +3304,23 @@ def _atomic_bytes(path: Path, data: bytes, failpoint: Failpoint, label: str) -> 
                 "%s target is not a single-linked regular file" % label
             )
         if _entry_token(parent_descriptor, temporary.name) is not None:
-            raise RecoveryError("%s temporary path is occupied" % label)
+            # Reclaim our own leftover temporary the way `_atomic_json` and
+            # `_write_immutable` do. A hard kill between O_EXCL creation and
+            # os.replace leaves this file behind; refusing it would wedge every
+            # later write to this config with no documented repair.
+            temporary_details = os.stat(
+                temporary.name, dir_fd=parent_descriptor, follow_symlinks=False
+            )
+            if (not stat.S_ISREG(temporary_details.st_mode) or
+                    temporary_details.st_nlink != 1):
+                raise RecoveryError(
+                    "owned %s temporary path has an unexpected type: %s"
+                    % (label, temporary)
+                )
+            os.unlink(temporary.name, dir_fd=parent_descriptor)
+            _sync_open_directory(
+                parent_descriptor, failpoint, label + ":temporary-cleanup"
+            )
         descriptor = os.open(
             temporary.name,
             os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
@@ -4556,6 +4573,33 @@ def _process_group_members(pgid: int) -> List[Tuple[int, str]]:
     return members
 
 
+def _terminate_process_group(process: Any, pgid: int) -> None:
+    """Signal and reap a stuck native supervisor group before unwinding.
+
+    Escalates SIGTERM then SIGKILL and waits for the group to drain, so the
+    caller never releases the recovery lease with a live writer behind it.
+    """
+    if pgid <= 0 or pgid == os.getpgrp():
+        raise RecoveryError("native supervisor process group is not a separate session")
+    for signal_number in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(pgid, signal_number)
+        except OSError:
+            pass
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            try:
+                process.wait(timeout=0.05)
+            except subprocess.TimeoutExpired:
+                continue
+            try:
+                if not _process_group_members(pgid):
+                    return
+            except (OSError, subprocess.SubprocessError, RecoveryError):
+                return
+            time.sleep(0.05)
+
+
 class _FixedNativeSupervisorEffects:
     """Closed native-v3 supervisor; evidence remains unqualified by default."""
 
@@ -4619,30 +4663,49 @@ class _FixedNativeSupervisorEffects:
         _write_immutable(request_path, json_bytes(request), None, "native-supervisor-request")
         read_gate, write_gate = os.pipe()
         os.set_inheritable(read_gate, True)
-        lease_facts = _lease_facts(self.lease, Path(self.plan["roots"]["state"]))
-        lease_fd = lease_facts["lock_descriptor"]
-        process = subprocess.Popen(
-            [
-                str(Path(sys.executable).resolve()),
-                "-I",
-                "-B",
-                str(Path(__file__).resolve()),
-                "native-supervisor",
-                "--request",
-                str(request_path),
-                "--gate-fd",
-                str(read_gate),
-                "--lease-fd",
-                str(lease_fd),
-            ],
-            cwd="/private/tmp",
-            env=self.environment,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            pass_fds=(read_gate, lease_fd),
-            start_new_session=True,
-        )
+        state_root = Path(self.plan["roots"]["state"])
+        lease_facts = _lease_facts(self.lease, state_root)
+        # The supervisor only fstat-verifies this descriptor; it never locks it.
+        # Passing the lease's own descriptor would share its open file
+        # description, so `RecoveryLease.close()` would release the C1 flock for
+        # a supervisor that is still running. Hand it an independent description
+        # of the same file instead.
+        lease_fd = os.open(str(state_root / "broker.lock"), os.O_RDONLY | os.O_NOFOLLOW)
+        lease_details = os.fstat(lease_fd)
+        if {
+            "device": lease_details.st_dev,
+            "inode": lease_details.st_ino,
+        } != lease_facts["lock_identity"]:
+            os.close(lease_fd)
+            os.close(read_gate)
+            os.close(write_gate)
+            raise RecoveryError("broker lock identity changed before the native spawn")
+        os.set_inheritable(lease_fd, True)
+        try:
+            process = subprocess.Popen(
+                [
+                    str(Path(sys.executable).resolve()),
+                    "-I",
+                    "-B",
+                    str(Path(__file__).resolve()),
+                    "native-supervisor",
+                    "--request",
+                    str(request_path),
+                    "--gate-fd",
+                    str(read_gate),
+                    "--lease-fd",
+                    str(lease_fd),
+                ],
+                cwd="/private/tmp",
+                env=self.environment,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                pass_fds=(read_gate, lease_fd),
+                start_new_session=True,
+            )
+        finally:
+            os.close(lease_fd)
         os.close(read_gate)
         ready_path = directory / "ready.json"
         deadline = time.monotonic() + 10
@@ -4692,6 +4755,11 @@ class _FixedNativeSupervisorEffects:
         try:
             process.wait(timeout=70)
         except subprocess.TimeoutExpired:
+            # Terminate and reap before returning. `launch_once` raises on the
+            # unconfirmed-absence that follows, and that exception unwinds out of
+            # the recovery lease - releasing the C1 lock while a supervisor and
+            # its vendor child could still be mutating the config.
+            _terminate_process_group(process, handle["supervisor"]["pgid"])
             return self.records["qualification"].LaunchReceipt(
                 binding.runtime + ("-add-absent" if binding.operation.endswith("_ensure") else "-remove-present"),
                 binding.argv,
@@ -5115,9 +5183,20 @@ def _ensure_registration(operation: Dict[str, Any], goal: str,
         return
     other_goal = "prior" if goal == "target" else "target"
     if current_sha256 != operation[other_goal + "_sha256"]:
+        # Adopting an unrecognized config would silently certify bytes no plan
+        # ever approved, so this stays a refusal. Name the file and all three
+        # digests instead, so the operator can see which edit has to be undone.
         raise RecoveryError(
-            "registration config is neither prior nor intended: %s"
-            % operation["operation_id"]
+            "registration config is neither prior nor intended: %s; %s observed "
+            "%s, expected target %s or prior %s; restore one of those exact "
+            "byte sequences, then re-run recovery"
+            % (
+                operation["operation_id"],
+                path,
+                current_sha256,
+                operation["target_sha256"],
+                operation["prior_sha256"],
+            )
         )
     patch = (
         operation["forward_patch"] if goal == "target" else operation["inverse_patch"]
@@ -5329,6 +5408,7 @@ def _execute_with_lease(state_root: Path, lease_adapter: Any, *, abort: bool = F
     progress_path = _progress_path(plan_path)
     progress, _ = read_object(progress_path, "progress")
     progress = _validate_progress(progress, plan, sha256_bytes(plan_data))
+    select_prior = False
     if abort:
         if plan["plan_format"] == NATIVE_PLAN_FORMAT:
             raise RecoveryError(
@@ -5337,12 +5417,16 @@ def _execute_with_lease(state_root: Path, lease_adapter: Any, *, abort: bool = F
         if "prior" not in plan["allowed_goals"]:
             raise RecoveryError("this transaction has no validated prior outcome")
         if progress["goal"] != "prior":
+            # Select the prior goal in memory only. The journal write is deferred
+            # until after `_validate_quiescent_invocation`, so a missing or stale
+            # confirmation on `--abort` makes no progress write and cannot invert
+            # the goal the next recovery reads.
             progress["goal"] = "prior"
             for unit in progress["units"]:
                 unit["phase"] = "pending"
             for registration in progress.get("registrations", []):
                 registration["phase"] = "pending"
-            _update_progress(progress_path, progress, failpoint, "progress:select-prior")
+            select_prior = True
     goal = progress["goal"]
     native_operation_progress = (
         progress["native_registrations"][0]
@@ -5385,6 +5469,8 @@ def _execute_with_lease(state_root: Path, lease_adapter: Any, *, abort: bool = F
                 plan, native_records, lease_adapter
             )
     _validate_quiescent_invocation(plan, goal, quiescent_decision, progress)
+    if select_prior:
+        _update_progress(progress_path, progress, failpoint, "progress:select-prior")
     registration_operations = (
         plan["registration"]["operations"]
         if plan["plan_format"] == REGISTRATION_PLAN_FORMAT

@@ -320,7 +320,11 @@ change an already terminal transaction and cannot synthesize missing prior data.
 A pending format-2 recovery also requires a fresh `--quiescent-edit`, the
 recorded registration-plan digest through `--confirm-plan`, and a new
 `--invocation-id`, including on `--abort`. Missing or stale confirmation makes no
-configuration or progress write. The receipt reports stored configuration,
+configuration or progress write: the abort goal is selected in memory and
+journalled only after the confirmation validates. A configuration whose bytes
+match neither the intended nor the prior digest is refused rather than adopted;
+the refusal names the file and all three digests so the operator can restore one
+of them exactly. The receipt reports stored configuration,
 effective scope, restart requirement, and authenticated readiness separately;
 stored success leaves the latter two unobserved until the owning host restarts
 and a separately authorized readiness check runs.
@@ -328,11 +332,15 @@ and a separately authorized readiness check runs.
 A pending format-3 recovery uses the same confirmation fields plus
 `--sequence 0|1`. The copied closure verifies constant-named recoverer,
 registration, and qualification modules by owner, mode, link count, size, and
-hash before executing their already-read bytes. The supervisor inherits the C1
-lease, starts blocked, records its PID/PGID/start generation and attempt-lock
-identity, and cannot release the fixed vendor argv until the progress journal
-has durably recorded `release_authorized`. An unavailable or incomplete
-process/network/write observer leaves the transaction pending.
+hash before executing their already-read bytes. The supervisor receives an
+independent descriptor of the C1 `broker.lock` and verifies its identity; it
+never holds the lease, so releasing the lease cannot unlock it for a supervisor
+that is still alive. It starts blocked, records its PID/PGID/start generation
+and attempt-lock identity, and cannot release the fixed vendor argv until the
+progress journal has durably recorded `release_authorized`. A supervisor that
+outlives its wait is signalled and reaped before the recoverer unwinds. An
+unavailable or incomplete process/network/write observer leaves the transaction
+pending.
 
 A missing or corrupt plan, receipt, provenance record, recovery file, staged
 object, retained prior object, or unexpected destination fails closed. Do not

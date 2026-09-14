@@ -10,6 +10,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -985,6 +986,192 @@ class RegistrationRecoveryTests(unittest.TestCase):
             json.loads(config_path.read_text())["plugin"],
             ["./council-plugin.ts"],
         )
+
+    def crashed_registration(self):
+        """Leave a format-2 register transaction pending at recovery_required."""
+        state, payload, opencode = self.installed_release()
+        planned = lifecycle.plan_registration(
+            "opencode", "register", state, payload, opencode
+        )
+
+        def stop(event):
+            if event == "after:replace:registration:opencode-council:target":
+                raise RuntimeError("pending fixture")
+
+        with self.assertRaisesRegex(RuntimeError, "pending fixture"):
+            lifecycle.execute_registration(
+                "opencode",
+                "register",
+                state,
+                payload,
+                opencode,
+                quiescent_edit=True,
+                confirm_plan=planned["plan_sha256"],
+                invocation_id="register-pending",
+                transaction_id="txn-registration-pending",
+                failpoint=stop,
+            )
+        admission_value = json.loads(
+            (state / ".council-lifecycle/admission.json").read_text()
+        )
+        self.assertEqual(admission_value["status"], "recovery_required")
+        transaction = (
+            state
+            / ".council-lifecycle/v1/transactions"
+            / admission_value["transaction_id"]
+        )
+        plan = json.loads((transaction / "plan.json").read_text())
+        return state, payload, opencode, planned, plan, transaction
+
+    def test_unconfirmed_abort_makes_no_progress_write(self):
+        state, payload, opencode, planned, plan, transaction = (
+            self.crashed_registration()
+        )
+        progress_path = transaction / "progress.json"
+        before = json.loads(progress_path.read_text())
+        self.assertEqual(before["goal"], "target")
+        refused = subprocess.run(
+            [
+                sys.executable,
+                "-I",
+                "-B",
+                plan["recovery"]["tool_path"],
+                "recover",
+                "--state-root",
+                str(state),
+                "--abort",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("fresh quiescent admission", refused.stderr)
+        # The goal must not have flipped: an unconfirmed abort that persisted
+        # `prior` would silently invert the next, properly confirmed recovery.
+        self.assertEqual(json.loads(progress_path.read_text()), before)
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-I",
+                "-B",
+                plan["recovery"]["tool_path"],
+                "recover",
+                "--state-root",
+                str(state),
+                "--quiescent-edit",
+                "--confirm-plan",
+                planned["plan_sha256"],
+                "--invocation-id",
+                "register-after-refused-abort",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(json.loads(completed.stdout)["status"], "committed")
+        self.assertEqual(
+            json.loads((opencode / "opencode.json").read_text())["plugin"],
+            ["./council-plugin.ts"],
+        )
+
+    def test_recovery_reclaims_a_stale_registration_temporary(self):
+        state, payload, opencode, planned, plan, _transaction = (
+            self.crashed_registration()
+        )
+        # A hard kill between O_EXCL creation and os.replace leaves this behind.
+        stale = opencode / ".opencode.json.pending"
+        stale.write_bytes(b"{}\n")
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-I",
+                "-B",
+                plan["recovery"]["tool_path"],
+                "recover",
+                "--state-root",
+                str(state),
+                "--abort",
+                "--quiescent-edit",
+                "--confirm-plan",
+                planned["plan_sha256"],
+                "--invocation-id",
+                "abort-over-stale-temporary",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(json.loads(completed.stdout)["status"], "committed")
+        self.assertEqual(
+            json.loads((opencode / "opencode.json").read_text())["plugin"], []
+        )
+        self.assertFalse(stale.exists())
+
+    def test_third_digest_refusal_names_the_file_and_every_digest(self):
+        state, payload, opencode, planned, plan, transaction = (
+            self.crashed_registration()
+        )
+        config_path = opencode / "opencode.json"
+        config_path.write_bytes(
+            b'{"theme":"fixture","plugin":["./council-plugin.ts"] }\n'
+        )
+        refused = subprocess.run(
+            [
+                sys.executable,
+                "-I",
+                "-B",
+                plan["recovery"]["tool_path"],
+                "recover",
+                "--state-root",
+                str(state),
+                "--quiescent-edit",
+                "--confirm-plan",
+                planned["plan_sha256"],
+                "--invocation-id",
+                "recover-third-digest",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        self.assertNotEqual(refused.returncode, 0)
+        operation = plan["registration"]["operations"][0]
+        self.assertIn("neither prior nor intended", refused.stderr)
+        self.assertIn(str(config_path), refused.stderr)
+        self.assertIn(
+            hashlib.sha256(config_path.read_bytes()).hexdigest(), refused.stderr
+        )
+        self.assertIn(operation["target_sha256"], refused.stderr)
+        self.assertIn(operation["prior_sha256"], refused.stderr)
+        self.assertIn("restore one of those exact", refused.stderr)
+
+    def test_terminate_process_group_reaps_a_surviving_supervisor(self):
+        process = subprocess.Popen(
+            [
+                sys.executable,
+                "-I",
+                "-B",
+                "-c",
+                "import os,subprocess,sys,time\n"
+                "subprocess.Popen([sys.executable,'-I','-B','-c','import time;time.sleep(120)'])\n"
+                "time.sleep(120)\n",
+            ],
+            cwd="/private/tmp",
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        self.addCleanup(process.wait)
+        pgid = os.getpgid(process.pid)
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            if len(RECOVERY._process_group_members(pgid)) >= 2:
+                break
+            time.sleep(0.05)
+        self.assertGreaterEqual(len(RECOVERY._process_group_members(pgid)), 2)
+        RECOVERY._terminate_process_group(process, pgid)
+        self.assertIsNotNone(process.poll())
+        self.assertEqual(RECOVERY._process_group_members(pgid), [])
 
     def test_interrupted_registration_abort_restores_prior_with_fresh_decision(self):
         state, payload, opencode = self.installed_release()
