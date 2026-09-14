@@ -432,6 +432,41 @@ def capture_state(path: Path, kind: str) -> Dict[str, Any]:
     }
 
 
+def git_stop_state(path: Path) -> Optional[Dict[str, Any]]:
+    """Report a real top-level ``.git`` entry from a bounded scan, without inventorying
+    the tree. A README source clone commonly carries symlinks, hard links, or more
+    entries than ``capture_state`` accepts, so the ownership stop has to be observable
+    before the full inventory is attempted."""
+    try:
+        root = path.lstat()
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+    if stat.S_ISLNK(root.st_mode) or not stat.S_ISDIR(root.st_mode):
+        return None
+    try:
+        details = (path / ".git").lstat()
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+    if stat.S_ISLNK(details.st_mode):
+        return None
+    if stat.S_ISDIR(details.st_mode):
+        kind = "directory"
+    elif stat.S_ISREG(details.st_mode):
+        kind = "file"
+    else:
+        return None
+    return {
+        "exists": True,
+        "kind": "directory",
+        "sha256": None,
+        "mode": stat.S_IMODE(root.st_mode),
+        "artifacts": [
+            {"path": ".git", "kind": kind, "sha256": None,
+             "mode": stat.S_IMODE(details.st_mode)}
+        ],
+    }
+
+
 def validate_state(value: Any, label: str, kind: str, clean: bool = False) -> Dict[str, Any]:
     if not isinstance(value, dict):
         raise RecoveryError("%s must be an object" % label)

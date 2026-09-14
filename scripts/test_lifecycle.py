@@ -403,6 +403,27 @@ class LifecyclePlanningTests(unittest.TestCase):
         with self.assertRaises(recovery.RecoveryError):
             lifecycle.inspect_ownership(state, payload, opencode)
 
+    def test_source_clone_with_symlinks_reports_its_ownership_stop(self):
+        release = lifecycle.validate_release(synthetic_release(self.root, "clone-stop"))
+        state, payload, opencode = self.roots("npm-clone-")
+        make_directory(payload / ".git/objects")
+        write_file(payload / "README.md", b"clone\n")
+        make_directory(payload / "node_modules/.bin")
+        (payload / "node_modules/.bin/tsc").symlink_to("../typescript/bin/tsc")
+        preview = lifecycle.plan_ownership(
+            "install", release, lifecycle.inspect_ownership(state, payload, opencode)
+        )
+        self.assertFalse(preview["eligible_for_integration"])
+        self.assertIn("source_clone", {item["code"] for item in preview["blockers"]})
+        current = lifecycle.status(state, payload, opencode)
+        self.assertEqual(current["management"]["status"], "legacy_unmanaged")
+
+        bare, bare_payload, bare_opencode = self.roots("npm-only-")
+        make_directory(bare_payload / "node_modules/.bin")
+        (bare_payload / "node_modules/.bin/tsc").symlink_to("../typescript/bin/tsc")
+        with self.assertRaises(recovery.RecoveryError):
+            lifecycle.inspect_ownership(bare, bare_payload, bare_opencode)
+
     def test_certified_upgrade_and_uninstall_use_receipt_ownership(self):
         fixture = Fixture(self.root / "managed")
         fixture.engine.check_plan(fixture.plan_path)

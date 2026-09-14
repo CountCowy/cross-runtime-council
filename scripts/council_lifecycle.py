@@ -334,7 +334,7 @@ def inspect_ownership(state_root: Path, payload_root: Path,
                 "unit_id": unit_id,
                 "destination": str(destination),
                 "kind": kind,
-                "state": recovery.capture_state(destination, kind),
+                "state": _unit_state(destination, kind),
             }
         )
     return {
@@ -350,6 +350,21 @@ def inspect_ownership(state_root: Path, payload_root: Path,
         "payload_cache": terminal["payload_cache"],
         "units": units,
     }
+
+
+def _unit_state(destination: Path, kind: str) -> Dict[str, Any]:
+    """Capture one fixed unit's inventory, degrading a refused payload tree to its
+    bounded ``.git`` ownership stop so planning can report the documented
+    ``source_clone`` blocker instead of failing inside the inventory walk."""
+    try:
+        return recovery.capture_state(destination, kind)
+    except recovery.RecoveryError:
+        if kind != "directory":
+            raise
+        marker = recovery.git_stop_state(destination)
+        if marker is None:
+            raise
+        return marker
 
 
 def _pending_status(state_root: Path, payload_root: Path,
