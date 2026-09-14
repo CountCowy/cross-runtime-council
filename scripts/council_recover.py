@@ -116,6 +116,7 @@ REGISTRATION_OWNERSHIP = {
     "matching_preexisting_unowned",
     "adopted_by_explicit_plan",
 }
+OWNED_REGISTRATION_ORIGINS = ("created", "adopted_by_explicit_plan")
 KINDS = {"install", "upgrade", "rollback", "uninstall", "registration"}
 OWNERSHIP = {"absent", "created", "already_owned", "matching_preexisting_unowned"}
 IDENTITY_BINDING_FORMAT = 1
@@ -1162,6 +1163,25 @@ def validate_receipt_shape(value: Any, label: str = "receipt") -> Dict[str, Any]
         if ids != sorted(ids) or len(ids) != len(set(ids)):
             raise RecoveryError("native receipt registrations must be sorted and unique")
     return value
+
+
+def owned_opencode_records(receipt: Any) -> List[Dict[str, Any]]:
+    """Return the receipt rows that record an OpenCode entry an install owns.
+
+    A ``matching_preexisting_unowned`` row carries a non-null digest too, but the
+    entry is the user's; it is preserved and disclosed, never removed. Every
+    caller that asks "do we own an OpenCode registration" must apply the same
+    origin filter, so the predicate lives here once, below both the planner and
+    the executor that have to agree about it.
+    """
+    if not isinstance(receipt, dict):
+        return []
+    return [
+        item for item in receipt.get("registrations", [])
+        if item.get("runtime") == "opencode"
+        and item.get("resulting_entry_sha256") is not None
+        and item.get("ownership_origin") in OWNED_REGISTRATION_ORIGINS
+    ]
 
 
 def _native_receipt_has_only_absent_entries(receipt: Dict[str, Any]) -> bool:
@@ -2807,10 +2827,16 @@ def validate_plan(plan_path: Path, *, pre_intent: bool,
         validate_receipt_shape(prior_receipt, "prior receipt")
         if sha256_bytes(prior_data) != prior_committed["receipt_sha256"]:
             raise RecoveryError("prior receipt digest mismatch")
+        # Every prior receipt format is legitimately reachable from every plan
+        # format: an artifact plan may follow a format-2 receipt whose entry was
+        # already unregistered or a format-3 receipt whose native entries are all
+        # absent, and a registration or native plan always follows a committed
+        # artifact install. What a plan format may not follow is a prior receipt
+        # that still *owns* a registration the plan does not carry, and ownership
+        # is a property of the rows, not of the format -- so the two guards below
+        # discriminate, one per runtime family.
         allowed_prior_formats = (
-            (RECEIPT_FORMAT, REGISTRATION_RECEIPT_FORMAT, NATIVE_RECEIPT_FORMAT)
-            if plan_format == NATIVE_PLAN_FORMAT
-            else (RECEIPT_FORMAT, REGISTRATION_RECEIPT_FORMAT, NATIVE_RECEIPT_FORMAT)
+            RECEIPT_FORMAT, REGISTRATION_RECEIPT_FORMAT, NATIVE_RECEIPT_FORMAT
         )
         if (prior_receipt.get("receipt_format") not in allowed_prior_formats or
                 prior_receipt.get("receipt_id") != prior_committed["receipt_id"] or
@@ -2824,6 +2850,13 @@ def validate_plan(plan_path: Path, *, pre_intent: bool,
         ):
             raise RecoveryError(
                 "active native registration blocks an artifact/OpenCode transaction"
+            )
+        if (
+            plan_format != REGISTRATION_PLAN_FORMAT
+            and owned_opencode_records(prior_receipt)
+        ):
+            raise RecoveryError(
+                "active OpenCode registration blocks an artifact/native transaction"
             )
         _validate_receipt_provenance(Path(plan["roots"]["state"]), prior_receipt)
         prior_receipt_value = prior_receipt

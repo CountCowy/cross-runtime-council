@@ -99,9 +99,20 @@ The operation-specific rules are:
 | Operation | Required current state | Target input | Additional rule |
 | --- | --- | --- | --- |
 | Install | Unmanaged or receipt-certified `uninstalled` | Generated release | First adoption requires `--maintenance-window-confirmed` |
-| Upgrade | Receipt-certified `committed` | Generated release | Every owned artifact must still match its receipt |
-| Rollback | Receipt-certified `committed` | Exact retained receipt ID | Retained release and reader/recovery support must verify again |
+| Upgrade | Receipt-certified `committed` | Generated release | Every owned artifact must still match its receipt; an owned registration must be unregistered first |
+| Rollback | Receipt-certified `committed` | Exact retained receipt ID | Retained release and reader/recovery support must verify again; an owned registration must be unregistered first |
 | Uninstall | Receipt-certified `committed` | None | Removes only receipt-owned code artifacts |
+
+Uninstall is the only artifact operation that carries a registration: it plans
+the removal and orders it before deleting the artifacts the entry names. Upgrade
+and rollback replace those artifacts without carrying the registration rows, so
+while a receipt owns a registration they refuse instead, naming the cause and the
+remedy: unregister that runtime, re-run the artifact command, then register
+again. The refusal exists on both sides -- the planner refuses before the writer
+lease, and the recovery program refuses any artifact or native plan whose prior
+receipt still owns an entry, exactly as it already refuses an artifact or
+OpenCode plan under an active native registration. A `matching_preexisting_unowned`
+entry is the user's, not the install's, and never blocks anything.
 
 Registration is a separate explicit operation over a receipt-certified
 artifact install. Its read-only plan selects exactly one strict-JSON

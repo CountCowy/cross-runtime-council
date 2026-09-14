@@ -1591,6 +1591,291 @@ class RegistrationRecoveryTests(unittest.TestCase):
         )
         self.assertLess(registration_replace, first_payload_event)
 
+    def generated_release(self):
+        temporary = tempfile.TemporaryDirectory(
+            prefix="registration-upgrade-release-", dir="/private/tmp"
+        )
+        self.addCleanup(temporary.cleanup)
+        release = Path(temporary.name) / "release"
+        completed = subprocess.run(
+            [sys.executable, "-B", "scripts/build_release.py", "--output", str(release)],
+            cwd=SCRIPTS.parent,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        return release
+
+    def registered_release(self, tag):
+        state, payload, opencode = self.installed_release()
+        register_plan = lifecycle.plan_registration(
+            "opencode", "register", state, payload, opencode
+        )
+        lifecycle.execute_registration(
+            "opencode",
+            "register",
+            state,
+            payload,
+            opencode,
+            quiescent_edit=True,
+            confirm_plan=register_plan["plan_sha256"],
+            invocation_id="register-before-" + tag,
+            transaction_id="txn-register-before-" + tag,
+        )
+        receipt = lifecycle.inspect_ownership(state, payload, opencode)["receipt"]
+        self.assertEqual(receipt["receipt_format"], 2)
+        self.assertEqual(len(lifecycle._owned_opencode_records(receipt)), 1)
+        self.assertTrue((opencode / "council-plugin.ts").exists())
+        return state, payload, opencode
+
+    def assert_refusal_names_cause_and_remedy(self, message):
+        self.assertIn("owned OpenCode registration", message)
+        self.assertIn("unregister --runtime opencode", message)
+        self.assertIn("register --runtime opencode", message)
+
+    def assert_uninstall_still_removes_the_entry_first(
+        self, state, payload, opencode, tag
+    ):
+        uninstall_plan = lifecycle._plan_command(
+            "uninstall", None, None, (state, payload, opencode)
+        )
+        self.assertTrue(uninstall_plan["requires_quiescent_edit"])
+        self.assertTrue(uninstall_plan["registration"]["executable"])
+        events = []
+        result = lifecycle.execute_operation(
+            "uninstall",
+            None,
+            state,
+            payload,
+            opencode,
+            quiescent_edit=True,
+            confirm_plan=uninstall_plan["plan_sha256"],
+            invocation_id="uninstall-after-" + tag,
+            transaction_id="txn-uninstall-after-" + tag,
+            failpoint=events.append,
+        )
+        self.assertEqual(result["status"], "uninstalled")
+        self.assertEqual(
+            json.loads((opencode / "opencode.json").read_text())["plugin"], []
+        )
+        self.assertFalse((opencode / "council-plugin.ts").exists())
+        self.assertFalse(payload.exists())
+        registration_replace = events.index(
+            "before:replace:registration:opencode-council:target"
+        )
+        first_payload_event = min(
+            index for index, event in enumerate(events) if ":payload:" in event
+        )
+        self.assertLess(registration_replace, first_payload_event)
+
+    def test_upgrade_refuses_while_an_opencode_registration_is_owned(self):
+        state, payload, opencode = self.registered_release("upgrade-guard")
+        release = self.generated_release()
+        config = opencode / "opencode.json"
+        before_config = config.read_bytes()
+        before_payload = tree_digest(payload)
+        # Upgrade builds no registration plan, so committing it would publish a
+        # format-1 receipt that no longer records the entry the config names.
+        with self.assertRaises(lifecycle.LifecyclePlanningError) as raised:
+            lifecycle.execute_operation(
+                "upgrade",
+                release,
+                state,
+                payload,
+                opencode,
+                transaction_id="txn-upgrade-owned-registration",
+            )
+        self.assert_refusal_names_cause_and_remedy(str(raised.exception))
+        with self.assertRaises(lifecycle.LifecyclePlanningError) as previewed:
+            lifecycle._plan_command(
+                "upgrade", release, None, (state, payload, opencode)
+            )
+        self.assert_refusal_names_cause_and_remedy(str(previewed.exception))
+        self.assertEqual(config.read_bytes(), before_config)
+        self.assertEqual(tree_digest(payload), before_payload)
+        self.assertTrue((opencode / "council-plugin.ts").exists())
+        receipt = lifecycle.inspect_ownership(state, payload, opencode)["receipt"]
+        self.assertEqual(receipt["receipt_format"], 2)
+        self.assertEqual(len(lifecycle._owned_opencode_records(receipt)), 1)
+        self.assert_uninstall_still_removes_the_entry_first(
+            state, payload, opencode, "upgrade-guard"
+        )
+
+    def test_rollback_refuses_while_an_opencode_registration_is_owned(self):
+        state, payload, opencode = self.registered_release("rollback-guard")
+        config = opencode / "opencode.json"
+        before_config = config.read_bytes()
+        before_payload = tree_digest(payload)
+        with self.assertRaises(lifecycle.LifecyclePlanningError) as raised:
+            lifecycle.execute_operation(
+                "rollback",
+                None,
+                state,
+                payload,
+                opencode,
+                receipt_id="receipt-registration-install",
+                transaction_id="txn-rollback-owned-registration",
+            )
+        self.assert_refusal_names_cause_and_remedy(str(raised.exception))
+        with self.assertRaises(lifecycle.LifecyclePlanningError) as previewed:
+            lifecycle._plan_command(
+                "rollback",
+                None,
+                "receipt-registration-install",
+                (state, payload, opencode),
+            )
+        self.assert_refusal_names_cause_and_remedy(str(previewed.exception))
+        self.assertEqual(config.read_bytes(), before_config)
+        self.assertEqual(tree_digest(payload), before_payload)
+        self.assertTrue((opencode / "council-plugin.ts").exists())
+        receipt = lifecycle.inspect_ownership(state, payload, opencode)["receipt"]
+        self.assertEqual(receipt["receipt_format"], 2)
+        self.assertEqual(len(lifecycle._owned_opencode_records(receipt)), 1)
+        self.assert_uninstall_still_removes_the_entry_first(
+            state, payload, opencode, "rollback-guard"
+        )
+
+    def test_the_refused_upgrade_proceeds_once_the_entry_is_unregistered(self):
+        """The refusal names a remedy the engine itself can carry out."""
+        state, payload, opencode = self.registered_release("upgrade-remedy")
+        release = self.generated_release()
+        remove_plan = lifecycle.plan_registration(
+            "opencode", "unregister", state, payload, opencode
+        )
+        lifecycle.execute_registration(
+            "opencode",
+            "unregister",
+            state,
+            payload,
+            opencode,
+            quiescent_edit=True,
+            confirm_plan=remove_plan["plan_sha256"],
+            invocation_id="unregister-before-upgrade-remedy",
+            transaction_id="txn-unregister-before-upgrade-remedy",
+        )
+        upgraded = lifecycle.execute_operation(
+            "upgrade",
+            release,
+            state,
+            payload,
+            opencode,
+            transaction_id="txn-upgrade-after-unregister",
+        )
+        self.assertEqual(upgraded["status"], "committed")
+        register_plan = lifecycle.plan_registration(
+            "opencode", "register", state, payload, opencode
+        )
+        lifecycle.execute_registration(
+            "opencode",
+            "register",
+            state,
+            payload,
+            opencode,
+            quiescent_edit=True,
+            confirm_plan=register_plan["plan_sha256"],
+            invocation_id="register-after-upgrade-remedy",
+            transaction_id="txn-register-after-upgrade-remedy",
+        )
+        receipt = lifecycle.inspect_ownership(state, payload, opencode)["receipt"]
+        self.assertEqual(len(lifecycle._owned_opencode_records(receipt)), 1)
+        self.assertEqual(
+            json.loads((opencode / "opencode.json").read_text())["plugin"],
+            ["./council-plugin.ts"],
+        )
+
+    def test_a_preexisting_unowned_entry_never_blocks_an_upgrade(self):
+        """Only owned rows block. The user's own entry is not ours to gate on."""
+        state, payload, opencode = self.installed_release()
+        config = opencode / "opencode.json"
+        config.write_bytes(b'{"plugin":["./council-plugin.ts"]}\n')
+        register_plan = lifecycle.plan_registration(
+            "opencode", "register", state, payload, opencode
+        )
+        lifecycle.execute_registration(
+            "opencode",
+            "register",
+            state,
+            payload,
+            opencode,
+            quiescent_edit=True,
+            confirm_plan=register_plan["plan_sha256"],
+            invocation_id="register-unowned-before-upgrade",
+            transaction_id="txn-register-unowned-before-upgrade",
+        )
+        receipt = lifecycle.inspect_ownership(state, payload, opencode)["receipt"]
+        self.assertEqual(
+            receipt["registrations"][0]["ownership_origin"],
+            "matching_preexisting_unowned",
+        )
+        self.assertEqual(lifecycle._owned_opencode_records(receipt), [])
+        before_config = config.read_bytes()
+        upgraded = lifecycle.execute_operation(
+            "upgrade",
+            self.generated_release(),
+            state,
+            payload,
+            opencode,
+            transaction_id="txn-upgrade-preexisting-unowned",
+        )
+        self.assertEqual(upgraded["status"], "committed")
+        self.assertEqual(config.read_bytes(), before_config)
+
+    def test_executor_refuses_an_artifact_plan_whose_prior_receipt_owns_an_entry(self):
+        """The recovery backstop, with the planner guard removed.
+
+        Patching the planner predicate false reproduces exactly the shape the
+        planner used to emit: a format-1 plan over a prior receipt that still
+        owns an OpenCode row, with the in-lease consistency check satisfied
+        because the predicate did not change.
+        """
+        state, payload, opencode = self.registered_release("executor-backstop")
+        release = self.generated_release()
+        config = opencode / "opencode.json"
+        before_config = config.read_bytes()
+        plans = []
+        refusals = []
+        real_cleanup = lifecycle._cleanup_preintent_bundle
+
+        def capture(bundle):
+            # Read the published plan and put it straight to the executor's own
+            # validator, while the bundle is still on disk under its lease.
+            if not plans:
+                plan_path = Path(bundle["plan"])
+                plans.append(json.loads(plan_path.read_bytes()))
+                try:
+                    RECOVERY.validate_plan(plan_path, pre_intent=True)
+                except RECOVERY.RecoveryError as error:
+                    refusals.append(str(error))
+            real_cleanup(bundle)
+
+        with mock.patch.object(
+            lifecycle, "_active_opencode_registration", lambda receipt: False
+        ), mock.patch.object(lifecycle, "_cleanup_preintent_bundle", capture):
+            with self.assertRaises(lifecycle.LifecyclePlanningError) as raised:
+                lifecycle.execute_operation(
+                    "upgrade",
+                    release,
+                    state,
+                    payload,
+                    opencode,
+                    transaction_id="txn-executor-backstop-upgrade",
+                )
+        self.assertIn(
+            "active OpenCode registration blocks an artifact/native transaction",
+            str(raised.exception),
+        )
+        self.assertEqual(plans[0]["plan_format"], 1)
+        self.assertEqual(plans[0]["kind"], "upgrade")
+        self.assertEqual(
+            refusals,
+            ["active OpenCode registration blocks an artifact/native transaction"],
+        )
+        self.assertEqual(config.read_bytes(), before_config)
+        self.assertTrue((opencode / "council-plugin.ts").exists())
+        receipt = lifecycle.inspect_ownership(state, payload, opencode)["receipt"]
+        self.assertEqual(receipt["receipt_format"], 2)
+        self.assertEqual(len(lifecycle._owned_opencode_records(receipt)), 1)
+
     def test_native_plan_and_apply_remain_unqualified_without_touching_roots(self):
         with tempfile.TemporaryDirectory(
             prefix="registration-native-refusal-", dir="/private/tmp"

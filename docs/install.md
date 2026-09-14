@@ -161,8 +161,12 @@ same flag. Once adopted, the artifacts are owned and later operations need it no
 longer.
 
 Artifact commands remain artifact-only unless an owned OpenCode registration is
-being removed during managed uninstall. Registration itself is a separate,
-digest-confirmed lifecycle command. It never installs package dependencies,
+being removed during managed uninstall. Because `upgrade` and `rollback` replace
+the registered plugin without carrying that ownership forward, they refuse while
+a registration is owned and name the remedy: run `unregister --runtime opencode`,
+re-run the artifact command, then `register --runtime opencode`. An entry that
+merely matched before registration stays unowned and never blocks either
+command. Registration itself is a separate, digest-confirmed lifecycle command. It never installs package dependencies,
 changes executable pins, controls a host, or claims the restarted integration is
 authenticated and ready.
 

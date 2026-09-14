@@ -3142,25 +3142,17 @@ def _active_native_registration(receipt: Any) -> bool:
     )
 
 
-OWNED_REGISTRATION_ORIGINS = ("created", "adopted_by_explicit_plan")
+# The planner and the executor must answer "do we own an OpenCode registration"
+# identically, so both read the one predicate that lives in the recovery module.
+OWNED_REGISTRATION_ORIGINS = recovery.OWNED_REGISTRATION_ORIGINS
+_owned_opencode_records = recovery.owned_opencode_records
 
-
-def _owned_opencode_records(receipt: Any) -> List[Dict[str, Any]]:
-    """Return the receipt rows that record an OpenCode entry this install owns.
-
-    A ``matching_preexisting_unowned`` row carries a non-null digest too, but the
-    entry is the user's; it is preserved and disclosed, never removed. Every
-    caller that asks "do we own an OpenCode registration" must apply the same
-    origin filter, so the predicate lives here once.
-    """
-    if not isinstance(receipt, dict):
-        return []
-    return [
-        item for item in receipt.get("registrations", [])
-        if item.get("runtime") == "opencode"
-        and item.get("resulting_entry_sha256") is not None
-        and item.get("ownership_origin") in OWNED_REGISTRATION_ORIGINS
-    ]
+OWNED_OPENCODE_BLOCKS_ARTIFACT = (
+    "an owned OpenCode registration blocks this artifact change, because the "
+    "transaction would replace the plugin the configuration still names: run "
+    "`unregister --runtime opencode`, re-run this command, then "
+    "`register --runtime opencode`"
+)
 
 
 def _active_opencode_registration(receipt: Any) -> bool:
@@ -3732,6 +3724,12 @@ def execute_operation(kind: str, release_root: Optional[Path], state_root: Path,
         raise LifecyclePlanningError(
             "an owned native registration must be unregistered before artifact changes"
         )
+    if kind != "uninstall" and _active_opencode_registration(ownership.get("receipt")):
+        # Uninstall is the one artifact kind that carries the registration: it
+        # plans the removal and orders it before deletion. Every other kind would
+        # commit a receipt that no longer records the ownership, stranding the
+        # entry in the user's configuration.
+        raise LifecyclePlanningError(OWNED_OPENCODE_BLOCKS_ARTIFACT)
     preflight = plan_ownership(kind, release, ownership, adopt_unowned=adopt_unowned)
     if not preflight["eligible_for_integration"]:
         raise LifecyclePlanningError("lifecycle preflight has ownership blockers")
@@ -3886,6 +3884,8 @@ def _plan_command(kind: str, release_value: Optional[Path], receipt_id: Optional
         raise LifecyclePlanningError(
             "an owned native registration must be unregistered before artifact changes"
         )
+    if kind != "uninstall" and _active_opencode_registration(ownership.get("receipt")):
+        raise LifecyclePlanningError(OWNED_OPENCODE_BLOCKS_ARTIFACT)
     preview = plan_ownership(kind, release, ownership, adopt_unowned=adopt_unowned)
     if kind == "uninstall":
         if _active_opencode_registration(ownership.get("receipt")):
