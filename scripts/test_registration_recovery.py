@@ -1173,6 +1173,213 @@ class RegistrationRecoveryTests(unittest.TestCase):
         self.assertIsNotNone(process.poll())
         self.assertEqual(RECOVERY._process_group_members(pgid), [])
 
+    def test_uninstall_ignores_a_config_file_it_is_not_removing_from(self):
+        state, payload, opencode = self.installed_release()
+        register_plan = lifecycle.plan_registration(
+            "opencode", "register", state, payload, opencode
+        )
+        lifecycle.execute_registration(
+            "opencode",
+            "register",
+            state,
+            payload,
+            opencode,
+            quiescent_edit=True,
+            confirm_plan=register_plan["plan_sha256"],
+            invocation_id="register-before-second-config",
+            transaction_id="txn-registration-second-config",
+        )
+        # An unrelated second config the transaction never touches must not
+        # abort removal of the entry the receipt owns in opencode.json.
+        unrelated = opencode / "opencode.jsonc"
+        unrelated.write_bytes(b'{"theme":"unrelated"}\n')
+        uninstall_plan = lifecycle._plan_command(
+            "uninstall", None, None, (state, payload, opencode)
+        )
+        self.assertTrue(uninstall_plan["requires_quiescent_edit"])
+        self.assertTrue(uninstall_plan["registration"]["executable"])
+        self.assertEqual(
+            uninstall_plan["registration"]["source_path"],
+            str(opencode / "opencode.json"),
+        )
+        result = lifecycle.execute_operation(
+            "uninstall",
+            None,
+            state,
+            payload,
+            opencode,
+            quiescent_edit=True,
+            confirm_plan=uninstall_plan["plan_sha256"],
+            invocation_id="uninstall-second-config",
+            transaction_id="txn-uninstall-second-config",
+        )
+        self.assertEqual(result["status"], "uninstalled")
+        self.assertFalse(payload.exists())
+        self.assertEqual(
+            json.loads((opencode / "opencode.json").read_text())["plugin"], []
+        )
+        self.assertEqual(unrelated.read_bytes(), b'{"theme":"unrelated"}\n')
+
+    def test_unregister_ignores_a_config_file_it_is_not_removing_from(self):
+        state, payload, opencode = self.installed_release()
+        register_plan = lifecycle.plan_registration(
+            "opencode", "register", state, payload, opencode
+        )
+        lifecycle.execute_registration(
+            "opencode",
+            "register",
+            state,
+            payload,
+            opencode,
+            quiescent_edit=True,
+            confirm_plan=register_plan["plan_sha256"],
+            invocation_id="register-before-unregister-drift",
+            transaction_id="txn-registration-unregister-drift",
+        )
+        (opencode / "opencode.jsonc").write_bytes(b"{}\n")
+        remove_plan = lifecycle.plan_registration(
+            "opencode", "unregister", state, payload, opencode
+        )
+        self.assertTrue(remove_plan["executable"])
+        lifecycle.execute_registration(
+            "opencode",
+            "unregister",
+            state,
+            payload,
+            opencode,
+            quiescent_edit=True,
+            confirm_plan=remove_plan["plan_sha256"],
+            invocation_id="unregister-second-config",
+            transaction_id="txn-unregister-second-config",
+        )
+        self.assertEqual(
+            json.loads((opencode / "opencode.json").read_text())["plugin"], []
+        )
+
+    def test_drifted_owned_entry_refusals_name_the_real_cause(self):
+        state, payload, opencode = self.installed_release()
+        register_plan = lifecycle.plan_registration(
+            "opencode", "register", state, payload, opencode
+        )
+        lifecycle.execute_registration(
+            "opencode",
+            "register",
+            state,
+            payload,
+            opencode,
+            quiescent_edit=True,
+            confirm_plan=register_plan["plan_sha256"],
+            invocation_id="register-before-hand-delete",
+            transaction_id="txn-registration-hand-delete",
+        )
+        config_path = opencode / "opencode.json"
+        value = json.loads(config_path.read_text())
+        value["plugin"] = []
+        config_path.write_text(json.dumps(value) + "\n")
+        preview = lifecycle._plan_command(
+            "uninstall", None, None, (state, payload, opencode)
+        )
+        blocker = [
+            item for item in preview["blockers"]
+            if item["code"] == "certified_installation_required"
+        ]
+        self.assertEqual(len(blocker), 1)
+        self.assertIn("ambiguous or changed", blocker[0]["reason"])
+        self.assertIn("run `status`", blocker[0]["reason"])
+        for action in ("register", "unregister"):
+            with self.subTest(action=action), self.assertRaises(
+                lifecycle.LifecyclePlanningError
+            ) as caught:
+                lifecycle.plan_registration(
+                    "opencode", action, state, payload, opencode
+                )
+            self.assertIn("ambiguous or changed", str(caught.exception))
+            self.assertIn("run `status`", str(caught.exception))
+
+    def test_registration_ownership_appearing_under_the_lease_refuses(self):
+        state, payload, opencode = self.installed_release()
+        uninstall_plan = lifecycle._plan_command(
+            "uninstall", None, None, (state, payload, opencode)
+        )
+        self.assertNotIn("requires_quiescent_edit", uninstall_plan)
+        real_inspect = lifecycle.inspect_ownership
+        real_reconcile = lifecycle._reconcile_preparations
+        armed = []
+
+        def arm(*args, **kwargs):
+            result = real_reconcile(*args, **kwargs)
+            armed.append(True)
+            return result
+
+        def concurrent_register(*args, **kwargs):
+            snapshot = real_inspect(*args, **kwargs)
+            if armed and isinstance(snapshot.get("receipt"), dict):
+                # Stand in for a `register` that lands between preflight and the
+                # writer lease: the config now names backing code uninstall is
+                # about to delete.
+                snapshot["receipt"] = dict(snapshot["receipt"])
+                snapshot["receipt"]["registrations"] = [
+                    {
+                        "runtime": "opencode",
+                        "operation_id": "opencode-council",
+                        "source_path": str(opencode / "opencode.json"),
+                        "resulting_entry_sha256": "a" * 64,
+                        "ownership_origin": "created",
+                    }
+                ]
+            return snapshot
+
+        with mock.patch.object(
+            lifecycle, "inspect_ownership", concurrent_register
+        ), mock.patch.object(lifecycle, "_reconcile_preparations", arm):
+            with self.assertRaisesRegex(
+                lifecycle.LifecyclePlanningError,
+                "registration ownership changed after quiescent admission",
+            ):
+                lifecycle.execute_operation(
+                    "uninstall",
+                    None,
+                    state,
+                    payload,
+                    opencode,
+                    transaction_id="txn-uninstall-ownership-race",
+                )
+        self.assertTrue(payload.exists())
+
+    def test_owned_registration_predicate_excludes_preexisting_unowned(self):
+        state, payload, opencode = self.installed_release()
+        (opencode / "opencode.json").write_bytes(
+            b'{"plugin":["./council-plugin.ts"]}\n'
+        )
+        register_plan = lifecycle.plan_registration(
+            "opencode", "register", state, payload, opencode
+        )
+        lifecycle.execute_registration(
+            "opencode",
+            "register",
+            state,
+            payload,
+            opencode,
+            quiescent_edit=True,
+            confirm_plan=register_plan["plan_sha256"],
+            invocation_id="register-preexisting-unowned",
+            transaction_id="txn-registration-preexisting-unowned",
+        )
+        receipt = lifecycle.inspect_ownership(state, payload, opencode)["receipt"]
+        self.assertEqual(
+            receipt["registrations"][0]["ownership_origin"],
+            "matching_preexisting_unowned",
+        )
+        self.assertIsNotNone(receipt["registrations"][0]["resulting_entry_sha256"])
+        # The entry is the user's. Every caller of this predicate - including
+        # the native guard - must agree it is not ours to remove or to block on.
+        self.assertFalse(lifecycle._active_opencode_registration(receipt))
+        self.assertEqual(lifecycle._owned_opencode_records(receipt), [])
+        uninstall_plan = lifecycle._plan_command(
+            "uninstall", None, None, (state, payload, opencode)
+        )
+        self.assertNotIn("requires_quiescent_edit", uninstall_plan)
+
     def test_interrupted_registration_abort_restores_prior_with_fresh_decision(self):
         state, payload, opencode = self.installed_release()
         planned = lifecycle.plan_registration(

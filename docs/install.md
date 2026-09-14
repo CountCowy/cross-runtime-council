@@ -398,6 +398,8 @@ Council entries, ownership loss, or a changed file produce a refusal and an
 exact manual edit is then required; the command never experiments on the file and then
 undoes it. To remove an owned unchanged entry, use `plan unregister` followed by
 the corresponding `unregister` command with the same three confirmation flags.
+Removal targets the exact file the receipt names, so a second configuration file
+added later does not block it, and an entry already absent removes as a no-op.
 Matching pre-existing entries are recorded as unowned and are never removed.
 
 If OpenCode does not resolve `@opencode-ai/plugin` itself, declare the matching

@@ -107,7 +107,11 @@ Registration is a separate explicit operation over a receipt-certified
 artifact install. Its read-only plan selects exactly one strict-JSON
 `opencode.json` or `opencode.jsonc`, rejects aliases, duplicate identities,
 options-bearing Council entries, JSONC syntax, and ambiguous sources, and emits a
-digest without writing control or configuration state. Apply requires
+digest without writing control or configuration state. That one-source rule
+decides where a *new* entry goes. Removing an entry the receipt already owns
+targets the exact file that receipt names instead, so a second, unrelated
+configuration file the transaction never touches cannot block `unregister` or
+`uninstall`. Removing an entry that is already absent is a no-op, not a refusal. Apply requires
 `--quiescent-edit`, that exact digest, and a fresh invocation ID. It changes only
 the selected `plugin` member through a reversible byte patch.
 
@@ -140,7 +144,10 @@ plan; the engine does not select, delete, or relocate the content.
 Inspection reports these conditions; it does not refuse them. `status` and
 `plan` always describe the state they find, so an installation that drifted from
 its receipt reads as `committed` but uncertified with the reason attached, and
-the plan lists its blockers. Mutation stays strict: an uncertified installation
+the plan lists its blockers. Every refusal that turns on certification repeats
+that reason and points at `status`, so hand-editing the Council entry out of an
+OpenCode configuration names its own cause rather than a generic ownership
+blocker; restoring the recorded entry re-certifies the install. Mutation stays strict: an uncertified installation
 is ineligible for install, upgrade, rollback, and uninstall alike.
 
 A receipt also binds the `(device, inode)` identity of the three fixed roots and

@@ -637,6 +637,21 @@ def _contains_git_stop(state_value: Dict[str, Any]) -> bool:
     return any(PurePosixPath(item["path"]).parts[0] == ".git" for item in state_value["artifacts"])
 
 
+def _uncertified_detail(management: Dict[str, Any]) -> str:
+    """Explain why an installation is not certified, and where to look next.
+
+    Hand-editing the Council entry out of an OpenCode config is the ordinary way
+    to reach this, and the bare refusal named neither registration nor a remedy.
+    """
+    reason = management.get("reason")
+    if not reason:
+        reason = "lifecycle status is %s" % management["status"]
+    return (
+        "%s; run `status` for the full diagnosis and restore the recorded state "
+        "before retrying" % reason
+    )
+
+
 def _record_blocker(blockers: List[Dict[str, str]], code: str, unit_id: str,
                     path: str, reason: str) -> None:
     blockers.append({"code": code, "unit_id": unit_id, "path": path, "reason": reason})
@@ -673,7 +688,8 @@ def plan_ownership(kind: str, release_snapshot: Optional[Dict[str, Any]],
                             "uninstalled lifecycle metadata requires a certifying receipt")
     elif management["status"] != "committed" or not management["certified"]:
         _record_blocker(blockers, "certified_installation_required", "payload", ".",
-                        "%s requires a receipt-certified committed installation" % kind)
+                        "%s requires a receipt-certified committed installation: %s"
+                        % (kind, _uncertified_detail(management)))
     roots = ownership["roots"]
     current_units = {item["unit_id"]: item for item in ownership["units"]}
     if _contains_git_stop(current_units["payload"]["state"]):
@@ -2726,15 +2742,32 @@ def _c2_dependency_contract() -> Dict[str, Any]:
     }
 
 
-def _selected_opencode_config(opencode_root: Path) -> Path:
+def _selected_opencode_config(opencode_root: Path,
+                              owned: Optional[Path] = None) -> Path:
     candidates = [opencode_root / "opencode.json", opencode_root / "opencode.jsonc"]
-    present = [path for path in candidates if path.exists() or path.is_symlink()]
-    if len(present) != 1:
+    if owned is not None:
+        # Removing a receipt-owned entry targets the exact file that receipt
+        # names. The "exactly one config" rule decides where a *new* entry goes;
+        # applying it to a removal would let an unrelated second config file the
+        # transaction is not touching abort an uninstall outright.
+        if owned not in candidates:
+            raise LifecyclePlanningError(
+                "receipt-owned OpenCode configuration is outside the OpenCode root"
+            )
+        path = owned
+    else:
+        present = [path for path in candidates if path.exists() or path.is_symlink()]
+        if len(present) != 1:
+            raise LifecyclePlanningError(
+                "automatic OpenCode registration requires exactly one opencode.json or opencode.jsonc"
+            )
+        path = present[0]
+    try:
+        details = path.lstat()
+    except OSError as error:
         raise LifecyclePlanningError(
-            "automatic OpenCode registration requires exactly one opencode.json or opencode.jsonc"
+            "OpenCode configuration is unreadable: %s" % error
         )
-    path = present[0]
-    details = path.lstat()
     if stat.S_ISLNK(details.st_mode) or not stat.S_ISREG(details.st_mode) or details.st_nlink != 1:
         raise LifecyclePlanningError(
             "OpenCode configuration must be a single-linked regular file"
@@ -2782,14 +2815,25 @@ def _plan_opencode_registration(operation: str, state_root: Path,
     management = ownership["management"]
     if management["status"] != "committed" or not management["certified"]:
         raise LifecyclePlanningError(
-            "standalone registration requires a receipt-certified artifact install"
+            "standalone registration requires a receipt-certified artifact install: %s"
+            % _uncertified_detail(management)
         )
     summary = management["summary"]
     source = retained_release(Path(ownership["roots"]["state"]), summary["receipt_id"])
     artifact_preview = plan_ownership("registration", source, ownership)
     if not artifact_preview["eligible_for_integration"]:
         raise LifecyclePlanningError("artifact ownership blocks registration planning")
-    source_path = _selected_opencode_config(Path(ownership["roots"]["opencode"]))
+    owned_records = (
+        _owned_opencode_records(ownership.get("receipt"))
+        if operation == registration.OPENCODE_REMOVE
+        else []
+    )
+    if len(owned_records) > 1:
+        raise LifecyclePlanningError("receipt contains duplicate OpenCode registrations")
+    source_path = _selected_opencode_config(
+        Path(ownership["roots"]["opencode"]),
+        owned=Path(owned_records[0]["source_path"]) if owned_records else None,
+    )
     content = recovery.read_regular(source_path, "OpenCode configuration")
     document = registration.ConfigDocument(
         str(source_path), registration.OPENCODE_GLOBAL, content
@@ -3098,12 +3142,29 @@ def _active_native_registration(receipt: Any) -> bool:
     )
 
 
-def _active_opencode_registration(receipt: Any) -> bool:
-    return isinstance(receipt, dict) and any(
-        item.get("runtime") == "opencode"
+OWNED_REGISTRATION_ORIGINS = ("created", "adopted_by_explicit_plan")
+
+
+def _owned_opencode_records(receipt: Any) -> List[Dict[str, Any]]:
+    """Return the receipt rows that record an OpenCode entry this install owns.
+
+    A ``matching_preexisting_unowned`` row carries a non-null digest too, but the
+    entry is the user's; it is preserved and disclosed, never removed. Every
+    caller that asks "do we own an OpenCode registration" must apply the same
+    origin filter, so the predicate lives here once.
+    """
+    if not isinstance(receipt, dict):
+        return []
+    return [
+        item for item in receipt.get("registrations", [])
+        if item.get("runtime") == "opencode"
         and item.get("resulting_entry_sha256") is not None
-        for item in receipt.get("registrations", [])
-    )
+        and item.get("ownership_origin") in OWNED_REGISTRATION_ORIGINS
+    ]
+
+
+def _active_opencode_registration(receipt: Any) -> bool:
+    return bool(_owned_opencode_records(receipt))
 
 
 def _native_unqualified(runtime: str, action: str) -> Dict[str, Any]:
@@ -3147,7 +3208,8 @@ def _plan_native_registration(
     management = ownership["management"]
     if management["status"] != "committed" or not management["certified"]:
         raise LifecyclePlanningError(
-            "native registration requires a receipt-certified artifact install"
+            "native registration requires a receipt-certified artifact install: %s"
+            % _uncertified_detail(management)
         )
     summary = management["summary"]
     policy = _native_policy()
@@ -3682,18 +3744,7 @@ def execute_operation(kind: str, release_root: Optional[Path], state_root: Path,
     payload_input = Path(preflight["roots"]["payload"])
     opencode_input = Path(preflight["roots"]["opencode"])
     registration_plan = None
-    receipt = ownership.get("receipt")
-    owned_registration = (
-        isinstance(receipt, dict)
-        and any(
-            item.get("runtime") == "opencode"
-            and item.get("resulting_entry_sha256") is not None
-            and item.get("ownership_origin") in (
-                "created", "adopted_by_explicit_plan"
-            )
-            for item in receipt.get("registrations", [])
-        )
-    )
+    owned_registration = _active_opencode_registration(ownership.get("receipt"))
     if kind == "uninstall" and owned_registration:
         registration_plan = _plan_opencode_registration(
             registration.OPENCODE_REMOVE,
@@ -3724,6 +3775,16 @@ def execute_operation(kind: str, release_root: Optional[Path], state_root: Path,
             if not preview["eligible_for_integration"]:
                 raise LifecyclePlanningError(
                     "lifecycle inputs changed or are blocked after exclusion"
+                )
+            if _active_opencode_registration(
+                current.get("receipt")
+            ) is not owned_registration:
+                # A concurrent register/unregister landed between preflight and
+                # this lease. Admitting it either way would delete backing code
+                # the config still names, or demand a plan digest for an entry
+                # that no longer exists.
+                raise LifecyclePlanningError(
+                    "registration ownership changed after quiescent admission"
                 )
             snapshot = inspect.snapshot_registrations(state_input)
             report = inspect.registration_report(
@@ -3827,19 +3888,7 @@ def _plan_command(kind: str, release_value: Optional[Path], receipt_id: Optional
         )
     preview = plan_ownership(kind, release, ownership, adopt_unowned=adopt_unowned)
     if kind == "uninstall":
-        receipt = ownership.get("receipt")
-        owned = (
-            isinstance(receipt, dict)
-            and any(
-                item.get("runtime") == "opencode"
-                and item.get("resulting_entry_sha256") is not None
-                and item.get("ownership_origin") in (
-                    "created", "adopted_by_explicit_plan"
-                )
-                for item in receipt.get("registrations", [])
-            )
-        )
-        if owned:
+        if _active_opencode_registration(ownership.get("receipt")):
             registration_plan = _plan_opencode_registration(
                 registration.OPENCODE_REMOVE,
                 state_root,
