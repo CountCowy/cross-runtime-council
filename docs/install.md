@@ -160,10 +160,15 @@ stays blocked and must be preserved or reverted by hand. `rollback` accepts the
 same flag. Once adopted, the artifacts are owned and later operations need it no
 longer.
 
-The lifecycle transaction replaces artifact files only. It does not edit MCP
-registrations, `opencode.json`, package dependencies, executable pins, or running
-host processes. Apply any corresponding runtime configuration change through
-that runtime's separately reviewed procedure, then restart it as required.
+Artifact commands remain artifact-only unless an owned OpenCode registration is
+being removed during managed uninstall. Because `upgrade` and `rollback` replace
+the registered plugin without carrying that ownership forward, they refuse while
+a registration is owned and name the remedy: run `unregister --runtime opencode`,
+re-run the artifact command, then `register --runtime opencode`. An entry that
+merely matched before registration stays unowned and never blocks either
+command. Registration itself is a separate, digest-confirmed lifecycle command. It never installs package dependencies,
+changes executable pins, controls a host, or claims the restarted integration is
+authenticated and ready.
 
 ## Roll back
 
@@ -194,8 +199,17 @@ sh install/uninstall.sh
 
 `--purge-state` is intentionally unsupported and is rejected before mutation.
 Destructive removal of dialogue state, audit logs, tombstones, receipts, or
-retained recovery data requires a separate bounded retention decision. Uninstall
-also does not remove runtime registration or configuration entries.
+retained recovery data requires a separate bounded retention decision. When the
+current receipt owns an unchanged OpenCode Council entry, `plan uninstall`
+returns its registration-plan digest and uninstall additionally requires:
+
+```sh
+sh install/uninstall.sh --quiescent-edit \
+  --confirm-plan <sha256> --invocation-id <fresh-id>
+```
+
+The format-2 transaction removes that entry before deleting its backing
+artifacts. A matching pre-existing unowned entry is preserved.
 
 ## Recovery after interruption
 
@@ -209,7 +223,10 @@ replaceable payload and works with the payload absent.
 `python3 -I -B scripts/council_lifecycle.py status` has a dedicated read-only
 result for a validated `recovery_required` admission. It keeps the normal
 top-level `status_format`, `roots`, `management`, `payload_cache_count`, and
-`units` fields and adds:
+`units` fields. Registration formats also add a `registrations` projection whose
+`stored_config_result` remains `pending_recovery`, whose `recovery_state` comes
+from the validated progress journal, and whose effective scope and authenticated
+readiness remain unobserved. The result adds:
 
 ```json
 {
@@ -236,6 +253,9 @@ does not require the same executable path or patch release. The executing
 interpreter must satisfy the reported contract and the recoverer's required
 runtime feature checks. Missing, malformed, cross-root, or digest-mismatched
 pending records fail closed instead of producing a recovery command.
+For a native format-3 transaction, status verifies every copied closure file by
+its fixed name, owner, mode, link count, size, and digest without importing or
+executing those bytes.
 
 Recovery holds the same fixed `broker.lock`, validates the pending admission,
 plan, journal, receipts, root identities, and all five artifact units, then
@@ -243,6 +263,12 @@ continues the recorded target outcome. Re-running recovery is safe. `--abort`
 may select the validated prior outcome only when the prepared plan advertises
 that goal; it cannot reverse a terminal transaction or guess a missing prior
 state.
+
+For a pending registration transaction the printed vector includes
+`--quiescent-edit`, `--confirm-plan <sha256>`, and a placeholder for a fresh
+invocation ID. Replace only that placeholder after again closing the named host
+and confirming no competing configuration writer. The historical confirmation
+inside the transaction is not current authority.
 
 Do not select a recovery tool by timestamp or from a backup directory. Do not
 remove `broker.lock`, `.council-lifecycle`, a staged unit, or a pending admission.
@@ -275,9 +301,11 @@ crash-boundary model.
 
 ## Per-runtime setup
 
-Lifecycle installation places code artifacts at their fixed destinations. The
-following registration and host operations remain separate from the artifact
-transaction.
+Lifecycle installation places code artifacts at their fixed destinations.
+OpenCode's strict-JSON plugin entry has a managed registration command below.
+Native Claude and Codex mutation remains unavailable until an exact vendor tuple
+passes genuine disposable-runner qualification; their manual setup remains the
+documented fallback.
 
 ### Claude Code
 
@@ -287,6 +315,14 @@ Register the Council MCP adapter at user scope:
 claude mcp add --scope user council -- /usr/bin/python3 \
   ~/.claude/skills/council/scripts/council_mcp.py
 ```
+
+`plan register --runtime claude` reports `native_behavior_unqualified` unless an
+owner-recorded admission binds genuine evidence for the exact binary, closed
+config shape, source package, copied recovery closure, and process/network/write
+observer. This release ships no such admission, so managed apply refuses before
+the writer lease, lifecycle state, configuration, or process effects. CLI help
+does not establish idempotence, preservation, or scope behavior; the manual
+command above remains the fallback.
 
 New sessions then expose the `council_*` tools. The exact session that will bind
 must accept cross-session inbound messages. A bound seat's capability exists
@@ -303,6 +339,20 @@ Register the MCP adapter in `~/.codex/config.toml`, using an absolute path:
 command = "/usr/bin/python3"
 args = ["/Users/YOUR-USERNAME/.claude/skills/council/scripts/council_mcp.py"]
 ```
+
+`plan register --runtime codex` has the same owner-admission gate and normally
+reports `native_behavior_unqualified`. Conditional `tomllib` parsing can produce a
+read-only/manual-edit comparison under a pinned Python 3.11+ interpreter, but it
+does not qualify Codex's whole-map native writer. Managed native apply remains
+disabled until that separately reviewed admission exists.
+
+When future evidence satisfies either native gate, execution uses native format
+3 under the same C1 writer lease. It records a blocked supervisor generation
+before releasing one fixed command, treats missing observer coverage as
+`unknown`, and never infers success from exit zero. An `observed_prior` result may
+use one fresh, linked recovery sequence; target recovery does not relaunch.
+Removal is a new separately admitted inverse transaction. Stored configuration
+still does not establish effective scope or authenticated readiness.
 
 Restart Codex. The planning task calls its `council_*` tools directly. An idle
 planning task needs the separately configured, context-isolated wake router to
@@ -331,10 +381,37 @@ The managed lifecycle installs these four files from the generated release:
 ~/.config/opencode/tools/council.ts
 ```
 
-Separately add `./council-plugin.ts` to the `plugin` array in
-`~/.config/opencode/opencode.json`. If OpenCode does not resolve
-`@opencode-ai/plugin` itself, declare the matching SDK version in
-`~/.config/opencode/package.json` and install that dependency.
+With OpenCode closed and no competing configuration writer, first obtain the
+read-only exact plan:
+
+```sh
+python3 -I -B scripts/council_lifecycle.py plan register --runtime opencode
+```
+
+Then apply that exact digest with a fresh invocation identifier:
+
+```sh
+python3 -I -B scripts/council_lifecycle.py register --runtime opencode \
+  --quiescent-edit --confirm-plan <sha256> --invocation-id <fresh-id>
+```
+
+This supports exactly one existing strict-JSON `opencode.json` or
+`opencode.jsonc`. It preserves unrelated bytes and plugin entries. Multiple
+sources, JSONC syntax, aliases, duplicate Council identities, options-bearing
+Council entries, ownership loss, or a changed file produce a refusal and an
+exact manual edit is then required; the command never experiments on the file and then
+undoes it. To remove an owned unchanged entry, use `plan unregister` followed by
+the corresponding `unregister` command with the same three confirmation flags.
+Removal targets the exact file the receipt names while the receipt still owns
+that entry, so a second configuration file added later does not block it. Once
+the entry is gone the receipt names no removal target, the one-source rule
+applies again, and a repeated `unregister` refuses instead of reporting a
+no-op.
+Matching pre-existing entries are recorded as unowned and are never removed.
+
+If OpenCode does not resolve `@opencode-ai/plugin` itself, declare the matching
+SDK version in `~/.config/opencode/package.json` and install that dependency.
+Dependency installation remains manual and outside the registration command.
 
 Record the exact OpenCode CLI executable while no broker is active, then restart
 OpenCode:

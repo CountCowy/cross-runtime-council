@@ -1,0 +1,181 @@
+{
+  "c1_integration": {
+    "inspect_artifacts": {
+      "line": 459,
+      "signature": "inspect_artifacts(payload_root=<default>, opencode_root=<default>, *, release_root=<default>, state_root=<default>)"
+    },
+    "reader_support": {
+      "frozen_c1_tuple_sha256": "ea9e9e9c724dc3340e0b12cb77542f38dd21ae2ad6d7d4be5ee0735af5c4bbf7",
+      "policy_sha256": "f61d9fa1d2756d9c9791d066528fc275a3b35b546bc02bd0f82d595bfce2e2b3",
+      "predecessor_corpus_sha256": "d8c438b4a6c841b2303092aee84e2c55a8328f486a656455d3c726be1880ddb1"
+    },
+    "state_root_addition": "Optional keyword-only state_root selects the receipt-bound managed manifest; omitted calls retain offline/legacy release-manifest behavior.",
+    "writer_lease": "The C1 WriterLease is borrowed through C1LeaseAdapter; no unlock/reacquire occurs inside the transaction."
+  },
+  "d_boundary": {
+    "no_shared_write_assumption": "D component paths are disjoint. Any later edit to C2 lifecycle/recovery/C1 execution files requires a new admitted integration step rather than concurrent ownership.",
+    "required_d_action": "D merges the corrected C2 8d1ee58 source into its preserved edfd141 checkpoint, adopts reserved/incomplete/complete preparation ownership and stable directory-removal identity, then revalidates its fixed registration operations under the same held C1 lease.",
+    "supported_by_c2": "artifact operations only across the fixed five units",
+    "unsupported_by_c2": [
+      "registration writes",
+      "native host operations",
+      "configuration writes",
+      "arbitrary operation names",
+      "plan-selected callbacks",
+      "state purge"
+    ]
+  },
+  "format": 1,
+  "normal_planner": {
+    "cli": {
+      "path": "C2/integration/cli-contract-35f0c83.json",
+      "sha256": "ca40724750969abf6e425099db5b90e1f057c36a1f98b5840dc7df822aa16462",
+      "unchanged_since": "35f0c8304bcac8cbf67d8a996e43878b219396e7"
+    },
+    "fixed_roots": [
+      "~/.claude/peer-consults",
+      "~/.claude/skills/council",
+      "~/.config/opencode"
+    ],
+    "interfaces": {
+      "C1LeaseAdapter": {
+        "line": 2033,
+        "signature": "class C1LeaseAdapter"
+      },
+      "execute_operation": {
+        "line": 2166,
+        "signature": "execute_operation(kind, release_root, state_root, payload_root, opencode_root, *, maintenance_window_confirmed=<default>, receipt_id=<default>, transaction_id=<default>, now=<default>, probe=<default>, recovery_command_sink=<default>, _preparation_failpoint=<default>)"
+      },
+      "inspect_ownership": {
+        "line": 297,
+        "signature": "inspect_ownership(state_root, payload_root, opencode_root)"
+      },
+      "plan_ownership": {
+        "line": 615,
+        "signature": "plan_ownership(kind, release_snapshot, ownership_snapshot)"
+      },
+      "prepare_transaction": {
+        "line": 1688,
+        "signature": "prepare_transaction(preview, release_snapshot, lease, *, transaction_id=<default>, failpoint=<default>)"
+      },
+      "publish_and_execute": {
+        "line": 2079,
+        "signature": "publish_and_execute(bundle, lease, c1_inspect, registration_snapshot, *, now=<default>, probe=<default>)"
+      },
+      "retained_release": {
+        "line": 440,
+        "signature": "retained_release(state_root, receipt_id)"
+      },
+      "run_handshake": {
+        "line": 2060,
+        "signature": "run_handshake(bundle)"
+      },
+      "status": {
+        "line": 2136,
+        "signature": "status(state_root, payload_root, opencode_root)"
+      },
+      "validate_release": {
+        "line": 230,
+        "signature": "validate_release(release_root)"
+      }
+    },
+    "pending_status": "status returns a validated recovery_required transaction, plan digest, current compatible recovery command and recorded interpreter provenance without terminal ownership certification",
+    "preparation_reconciliation": {
+      "claim_phases": [
+        "reserved",
+        "incomplete",
+        "complete"
+      ],
+      "record_format": 1,
+      "root_name": ".council-lifecycle-preparations",
+      "rule": "Under the C1 lease, reserved paths are bound to stable created identities before writes, promoted only after exact completion, and reconciled according to phase without deleting substitutions or unknown content."
+    }
+  },
+  "publication_limit": "This packet binds pushed C2 round-3 correction source; it does not claim round-4 review, source-terminal publication, landing, live installation or native qualification.",
+  "recovery_executor": {
+    "formats": {
+      "admission": 1,
+      "journal": 1,
+      "namespace": 1,
+      "plan": 1,
+      "receipt": 1,
+      "recovery": 1
+    },
+    "interfaces": {
+      "_execute_with_lease": {
+        "line": 2482,
+        "signature": "_execute_with_lease(state_root, lease_adapter, *, abort=<default>, failpoint=<default>)"
+      },
+      "check_plan": {
+        "line": 2467,
+        "signature": "check_plan(plan_path)"
+      },
+      "describe": {
+        "line": 2540,
+        "signature": "describe()"
+      },
+      "inspect_terminal_ownership": {
+        "line": 905,
+        "signature": "inspect_terminal_ownership(state_root, payload_root, opencode_root)"
+      },
+      "recover": {
+        "line": 2534,
+        "signature": "recover(state_root, *, abort=<default>, failpoint=<default>)"
+      },
+      "validate_plan": {
+        "line": 1337,
+        "signature": "validate_plan(plan_path, *, pre_intent, require_progress=<default>, require_executing_tool=<default>)"
+      }
+    },
+    "mutation_binding": "Artifact copy, metadata replacement, unit rename and bounded stage removal use opened no-follow descriptors; directories use stable device/inode/type tokens while files retain full tokens.",
+    "python_contract": {
+      "implementation": "CPython",
+      "minimum": [
+        3,
+        9
+      ],
+      "recorded_path_and_version": "diagnostic provenance; a compatible current interpreter may execute the exact copied recoverer",
+      "required_flags": [
+        "-I",
+        "-B"
+      ]
+    },
+    "required_operations": [
+      "classify-filesystem-v1",
+      "preserve-initial-v1",
+      "materialize-selected-v1",
+      "activate-five-units-v1",
+      "verify-receipt-v1",
+      "publish-admission-v1"
+    ],
+    "unit_ids": [
+      "payload",
+      "opencode-plugin",
+      "opencode-protocol",
+      "opencode-registry",
+      "opencode-tool"
+    ]
+  },
+  "release": {
+    "artifact_count": 89,
+    "manifest_sha256": "a55ee812985e120a1d1e96b7f0e1e58e19b53b0660297ef2dfd2a08c64509474",
+    "package_id": "b71ebbdbd71ea50e2b156fb581b7956b8bf516df4eb873a3549dbe6930a0a9df",
+    "runtime_cohort": "8181ae63906b42e4af670df1613dede4d194c48991594e3b8ea9b961877831b5",
+    "runtime_source_count": 10
+  },
+  "remaining_blocker": null,
+  "source_commit": "8d1ee588a34babb15c5774f6fc08f10a824dab05",
+  "source_hashes": {
+    "scripts/council_admission.py": "04b46d2710c84eb97f10e6a61ecaa737e6a3c4b97dac3e5bfbefc9a10347e911",
+    "scripts/council_inspect.py": "e7564d91a079d4deaf6c8d4f8abdf79b9a0cfaceae8393257f8d337fefd47bc0",
+    "scripts/council_lifecycle.py": "2b7f062fb33dd4417122194482d269f86fbdea4664e45f6f383b967cf5a47ff8",
+    "scripts/council_recover.py": "379e6bad6768bc6da88f6d6040a1b565fcb2504b8c7798ca7992ef9cb6126ae4"
+  },
+  "status": "corrected C2 artifact-only dependency interface; round-3 fixes pushed, required round-4 delta review pending",
+  "verification": {
+    "fix_map_path": "C2/fix-round-3.json",
+    "fix_map_sha256": "d24057445862de92119f030e1c280196465a996bca7ae1ea17108293d2d94cd7",
+    "results_path": "C2/fix-round-3/results.json",
+    "results_sha256": "e8897603557acf2aa0a6b9241062fa29867d8aa175ab31fda8f386c8d3b3f40c"
+  }
+}

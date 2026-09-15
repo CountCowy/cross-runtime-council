@@ -1,0 +1,8 @@
+# A sibling and its formatting are outside Council's selected entry.
+[mcp_servers.other]
+command = "/bin/other"
+args = []
+
+[mcp_servers.council]
+command = "/usr/bin/python3"
+args = ["/opt/council/scripts/council_mcp.py"]

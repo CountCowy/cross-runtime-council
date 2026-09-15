@@ -44,10 +44,14 @@ python3 -I -B scripts/council_lifecycle.py plan install --release <generated-rel
 python3 -I -B scripts/council_lifecycle.py plan upgrade --release <generated-release>
 python3 -I -B scripts/council_lifecycle.py plan rollback --receipt <receipt-id>
 python3 -I -B scripts/council_lifecycle.py plan uninstall
+python3 -I -B scripts/council_lifecycle.py plan register --runtime claude|codex|opencode
+python3 -I -B scripts/council_lifecycle.py plan unregister --runtime claude|codex|opencode
 python3 -I -B scripts/council_lifecycle.py install --release <generated-release> --maintenance-window-confirmed
 python3 -I -B scripts/council_lifecycle.py upgrade --release <generated-release>
 python3 -I -B scripts/council_lifecycle.py rollback --receipt <receipt-id>
 python3 -I -B scripts/council_lifecycle.py uninstall
+python3 -I -B scripts/council_lifecycle.py register --runtime opencode --quiescent-edit --confirm-plan <sha256> --invocation-id <id>
+python3 -I -B scripts/council_lifecycle.py unregister --runtime opencode --quiescent-edit --confirm-plan <sha256> --invocation-id <id>
 ```
 
 Install and upgrade infer a release only when the Python entrypoint is inside a
@@ -74,6 +78,12 @@ digest-bound copied recoverer without attempting terminal ownership
 certification. The same top-level fields are present, with `management.status`
 set to `recovery_required`, and `pending_recovery` adds the validated
 `transaction_id`, `plan_sha256`, `recovery_command`, and `python_contract`.
+Format-2 and format-3 results also include a `registrations` projection from the
+validated plan and progress journal. Its `stored_config_result` is
+`pending_recovery`; `recovery_state` reports the recorded operation phase or
+native attempt state, while effective scope and authenticated readiness remain
+unobserved. Native status verifies the copied closure's fixed filesystem and
+digest identities without importing or executing its bytes.
 
 ## Admission and operation rules
 
@@ -89,9 +99,54 @@ The operation-specific rules are:
 | Operation | Required current state | Target input | Additional rule |
 | --- | --- | --- | --- |
 | Install | Unmanaged or receipt-certified `uninstalled` | Generated release | First adoption requires `--maintenance-window-confirmed` |
-| Upgrade | Receipt-certified `committed` | Generated release | Every owned artifact must still match its receipt |
-| Rollback | Receipt-certified `committed` | Exact retained receipt ID | Retained release and reader/recovery support must verify again |
+| Upgrade | Receipt-certified `committed` | Generated release | Every owned artifact must still match its receipt; an owned registration must be unregistered first |
+| Rollback | Receipt-certified `committed` | Exact retained receipt ID | Retained release and reader/recovery support must verify again; an owned registration must be unregistered first |
 | Uninstall | Receipt-certified `committed` | None | Removes only receipt-owned code artifacts |
+
+Uninstall is the only artifact operation that carries a registration: it plans
+the removal and orders it before deleting the artifacts the entry names. Upgrade
+and rollback replace those artifacts without carrying the registration rows, so
+while a receipt owns a registration they refuse instead, naming the cause and the
+remedy: unregister that runtime, re-run the artifact command, then register
+again. The refusal exists on both sides -- the planner refuses before the writer
+lease, and the recovery program refuses any artifact or native plan whose prior
+receipt still owns an entry, exactly as it already refuses an artifact or
+OpenCode plan under an active native registration. A `matching_preexisting_unowned`
+entry is the user's, not the install's, and never blocks anything.
+
+Registration is a separate explicit operation over a receipt-certified
+artifact install. Its read-only plan selects exactly one strict-JSON
+`opencode.json` or `opencode.jsonc`, rejects aliases, duplicate identities,
+options-bearing Council entries, JSONC syntax, and ambiguous sources, and emits a
+digest without writing control or configuration state. That one-source rule
+decides where a *new* entry goes. Removing an entry the receipt already owns
+targets the exact file that receipt names instead, so a second, unrelated
+configuration file the transaction never touches cannot block `unregister` or
+`uninstall`. That targeting lasts only while the receipt owns the entry: once
+the entry is removed the receipt names no target, so a repeated `unregister`
+falls back to the one-source rule and refuses rather than reporting a no-op.
+Apply requires
+`--quiescent-edit`, that exact digest, and a fresh invocation ID. It changes only
+the selected `plugin` member through a reversible byte patch.
+
+Claude and Codex use distinct native format 3. The source distribution contains
+no qualification admission, so these commands normally report
+`native_behavior_unqualified` and refuse before the writer lease, control state,
+configuration, or process effects. An eligible path requires an owner-recorded,
+operation-specific admission at its fixed lifecycle path. That admission binds
+the exact runtime tuple, package/cohort, three-file copied recovery closure,
+closed shape policy, observer implementation, genuine case packets, and
+independent review. A plan field or matching digest cannot substitute for that
+record.
+
+After eligibility, apply still requires the exact plan digest and a fresh
+quiescent invocation. The C1 writer lease is held while the copied recoverer
+records a blocked supervisor generation, arms its process/network/write
+observer, authorizes release, observes the entire process group, classifies the
+stored entry, and publishes the immutable receipt. Missing network or write-set
+coverage yields `unknown` and leaves recovery required. Native success remains
+disabled in this source until the separately controlled genuine evidence and
+observer gates are satisfied.
 
 An install does not convert matching pre-existing external files into owned
 artifacts. A later uninstall preserves those unowned files. Any changed owned
@@ -103,7 +158,10 @@ plan; the engine does not select, delete, or relocate the content.
 Inspection reports these conditions; it does not refuse them. `status` and
 `plan` always describe the state they find, so an installation that drifted from
 its receipt reads as `committed` but uncertified with the reason attached, and
-the plan lists its blockers. Mutation stays strict: an uncertified installation
+the plan lists its blockers. Every refusal that turns on certification repeats
+that reason and points at `status`, so hand-editing the Council entry out of an
+OpenCode configuration names its own cause rather than a generic ownership
+blocker; restoring the recorded entry re-certifies the install. Mutation stays strict: an uncertified installation
 is ineligible for install, upgrade, rollback, and uninstall alike.
 
 A receipt also binds the `(device, inode)` identity of the three fixed roots and
@@ -167,8 +225,12 @@ The stable lifecycle discovery path is:
 ~/.claude/peer-consults/.council-lifecycle/admission.json
 ```
 
-Version 1 lifecycle records include admission, plan, journal/progress, receipt,
-and recovery formats. Metadata is strict JSON with bounded size, exact keys,
+Artifact-only transactions retain version 1 admission, plan, journal/progress,
+receipt, and recovery behavior. OpenCode registration uses strict format 2;
+native registration uses distinct format 3 and a constant three-module copied
+closure inside the same version-1 namespace. Version 1 continues to reject every
+registration/configuration operation, and format 2 accepts only the two fixed
+OpenCode operations. Metadata is strict JSON with bounded size, exact keys,
 duplicate-key refusal, finite integer rules, and fixed identifier/path
 constraints. Unknown versions or operations fail closed.
 
@@ -208,8 +270,9 @@ The lifecycle engine verifies both its interface and the prepared plan through:
 <python3> -I -B <recoverer> check-plan <plan-path>
 ```
 
-The recovery interface advertises admission, plan, journal, and receipt format
-1; the five fixed unit IDs; and these required operations:
+The recovery interface advertises artifact format 1, OpenCode registration
+format 2, native registration format 3, the five fixed artifact unit IDs, and the
+original required operations:
 
 - `classify-filesystem-v1`
 - `preserve-initial-v1`
@@ -245,6 +308,24 @@ or newer, isolated mode, disabled bytecode writes, and the recoverer's closed
 runtime feature probes. An incompatible interpreter or incomplete pending
 record refuses before recovery mutation.
 
+Format 2 adds `classify-registration-v1`, `replace-registration-v1`, and
+`verify-registration-receipt-v1`. Only the fixed OpenCode semantic operations
+are executable without native qualification. The registration replacement runs
+after coherent artifact activation when adding the plugin, and before artifact
+removal when removing an owned plugin. Terminal receipts bind the selected entry
+and ownership origin while allowing unrelated later configuration settings; a
+new inverse plan recomputes its narrow patch against those current bytes.
+
+Format 3 adds the four fixed Claude/Codex stdio operations. Its prepared receipt
+binds a stable attempt-family identity rather than a particular invocation. The
+journal retains sequence zero and, only after a complete `observed_prior` result
+with confirmed whole-process-group termination, may append one fresh sequence
+one. The second sequence binds the canonical terminal digest of sequence zero,
+a new execution admission, and a complete fresh quiescent decision. Unknown
+evidence never advances; another prior result exhausts the family. Recovery of
+an already observed target performs no native relaunch. Abort/removal is a new,
+separately qualified inverse transaction and a distinct family.
+
 The recoverer acquires the same `broker.lock`, verifies its physical identity
 and every bound record, classifies each destination from hashes, and resumes the
 sticky target goal. Mixed intermediate generations and a temporarily absent
@@ -256,6 +337,31 @@ publishes the selected immutable receipt, and only then publishes terminal
 admission. If the transaction recorded a validated prior goal, adding `--abort`
 selects it durably; repeated recovery continues that selected goal. Abort cannot
 change an already terminal transaction and cannot synthesize missing prior data.
+
+A pending format-2 recovery also requires a fresh `--quiescent-edit`, the
+recorded registration-plan digest through `--confirm-plan`, and a new
+`--invocation-id`, including on `--abort`. Missing or stale confirmation makes no
+configuration or progress write: the abort goal is selected in memory and
+journalled only after the confirmation validates. A configuration whose bytes
+match neither the intended nor the prior digest is refused rather than adopted;
+the refusal names the file and all three digests so the operator can restore one
+of them exactly. The receipt reports stored configuration,
+effective scope, restart requirement, and authenticated readiness separately;
+stored success leaves the latter two unobserved until the owning host restarts
+and a separately authorized readiness check runs.
+
+A pending format-3 recovery uses the same confirmation fields plus
+`--sequence 0|1`. The copied closure verifies constant-named recoverer,
+registration, and qualification modules by owner, mode, link count, size, and
+hash before executing their already-read bytes. The supervisor receives an
+independent descriptor of the C1 `broker.lock` and verifies its identity; it
+never holds the lease, so releasing the lease cannot unlock it for a supervisor
+that is still alive. It starts blocked, records its PID/PGID/start generation
+and attempt-lock identity, and cannot release the fixed vendor argv until the
+progress journal has durably recorded `release_authorized`. A supervisor that
+outlives its wait is signalled and reaped before the recoverer unwinds. An
+unavailable or incomplete process/network/write observer leaves the transaction
+pending.
 
 A missing or corrupt plan, receipt, provenance record, recovery file, staged
 object, retained prior object, or unexpected destination fails closed. Do not
@@ -292,6 +398,7 @@ sh -n install/rollback.sh
 sh -n install/uninstall.sh
 python3 scripts/test_lifecycle.py
 python3 scripts/test_lifecycle_recovery.py
+python3 -m unittest discover -s scripts -p 'test_registration*.py' -v
 python3 scripts/test_admission.py
 python3 scripts/test_predecessors.py
 python3 scripts/build_release.py --check

@@ -106,6 +106,16 @@ recovery. Its retained external copy uses Python 3.9 standard-library modules
 only and remains executable when the installed payload and source checkout are
 absent.
 
+`scripts/council_registration.py` owns passive selected-entry parsing,
+ownership classification, exact OpenCode byte candidates, qualification-bound
+record projections, and canonical registration previews. It has no file or
+process API. `council_registration_qualification.py` separates genuine support
+consistency from the owner admission, current execution admission, stable
+two-sequence attempt family, sequence binding, and semantic receipt identity.
+The lifecycle layer supplies fixed files and C2 receipt identity. The copied
+recoverer applies validated OpenCode patches or, for native format 3, verifies
+the constant three-module closure and supervises one fixed qualified argv.
+
 The shell launchers contain no lifecycle policy. Each resolves its adjacent
 `scripts/council_lifecycle.py` path and uses `exec python3 -I -B` with one fixed
 verb. Add validation, policy, generation, socket/liveness inspection, recovery
@@ -120,10 +130,14 @@ plan install --release <generated-release>
 plan upgrade --release <generated-release>
 plan rollback --receipt <receipt-id>
 plan uninstall
+plan register --runtime claude|codex|opencode
+plan unregister --runtime claude|codex|opencode
 install --release <generated-release> --maintenance-window-confirmed
 upgrade --release <generated-release>
 rollback --receipt <receipt-id>
 uninstall
+register --runtime opencode --quiescent-edit --confirm-plan <sha256> --invocation-id <id>
+unregister --runtime opencode --quiescent-edit --confirm-plan <sha256> --invocation-id <id>
 ```
 
 Only a generated entrypoint may infer its enclosing release. Source checkouts
@@ -137,10 +151,22 @@ the independently staged recovery program with both `describe` and `check-plan`,
 and only then publishes `recovery_required`. Recovery publishes and verifies a
 receipt for all five units before terminal admission.
 
+Native `register`/`unregister` use the same CLI shape only when the fixed owner
+qualification admission exists. This source ships no admission, so normal
+Claude/Codex commands refuse before effects. Native recovery additionally binds
+`--sequence 0|1`; sequence one can follow only a terminal observed-prior sequence
+zero with a fresh quiescent decision and immutable prior-summary link.
+
 The lifecycle namespace, lock, receipts, journals, provenance, and recovery
-tools survive ordinary uninstall. `--purge-state`, timestamped backup rollback,
-clone relocation, native runtime registration, OpenCode configuration edits,
-pin renewal, and host restarts are outside this engine.
+tools survive ordinary uninstall. Registration-capable format 2 preserves the
+artifact-only format-1 reader/refusal path and records selected-entry ownership,
+quiescent confirmation, exact reversible patches, stored configuration, restart
+requirement, effective scope, and authenticated readiness separately.
+`--purge-state`, timestamped backup rollback, clone relocation, package
+dependency installation, pin renewal, and host control remain outside this
+engine. Native format 3 is distinct from both formats and retains its exact
+attempt family and per-sequence chain. Missing process/network/write observation
+never becomes a successful stored result.
 
 See [lifecycle.md](lifecycle.md) for the operation, record, and recovery
 contracts. See [maintenance-admission.md](maintenance-admission.md) for writer
@@ -178,6 +204,7 @@ sh -n install/rollback.sh
 sh -n install/uninstall.sh
 python3 scripts/test_lifecycle.py
 python3 scripts/test_lifecycle_recovery.py
+python3 -m unittest discover -s scripts -p 'test_registration*.py' -v
 python3 scripts/test_admission.py
 python3 scripts/test_predecessors.py
 ```
@@ -198,6 +225,7 @@ python3 scripts/test_admission.py
 python3 scripts/test_predecessors.py
 python3 scripts/test_lifecycle.py
 python3 scripts/test_lifecycle_recovery.py
+python3 -m unittest discover -s scripts -p 'test_registration*.py' -v
 npx tsc --noEmit
 node --experimental-strip-types --test scripts/test_opencode_delivery_registry.ts
 node --experimental-transform-types --test scripts/test_protocol.ts

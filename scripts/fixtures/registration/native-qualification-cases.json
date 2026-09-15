@@ -1,0 +1,146 @@
+{
+  "format": "council-registration-qualification-collection-v1",
+  "qualification_eligible": false,
+  "cases": [
+    {
+      "case_id": "claude-add-absent",
+      "runtime": "claude",
+      "operation": "claude_user_stdio_ensure",
+      "expected_version": "2.1.241",
+      "expected_os_name": "Darwin",
+      "expected_architecture": "arm64",
+      "expected_initial_state": "absent",
+      "fixture_condition": "ordinary"
+    },
+    {
+      "case_id": "claude-add-identical",
+      "runtime": "claude",
+      "operation": "claude_user_stdio_ensure",
+      "expected_version": "2.1.241",
+      "expected_os_name": "Darwin",
+      "expected_architecture": "arm64",
+      "expected_initial_state": "matching",
+      "fixture_condition": "ordinary"
+    },
+    {
+      "case_id": "claude-add-customized",
+      "runtime": "claude",
+      "operation": "claude_user_stdio_ensure",
+      "expected_version": "2.1.241",
+      "expected_os_name": "Darwin",
+      "expected_architecture": "arm64",
+      "expected_initial_state": "customized",
+      "fixture_condition": "ordinary"
+    },
+    {
+      "case_id": "claude-add-malformed",
+      "runtime": "claude",
+      "operation": "claude_user_stdio_ensure",
+      "expected_version": "2.1.241",
+      "expected_os_name": "Darwin",
+      "expected_architecture": "arm64",
+      "expected_initial_state": "strict_json_required",
+      "fixture_condition": "malformed_config"
+    },
+    {
+      "case_id": "claude-add-unwritable",
+      "runtime": "claude",
+      "operation": "claude_user_stdio_ensure",
+      "expected_version": "2.1.241",
+      "expected_os_name": "Darwin",
+      "expected_architecture": "arm64",
+      "expected_initial_state": "absent",
+      "fixture_condition": "unwritable_config"
+    },
+    {
+      "case_id": "claude-remove-present",
+      "runtime": "claude",
+      "operation": "claude_user_stdio_remove",
+      "expected_version": "2.1.241",
+      "expected_os_name": "Darwin",
+      "expected_architecture": "arm64",
+      "expected_initial_state": "matching",
+      "fixture_condition": "ordinary"
+    },
+    {
+      "case_id": "claude-remove-absent",
+      "runtime": "claude",
+      "operation": "claude_user_stdio_remove",
+      "expected_version": "2.1.241",
+      "expected_os_name": "Darwin",
+      "expected_architecture": "arm64",
+      "expected_initial_state": "absent",
+      "fixture_condition": "ordinary"
+    },
+    {
+      "case_id": "codex-add-absent",
+      "runtime": "codex",
+      "operation": "codex_user_stdio_ensure",
+      "expected_version": "0.153.4",
+      "expected_os_name": "Darwin",
+      "expected_architecture": "arm64",
+      "expected_initial_state": "absent",
+      "fixture_condition": "ordinary"
+    },
+    {
+      "case_id": "codex-add-identical",
+      "runtime": "codex",
+      "operation": "codex_user_stdio_ensure",
+      "expected_version": "0.153.4",
+      "expected_os_name": "Darwin",
+      "expected_architecture": "arm64",
+      "expected_initial_state": "matching",
+      "fixture_condition": "ordinary"
+    },
+    {
+      "case_id": "codex-add-customized",
+      "runtime": "codex",
+      "operation": "codex_user_stdio_ensure",
+      "expected_version": "0.153.4",
+      "expected_os_name": "Darwin",
+      "expected_architecture": "arm64",
+      "expected_initial_state": "customized",
+      "fixture_condition": "ordinary"
+    },
+    {
+      "case_id": "codex-add-malformed",
+      "runtime": "codex",
+      "operation": "codex_user_stdio_ensure",
+      "expected_version": "0.153.4",
+      "expected_os_name": "Darwin",
+      "expected_architecture": "arm64",
+      "expected_initial_state": "malformed",
+      "fixture_condition": "malformed_config"
+    },
+    {
+      "case_id": "codex-add-unwritable",
+      "runtime": "codex",
+      "operation": "codex_user_stdio_ensure",
+      "expected_version": "0.153.4",
+      "expected_os_name": "Darwin",
+      "expected_architecture": "arm64",
+      "expected_initial_state": "absent",
+      "fixture_condition": "unwritable_config"
+    },
+    {
+      "case_id": "codex-remove-present",
+      "runtime": "codex",
+      "operation": "codex_user_stdio_remove",
+      "expected_version": "0.153.4",
+      "expected_os_name": "Darwin",
+      "expected_architecture": "arm64",
+      "expected_initial_state": "matching",
+      "fixture_condition": "ordinary"
+    },
+    {
+      "case_id": "codex-remove-absent",
+      "runtime": "codex",
+      "operation": "codex_user_stdio_remove",
+      "expected_version": "0.153.4",
+      "expected_os_name": "Darwin",
+      "expected_architecture": "arm64",
+      "expected_initial_state": "absent",
+      "fixture_condition": "ordinary"
+    }
+  ]
+}

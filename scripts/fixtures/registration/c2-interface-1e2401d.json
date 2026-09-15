@@ -1,0 +1,155 @@
+{
+  "c1_integration": {
+    "inspect_artifacts": {
+      "line": 459,
+      "signature": "inspect_artifacts(payload_root=<default>, opencode_root=<default>, *, release_root=<default>, state_root=<default>)"
+    },
+    "reader_support": {
+      "frozen_c1_tuple_sha256": "ea9e9e9c724dc3340e0b12cb77542f38dd21ae2ad6d7d4be5ee0735af5c4bbf7",
+      "policy_sha256": "f61d9fa1d2756d9c9791d066528fc275a3b35b546bc02bd0f82d595bfce2e2b3",
+      "predecessor_corpus_sha256": "d8c438b4a6c841b2303092aee84e2c55a8328f486a656455d3c726be1880ddb1"
+    },
+    "state_root_addition": "Optional keyword-only state_root selects the receipt-bound managed manifest; omitted calls retain offline/legacy release-manifest behavior.",
+    "writer_lease": "The C1 WriterLease is borrowed through C1LeaseAdapter; no unlock/reacquire occurs inside the transaction."
+  },
+  "d_boundary": {
+    "no_shared_write_assumption": "D component paths are disjoint. Any later edit to C2 lifecycle/recovery/C1 execution files requires a new admitted integration step rather than concurrent ownership.",
+    "required_d_action": "D recomposes its preserved component onto C2 1e2401d, adopts the corrected shared unit-object/pre-intent/root/receipt/release-validation behavior, and then completes its separately admitted fixed registration operations under the same held C1 lease.",
+    "supported_by_c2": "artifact operations only across the fixed five units",
+    "unsupported_by_c2": [
+      "registration writes",
+      "native host operations",
+      "configuration writes",
+      "arbitrary operation names",
+      "plan-selected callbacks",
+      "state purge"
+    ]
+  },
+  "format": 1,
+  "normal_planner": {
+    "cli": {
+      "path": "C2/integration/cli-contract-35f0c83.json",
+      "sha256": "ca40724750969abf6e425099db5b90e1f057c36a1f98b5840dc7df822aa16462",
+      "unchanged_since": "35f0c8304bcac8cbf67d8a996e43878b219396e7"
+    },
+    "fixed_roots": [
+      "~/.claude/peer-consults",
+      "~/.claude/skills/council",
+      "~/.config/opencode"
+    ],
+    "interfaces": {
+      "C1LeaseAdapter": {
+        "line": 1423,
+        "signature": "class C1LeaseAdapter"
+      },
+      "execute_operation": {
+        "line": 1553,
+        "signature": "execute_operation(kind, release_root, state_root, payload_root, opencode_root, *, maintenance_window_confirmed=<default>, receipt_id=<default>, transaction_id=<default>, now=<default>, probe=<default>, recovery_command_sink=<default>)"
+      },
+      "inspect_ownership": {
+        "line": 295,
+        "signature": "inspect_ownership(state_root, payload_root, opencode_root)"
+      },
+      "plan_ownership": {
+        "line": 588,
+        "signature": "plan_ownership(kind, release_snapshot, ownership_snapshot)"
+      },
+      "prepare_transaction": {
+        "line": 1116,
+        "signature": "prepare_transaction(preview, release_snapshot, lease, *, transaction_id=<default>)"
+      },
+      "publish_and_execute": {
+        "line": 1469,
+        "signature": "publish_and_execute(bundle, lease, c1_inspect, registration_snapshot, *, now=<default>, probe=<default>)"
+      },
+      "retained_release": {
+        "line": 413,
+        "signature": "retained_release(state_root, receipt_id)"
+      },
+      "run_handshake": {
+        "line": 1450,
+        "signature": "run_handshake(bundle)"
+      },
+      "status": {
+        "line": 1526,
+        "signature": "status(state_root, payload_root, opencode_root)"
+      },
+      "validate_release": {
+        "line": 228,
+        "signature": "validate_release(release_root)"
+      }
+    }
+  },
+  "publication_limit": "This packet binds pushed C2 correction source; it does not claim round-2 review, source-terminal publication, live installation or native qualification.",
+  "recovery_executor": {
+    "formats": {
+      "admission": 1,
+      "journal": 1,
+      "namespace": 1,
+      "plan": 1,
+      "receipt": 1,
+      "recovery": 1
+    },
+    "interfaces": {
+      "_execute_with_lease": {
+        "line": 2063,
+        "signature": "_execute_with_lease(state_root, lease_adapter, *, abort=<default>, failpoint=<default>)"
+      },
+      "check_plan": {
+        "line": 2048,
+        "signature": "check_plan(plan_path)"
+      },
+      "describe": {
+        "line": 2121,
+        "signature": "describe()"
+      },
+      "inspect_terminal_ownership": {
+        "line": 857,
+        "signature": "inspect_terminal_ownership(state_root, payload_root, opencode_root)"
+      },
+      "recover": {
+        "line": 2115,
+        "signature": "recover(state_root, *, abort=<default>, failpoint=<default>)"
+      },
+      "validate_plan": {
+        "line": 1194,
+        "signature": "validate_plan(plan_path, *, pre_intent, require_progress=<default>)"
+      }
+    },
+    "required_operations": [
+      "classify-filesystem-v1",
+      "preserve-initial-v1",
+      "materialize-selected-v1",
+      "activate-five-units-v1",
+      "verify-receipt-v1",
+      "publish-admission-v1"
+    ],
+    "unit_ids": [
+      "payload",
+      "opencode-plugin",
+      "opencode-protocol",
+      "opencode-registry",
+      "opencode-tool"
+    ]
+  },
+  "release": {
+    "artifact_count": 89,
+    "manifest_sha256": "a19c37549d8afd52cc286b77283f4caa4807c15f7fb46e113993eab26bc30c33",
+    "package_id": "68ce315f8d4f8b32516b2feeafb629a44a130a83ce3d1ec09fe352ec323da258",
+    "runtime_cohort": "8181ae63906b42e4af670df1613dede4d194c48991594e3b8ea9b961877831b5",
+    "runtime_source_count": 10
+  },
+  "remaining_blocker": null,
+  "source_commit": "1e2401d604c22dc11f9ef788aa8048be02c18d21",
+  "source_hashes": {
+    "scripts/council_admission.py": "d42bb1a63b5039abb9e05600a01c3f5ffdf44187f5d74a3a7c63aee8ee0e9b45",
+    "scripts/council_inspect.py": "faf7814a0b58051070b537e1c3e2e7e1143e435d3e6b9d4bb7c24222bc79acaa",
+    "scripts/council_lifecycle.py": "ceb5c61d6f3185373334183683d056fb1cb4c4fbbc505657a5fe8553ab357b87",
+    "scripts/council_recover.py": "f7569262a45e5435829c429a794ae9efdf6efa0b7c224ce9737ba2b39ada32ae"
+  },
+  "status": "stable corrected C2 artifact-only dependency interface; round-1 fixes pushed, fresh full round 2 pending",
+  "verification": {
+    "results_path": "C2/fix-round-1/final/results.json",
+    "results_sha256": "bd4c15bcc9502d838e30508cc2b31ef87a49a8e693400e5ffa12efdbf86b189c"
+  }
+}

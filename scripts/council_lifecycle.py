@@ -60,6 +60,13 @@ recovery = _load_source_module("council_recover", SOURCE_ROOT / "council_recover
 protocol = _load_source_module("council_protocol", SOURCE_ROOT / "council_protocol.py")
 admission = _load_source_module("council_admission", SOURCE_ROOT / "council_admission.py")
 inspect = _load_source_module("council_inspect", SOURCE_ROOT / "council_inspect.py")
+registration = _load_source_module(
+    "council_registration", SOURCE_ROOT / "council_registration.py"
+)
+qualification = _load_source_module(
+    "council_registration_qualification",
+    SOURCE_ROOT / "council_registration_qualification.py",
+)
 
 
 RELEASE_SNAPSHOT_FORMAT = 1
@@ -67,7 +74,7 @@ RETAINED_RELEASE_FORMAT = 1
 OWNERSHIP_SNAPSHOT_FORMAT = 1
 PLANNING_PREVIEW_FORMAT = 1
 PREPARATION_RECORD_FORMAT = 1
-PLANNING_KINDS = {"install", "upgrade", "rollback", "uninstall"}
+PLANNING_KINDS = {"install", "upgrade", "rollback", "uninstall", "registration"}
 RUNTIME_SOURCES = (
     "scripts/council_admission.py", "scripts/council_inspect.py",
     "scripts/council_protocol.py", "scripts/council_protocol.ts",
@@ -590,7 +597,7 @@ def _validated_release_source(kind: str,
                               value: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     if value is None:
         return None
-    if kind == "rollback":
+    if kind in ("rollback", "registration"):
         return _validate_retained_release(value)
     return _validate_release_snapshot(value)
 
@@ -630,6 +637,21 @@ def _contains_git_stop(state_value: Dict[str, Any]) -> bool:
     return any(PurePosixPath(item["path"]).parts[0] == ".git" for item in state_value["artifacts"])
 
 
+def _uncertified_detail(management: Dict[str, Any]) -> str:
+    """Explain why an installation is not certified, and where to look next.
+
+    Hand-editing the Council entry out of an OpenCode config is the ordinary way
+    to reach this, and the bare refusal named neither registration nor a remedy.
+    """
+    reason = management.get("reason")
+    if not reason:
+        reason = "lifecycle status is %s" % management["status"]
+    return (
+        "%s; run `status` for the full diagnosis and restore the recorded state "
+        "before retrying" % reason
+    )
+
+
 def _record_blocker(blockers: List[Dict[str, str]], code: str, unit_id: str,
                     path: str, reason: str) -> None:
     blockers.append({"code": code, "unit_id": unit_id, "path": path, "reason": reason})
@@ -666,7 +688,8 @@ def plan_ownership(kind: str, release_snapshot: Optional[Dict[str, Any]],
                             "uninstalled lifecycle metadata requires a certifying receipt")
     elif management["status"] != "committed" or not management["certified"]:
         _record_blocker(blockers, "certified_installation_required", "payload", ".",
-                        "%s requires a receipt-certified committed installation" % kind)
+                        "%s requires a receipt-certified committed installation: %s"
+                        % (kind, _uncertified_detail(management)))
     roots = ownership["roots"]
     current_units = {item["unit_id"]: item for item in ownership["units"]}
     if _contains_git_stop(current_units["payload"]["state"]):
@@ -1703,9 +1726,20 @@ def _receipt_from_preview(preview: Dict[str, Any], transaction_id: str, receipt_
                           lock_identity: Dict[str, Any], manifest_sha256: str,
                           tool_sha256: str, support_sha256: str,
                           artifacts: List[Dict[str, Any]], prior_summary: Optional[Dict[str, Any]],
-                          package_id: str, runtime_cohort: str) -> Dict[str, Any]:
-    return {
-        "receipt_format": 1,
+                          package_id: str, runtime_cohort: str,
+                          registrations: Optional[List[Dict[str, Any]]] = None,
+                          native_registrations: Optional[List[Dict[str, Any]]] = None,
+                          native_closure: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    if registrations is not None and native_registrations is not None:
+        raise LifecyclePlanningError("one receipt cannot mix registration formats")
+    receipt = {
+        "receipt_format": (
+            recovery.REGISTRATION_RECEIPT_FORMAT
+            if registrations is not None
+            else recovery.NATIVE_RECEIPT_FORMAT
+            if native_registrations is not None
+            else 1
+        ),
         "receipt_id": receipt_id,
         "transaction_id": transaction_id,
         "outcome": outcome,
@@ -1719,19 +1753,108 @@ def _receipt_from_preview(preview: Dict[str, Any], transaction_id: str, receipt_
             "receipt_id": prior_summary["receipt_id"],
             "receipt_sha256": prior_summary["receipt_sha256"],
         },
-        "recovery": {"format": 1, "tool_sha256": tool_sha256},
+        "recovery": {
+            "format": (
+                recovery.REGISTRATION_RECOVERY_FORMAT
+                if registrations is not None
+                else recovery.NATIVE_RECOVERY_FORMAT
+                if native_registrations is not None
+                else 1
+            ),
+            "tool_sha256": tool_sha256,
+        },
         "reader_support_sha256": support_sha256,
         "artifacts": artifacts,
     }
+    if registrations is not None:
+        receipt["registration_format"] = recovery.REGISTRATION_EXTENSION_FORMAT
+        receipt["registrations"] = registrations
+    elif native_registrations is not None:
+        if native_closure is None:
+            raise LifecyclePlanningError("native receipt requires its copied closure")
+        receipt["recovery"]["native_closure_sha256"] = recovery.sha256_bytes(
+            recovery.json_bytes(native_closure)
+        )
+        receipt["native_registration_format"] = recovery.NATIVE_EXTENSION_FORMAT
+        receipt["native_registrations"] = native_registrations
+        receipt["native_closure"] = native_closure
+    return receipt
+
+
+def _registration_receipts(execution: Dict[str, Any], goal: str) -> List[Dict[str, Any]]:
+    values = []
+    for operation in execution["operations"]:
+        entry_sha256 = operation[goal + "_entry_sha256"]
+        values.append(
+            {
+                "operation_id": operation["operation_id"],
+                "operation": operation["operation"],
+                "runtime": operation["runtime"],
+                "source_path": operation["source_path"],
+                "resulting_sha256": operation[goal + "_sha256"],
+                "resulting_entry_sha256": entry_sha256,
+                "ownership_origin": operation["ownership_origin"],
+                "stored_config_result": (
+                    "stored_config_absent_verified"
+                    if entry_sha256 is None
+                    else "stored_config_verified"
+                ),
+                "effective_scope": "unknown",
+                "host_restart": "required",
+                "authenticated_readiness": "unobserved",
+            }
+        )
+    return values
+
+
+def _native_registration_receipts(
+    core: Dict[str, Any], execution: Dict[str, Any]
+) -> List[Dict[str, Any]]:
+    result = execution["semantic_result_identity"]
+    result_record = result["record"]
+    return [
+        {
+            "operation_id": execution["operation_id"],
+            "operation": execution["operation"],
+            "runtime": execution["runtime"],
+            "source_path": execution["source_path"],
+            "source_scope": execution["source_scope"],
+            "semantic_result_identity": result,
+            "attempt_family": execution["attempt_family"],
+            "runtime_tuple": core["records"]["runtime_tuple"],
+            "qualification_admission_sha256": core["records"][
+                "qualification_admission"
+            ]["sha256"],
+            "implementation_identity_sha256": core["records"][
+                "implementation_identity"
+            ]["sha256"],
+            "stored_config_result": (
+                "stored_config_absent_verified"
+                if result_record["intended_state"] == "absent"
+                else "stored_config_verified"
+            ),
+            "effective_scope": "unknown",
+            "host_restart": "required",
+            "authenticated_readiness": "unobserved",
+        }
+    ]
 
 
 def prepare_transaction(preview: Dict[str, Any], release_snapshot: Optional[Dict[str, Any]],
                         lease: Any, *, transaction_id: Optional[str] = None,
+                        registration_execution: Optional[Dict[str, Any]] = None,
+                        native_plan_core: Optional[Dict[str, Any]] = None,
+                        native_execution: Optional[Dict[str, Any]] = None,
+                        quiescent_decision: Optional[Any] = None,
                         failpoint: Any = None) -> Dict[str, Any]:
     guards: List[_PreparationGuard] = []
     try:
         return _prepare_transaction(
             preview, release_snapshot, lease, transaction_id=transaction_id,
+            registration_execution=registration_execution,
+            native_plan_core=native_plan_core,
+            native_execution=native_execution,
+            quiescent_decision=quiescent_decision,
             preparation_guards=guards, failpoint=failpoint,
         )
     except BaseException:
@@ -1742,11 +1865,72 @@ def prepare_transaction(preview: Dict[str, Any], release_snapshot: Optional[Dict
 
 def _prepare_transaction(preview: Dict[str, Any], release_snapshot: Optional[Dict[str, Any]],
                          lease: Any, *, transaction_id: Optional[str],
+                         registration_execution: Optional[Dict[str, Any]],
+                         native_plan_core: Optional[Dict[str, Any]],
+                         native_execution: Optional[Dict[str, Any]],
+                         quiescent_decision: Optional[Any],
                          preparation_guards: List[_PreparationGuard],
                          failpoint: Any) -> Dict[str, Any]:
     """Prepare durable recovery inputs under an already-held C1 lease; no intent is published."""
     if preview["executable"] is not False or not preview["eligible_for_integration"]:
         raise LifecyclePlanningError("only an eligible non-executable preview can be prepared")
+    registration_bytes = None
+    native_core_bytes = None
+    native_execution_bytes = None
+    registration_decision = None
+    if registration_execution is not None and native_execution is not None:
+        raise LifecyclePlanningError("one transaction cannot mix registration formats")
+    if registration_execution is not None:
+        registration_bytes = registration.canonical_registration_execution_bytes(
+            registration_execution
+        )
+        if not isinstance(quiescent_decision, registration.QuiescentDecisionProjection):
+            raise LifecyclePlanningError(
+                "registration preparation requires a plan-bound quiescent decision"
+            )
+        registration_decision = quiescent_decision.public_dict()
+        if (
+            registration_decision["plan_sha256"]
+            != recovery.sha256_bytes(registration_bytes)
+            or registration_decision["goal"] != "target"
+            or registration_decision["closed_and_no_competing_writer"] is not True
+            or registration_decision["files"]
+            != [item["source_path"] for item in registration_execution["operations"]]
+        ):
+            raise LifecyclePlanningError(
+                "quiescent decision differs from the registration plan"
+            )
+    elif native_execution is not None:
+        if native_plan_core is None:
+            raise LifecyclePlanningError("native execution requires its plan core")
+        native_core_bytes = registration.canonical_native_plan_core_bytes(
+            native_plan_core
+        )
+        native_execution_bytes = registration.canonical_native_execution_bytes(
+            native_execution
+        )
+        if not isinstance(quiescent_decision, registration.QuiescentDecisionProjection):
+            raise LifecyclePlanningError(
+                "native preparation requires a plan-bound quiescent decision"
+            )
+        registration_decision = quiescent_decision.public_dict()
+        if (
+            registration_decision["plan_sha256"]
+            != recovery.sha256_bytes(native_core_bytes)
+            or registration_decision["goal"] != "target"
+            or registration_decision["closed_and_no_competing_writer"] is not True
+            or registration_decision["hosts"] != [native_execution["runtime"]]
+            or registration_decision["files"] != [native_execution["source_path"]]
+            or native_execution["plan_core_sha256"]
+            != recovery.sha256_bytes(native_core_bytes)
+        ):
+            raise LifecyclePlanningError("native quiescent decision differs from plan")
+    elif native_plan_core is not None:
+        raise LifecyclePlanningError("native plan core requires an execution record")
+    elif quiescent_decision is not None:
+        raise LifecyclePlanningError(
+            "artifact-only preparation does not accept a quiescent decision"
+        )
     if preview["kind"] == "uninstall":
         if release_snapshot is not None or preview["release"] is not None:
             raise LifecyclePlanningError("uninstall preparation does not accept a release")
@@ -1806,6 +1990,14 @@ def _prepare_transaction(preview: Dict[str, Any], release_snapshot: Optional[Dic
     manifest_path = transaction / "source-manifest.json"
     support_path = transaction / "reader-support.json"
     support_sha256 = recovery.sha256_bytes(support_data)
+    registration_preview_path = None
+    if registration_bytes is not None:
+        registration_preview_path = transaction / "registration-preview.json"
+    native_core_path = None
+    native_execution_path = None
+    if native_execution_bytes is not None:
+        native_core_path = transaction / "native-plan-core.json"
+        native_execution_path = transaction / "native-execution-preview.json"
     if source is None:
         tool_source = Path(roots["payload"]) / "scripts/council_recover.py"
     elif "retained_release_format" in source:
@@ -1823,6 +2015,93 @@ def _prepare_transaction(preview: Dict[str, Any], release_snapshot: Optional[Dic
                 stat.S_IMODE(actual_tool.stat().st_mode) != 0o600):
             raise LifecyclePlanningError("retained recovery tool differs from source")
     canonical_tool = canonical / "v1/recovery" / (tool_sha256 + ".py")
+    native_closure = None
+    native_closure_directory = None
+    native_module_jobs = []
+    if native_execution_bytes is not None:
+        if source is None:
+            native_payload = Path(roots["payload"])
+        elif "retained_release_format" in source:
+            native_payload = Path(source["unit_sources"]["payload"])
+        else:
+            native_payload = Path(source["root"]) / "payload"
+        native_sources = {
+            "council_recover.py": tool_source,
+            "council_registration.py": native_payload / "scripts/council_registration.py",
+            "council_registration_qualification.py": (
+                native_payload / "scripts/council_registration_qualification.py"
+            ),
+        }
+        implementation = native_plan_core["records"]["implementation_identity"]
+        implementation_record = implementation["record"]
+        implementation_sha256 = implementation["sha256"]
+        expected_sources = implementation_record["source_sha256"]
+        expected_hashes = {
+            "council_recover.py": expected_sources["council_recover.py"],
+            "council_registration.py": expected_sources["council_registration.py"],
+            "council_registration_qualification.py": expected_sources[
+                "council_registration_qualification.py"
+            ],
+        }
+        if (
+            expected_sources["native_supervisor"] != tool_sha256
+            or expected_sources["native_observer"] != tool_sha256
+            or expected_sources["native_observer_policy"]
+            != native_plan_core["records"]["shape_policy"]["source_sha256"]
+        ):
+            raise LifecyclePlanningError("native implementation components differ")
+        native_closure_directory = (
+            control / "v1/recovery/native-v3" / implementation_sha256
+        )
+        for path in (
+            native_closure_directory.parent,
+            native_closure_directory,
+        ):
+            created = not (path.exists() or path.is_symlink())
+            if created:
+                preparation_guard.claim_absent(path)
+            _mkdir(path)
+            if created:
+                preparation_guard.bind_incomplete(path, path.lstat())
+        module_records = []
+        for name in recovery.NATIVE_RECOVERY_MODULES:
+            source_path = native_sources[name]
+            expected_sha256 = expected_hashes[name]
+            if recovery.sha256_file(source_path) != expected_sha256:
+                raise LifecyclePlanningError("native recovery source differs: " + name)
+            destination = native_closure_directory / name
+            source_size = source_path.stat().st_size
+            module_records.append(
+                {
+                    "name": name,
+                    "sha256": expected_sha256,
+                    "size": source_size,
+                    "mode": 0o600,
+                    "owner_uid": os.getuid(),
+                }
+            )
+            if destination.exists() or destination.is_symlink():
+                details = destination.lstat()
+                if (
+                    stat.S_ISLNK(details.st_mode)
+                    or not stat.S_ISREG(details.st_mode)
+                    or details.st_nlink != 1
+                    or stat.S_IMODE(details.st_mode) != 0o600
+                    or details.st_uid != os.getuid()
+                    or recovery.sha256_file(destination) != expected_sha256
+                ):
+                    raise LifecyclePlanningError(
+                        "retained native recovery module differs: " + name
+                    )
+            else:
+                native_module_jobs.append(
+                    (source_path, destination, expected_sha256)
+                )
+        native_closure = {
+            "format": 1,
+            "implementation_identity_sha256": implementation_sha256,
+            "modules": module_records,
+        }
     unit_map = {item["unit_id"]: item for item in preview["units"]}
     release_map = {} if source is None else _release_artifact_map(source)
     units = []
@@ -1872,6 +2151,17 @@ def _prepare_transaction(preview: Dict[str, Any], release_snapshot: Optional[Dic
         roots, receipt_root_identities, lock_identity, recovery.sha256_bytes(manifest_data),
         tool_sha256, support_sha256, preview["artifacts"], prior_summary,
         manifest["package_id"], manifest["runtime_cohort"],
+        (
+            _registration_receipts(registration_execution, "target")
+            if registration_execution is not None
+            else None
+        ),
+        (
+            _native_registration_receipts(native_plan_core, native_execution)
+            if native_execution is not None
+            else None
+        ),
+        native_closure,
     )
     target_receipt_path = transaction / "receipt.json"
     target_receipt_data = recovery.json_bytes(target_receipt)
@@ -1919,6 +2209,13 @@ def _prepare_transaction(preview: Dict[str, Any], release_snapshot: Optional[Dic
             receipt_root_identities, lock_identity, recovery.sha256_bytes(manifest_data), tool_sha256,
             support_sha256, prior_artifacts, None,
             manifest["package_id"], manifest["runtime_cohort"],
+            (
+                _registration_receipts(registration_execution, "prior")
+                if registration_execution is not None
+                else None
+            ),
+            None,
+            None,
         )
         prior_path = transaction / "prior-receipt.json"
         prior_receipt_data = recovery.json_bytes(prior_receipt)
@@ -1948,7 +2245,14 @@ def _prepare_transaction(preview: Dict[str, Any], release_snapshot: Optional[Dic
         roots, preview["current"]["summary"],
     )
     plan = {
-        "plan_format": 1, "transaction_id": transaction_id, "kind": preview["kind"],
+        "plan_format": (
+            recovery.REGISTRATION_PLAN_FORMAT
+            if registration_execution is not None
+            else recovery.NATIVE_PLAN_FORMAT
+            if native_execution is not None
+            else 1
+        ),
+        "transaction_id": transaction_id, "kind": preview["kind"],
         "roots": roots, "root_identities": root_identities, "lock_identity": lock_identity,
         "prior_admission": prior_admission, "outcomes": {"target": target_outcome, "prior": prior_outcome},
         "target_receipt_id": receipt_id,
@@ -1956,21 +2260,121 @@ def _prepare_transaction(preview: Dict[str, Any], release_snapshot: Optional[Dic
                             "sha256": recovery.sha256_bytes(manifest_data)},
         "proposed_receipt": {"path": "receipt.json", "sha256": target_summary["receipt_sha256"]},
         "proposed_prior_receipt": proposed_prior,
-        "recovery": {"format": 1, "tool_path": str(canonical_tool), "tool_sha256": tool_sha256,
+        "recovery": {"format": (
+                         recovery.REGISTRATION_RECOVERY_FORMAT
+                         if registration_execution is not None
+                         else recovery.NATIVE_RECOVERY_FORMAT
+                         if native_execution is not None
+                         else 1
+                     ),
+                     "tool_path": str(canonical_tool), "tool_sha256": tool_sha256,
                      "python_path": str(Path(sys.executable).resolve()),
                      "python_version": list(sys.version_info[:3])},
-        "required_operations": list(recovery.REQUIRED_OPERATIONS),
+        "required_operations": list(
+            recovery.REGISTRATION_REQUIRED_OPERATIONS
+            if registration_execution is not None
+            else recovery.NATIVE_REQUIRED_OPERATIONS
+            if native_execution is not None
+            else recovery.REQUIRED_OPERATIONS
+        ),
         "allowed_goals": ["target", "prior"], "units": units,
         "retained_state": recovery.retained_state_fingerprint(state_root, control),
         "reader_support": {"path": "reader-support.json", "sha256": support_sha256},
     }
+    if registration_execution is not None:
+        plan["registration"] = {
+            "format": recovery.REGISTRATION_EXTENSION_FORMAT,
+            "execution_preview": {
+                "path": "registration-preview.json",
+                "sha256": recovery.sha256_bytes(registration_bytes),
+            },
+            "quiescent_decision": {
+                key: registration_decision[key]
+                for key in (
+                    "plan_sha256",
+                    "invocation_id",
+                    "goal",
+                    "hosts",
+                    "files",
+                    "closed_and_no_competing_writer",
+                )
+            },
+            "operations": registration_execution["operations"],
+        }
+    elif native_execution is not None:
+        plan["recovery"]["native_closure"] = native_closure
+        plan["native_registration"] = {
+            "format": recovery.NATIVE_EXTENSION_FORMAT,
+            "plan_core": {
+                "path": "native-plan-core.json",
+                "sha256": recovery.sha256_bytes(native_core_bytes),
+            },
+            "execution_preview": {
+                "path": "native-execution-preview.json",
+                "sha256": recovery.sha256_bytes(native_execution_bytes),
+            },
+            "quiescent_decision": {
+                key: registration_decision[key]
+                for key in (
+                    "plan_sha256",
+                    "invocation_id",
+                    "goal",
+                    "hosts",
+                    "files",
+                    "closed_and_no_competing_writer",
+                )
+            },
+        }
+        plan["native_registration"]["quiescent_decision"]["sequence"] = (
+            native_execution["attempt_binding"]["record"]["sequence"]
+        )
     plan_path = transaction / "plan.json"
     plan_data = recovery.json_bytes(plan)
     progress = {
-        "journal_format": 1, "transaction_id": transaction_id,
+        "journal_format": (
+            recovery.REGISTRATION_JOURNAL_FORMAT
+            if registration_execution is not None
+            else recovery.NATIVE_JOURNAL_FORMAT
+            if native_execution is not None
+            else 1
+        ),
+        "transaction_id": transaction_id,
         "plan_sha256": recovery.sha256_bytes(plan_data), "sequence": 0, "goal": "target",
         "units": [{"unit_id": unit_id, "phase": "pending"} for unit_id in recovery.UNIT_IDS],
     }
+    if registration_execution is not None:
+        progress["registrations"] = [
+            {"operation_id": item["operation_id"], "phase": "pending"}
+            for item in registration_execution["operations"]
+        ]
+    elif native_execution is not None:
+        progress["current_attempt_sequence"] = 0
+        progress["native_registrations"] = [
+            {
+                "operation_id": native_execution["operation_id"],
+                "attempt_family": native_execution["attempt_family"],
+                "semantic_result_identity": native_execution[
+                    "semantic_result_identity"
+                ],
+                "attempts": [
+                    {
+                        "sequence": native_execution["attempt_binding"]["record"][
+                            "sequence"
+                        ],
+                        "invocation_id": registration_decision["invocation_id"],
+                        "state": "prepared",
+                        "journal_sha256": None,
+                        "supervisor": None,
+                        "result": None,
+                        "execution_admission": native_execution[
+                            "execution_admission"
+                        ],
+                        "attempt_binding": native_execution["attempt_binding"],
+                        "previous_attempt_terminal_sha256": None,
+                    }
+                ],
+            }
+        ]
     pending = _admission("recovery_required", roots, preview["current"]["summary"])
     pending["transaction_id"] = transaction_id
     for value, label in (
@@ -1984,6 +2388,11 @@ def _prepare_transaction(preview: Dict[str, Any], release_snapshot: Optional[Dic
         _control_bytes(value, label)
     if prior_receipt_data is not None:
         _control_bytes(prior_receipt_data, "prior receipt")
+    if registration_bytes is not None:
+        _control_bytes(registration_bytes, "registration execution preview")
+    if native_core_bytes is not None:
+        _control_bytes(native_core_bytes, "native plan core")
+        _control_bytes(native_execution_bytes, "native execution preview")
     immutable_values = [
         (manifest_path, manifest_data),
         (support_path, support_data),
@@ -1992,6 +2401,15 @@ def _prepare_transaction(preview: Dict[str, Any], release_snapshot: Optional[Dic
     ]
     if prior_receipt_data is not None:
         immutable_values.append((transaction / "prior-receipt.json", prior_receipt_data))
+    if registration_preview_path is not None:
+        immutable_values.append((registration_preview_path, registration_bytes))
+    if native_core_path is not None:
+        immutable_values.extend(
+            (
+                (native_core_path, native_core_bytes),
+                (native_execution_path, native_execution_bytes),
+            )
+        )
     for path, data in immutable_values:
         expected_file = _prepared_file_state(data)
         preparation_guard.claim_absent(path, expected_file)
@@ -2012,6 +2430,22 @@ def _prepare_transaction(preview: Dict[str, Any], release_snapshot: Optional[Dic
         support_path, support_data, 0o600, preparation_guard,
         failpoint, "reader-support",
     )
+    if registration_preview_path is not None:
+        _write_prepared_file(
+            registration_preview_path, registration_bytes, 0o600,
+            preparation_guard, failpoint, "registration-execution-preview",
+        )
+        recovery._event(failpoint, "after:prepare-registration-preview")
+    if native_core_path is not None:
+        _write_prepared_file(
+            native_core_path, native_core_bytes, 0o600,
+            preparation_guard, failpoint, "native-plan-core",
+        )
+        _write_prepared_file(
+            native_execution_path, native_execution_bytes, 0o600,
+            preparation_guard, failpoint, "native-execution-preview",
+        )
+        recovery._event(failpoint, "after:prepare-native-execution-preview")
     if not tool_exists:
         preparation_guard.claim_absent(
             actual_tool,
@@ -2029,6 +2463,25 @@ def _prepare_transaction(preview: Dict[str, Any], release_snapshot: Optional[Dic
         "_council_pinned_recover_" + transaction_id.replace("-", "_"), actual_tool,
         tool_sha256, canonical_tool,
     )
+    for source_path, destination, expected_sha256 in native_module_jobs:
+        preparation_guard.claim_absent(
+            destination,
+            {
+                "exists": True,
+                "kind": "file",
+                "sha256": expected_sha256,
+                "mode": 0o600,
+                "artifacts": [],
+            },
+        )
+        _copy_file(
+            source_path, destination, expected_sha256, 0o600,
+            preparation_guard, failpoint,
+            "native-closure-module:" + destination.name,
+        )
+        recovery._event(
+            failpoint, "after:prepare-native-closure-module:" + destination.name
+        )
     for copy_source, copy_destination, copy_expected in copy_jobs:
         preparation_guard.claim_absent(copy_destination, copy_expected)
         _copy_state(
@@ -2065,7 +2518,36 @@ def _prepare_transaction(preview: Dict[str, Any], release_snapshot: Optional[Dic
         "release_snapshot": source,
         "adopt_unowned": "user-authorized-unowned-adoption" in preview["required_gates"],
         "recovery_command": [str(Path(sys.executable).resolve()), "-I", "-B", str(canonical_tool),
-                             "recover", "--state-root", str(state_root)],
+                             "recover", "--state-root", str(state_root)] + (
+                                 ["--quiescent-edit", "--confirm-plan",
+                                  recovery.sha256_bytes(registration_bytes),
+                                  "--invocation-id", "<fresh-invocation-id>"]
+                                 if registration_execution is not None else []
+                             ) + (
+                                 ["--quiescent-edit", "--confirm-plan",
+                                  recovery.sha256_bytes(native_core_bytes),
+                                  "--invocation-id", "<fresh-invocation-id>",
+                                  "--sequence", "<next-sequence>"]
+                                 if native_execution is not None else []
+                             ),
+        "quiescent_invocation": (
+            {
+                "confirmed": True,
+                "plan_sha256": recovery.sha256_bytes(registration_bytes),
+                "invocation_id": registration_decision["invocation_id"],
+            }
+            if registration_execution is not None
+            else {
+                "confirmed": True,
+                "plan_sha256": recovery.sha256_bytes(native_core_bytes),
+                "invocation_id": registration_decision["invocation_id"],
+                "sequence": native_execution["attempt_binding"]["record"]["sequence"],
+                "goal": "target",
+            }
+            if native_execution is not None
+            else None
+        ),
+        "native_context": None,
     })
     bundle.preparation_guard = preparation_guard
     return bundle
@@ -2111,7 +2593,7 @@ def run_handshake(bundle: Dict[str, Any]) -> None:
         if result.returncode:
             raise LifecyclePlanningError("external recovery handshake failed: " + result.stderr[-500:])
         value = json.loads(result.stdout)
-        if arguments[0] == "describe" and value != recovery.describe():
+        if arguments[0] == "describe" and value != bundle["loaded_recoverer"].describe():
             raise LifecyclePlanningError("external recovery description mismatch")
         if arguments[0] == "check-plan" and value.get("status") != "plan-valid":
             raise LifecyclePlanningError("external recovery plan check failed")
@@ -2119,10 +2601,12 @@ def run_handshake(bundle: Dict[str, Any]) -> None:
 
 def publish_and_execute(bundle: Dict[str, Any], lease: Any, c1_inspect: Any,
                         registration_snapshot: Any, *, now: Optional[float] = None,
-                        probe: Optional[Any] = None) -> Dict[str, Any]:
+                        probe: Optional[Any] = None,
+                        failpoint: Optional[Any] = None) -> Dict[str, Any]:
     try:
         return _publish_and_execute(
-            bundle, lease, c1_inspect, registration_snapshot, now=now, probe=probe
+            bundle, lease, c1_inspect, registration_snapshot, now=now, probe=probe,
+            failpoint=failpoint,
         )
     except BaseException:
         _cleanup_preintent_bundle(bundle)
@@ -2131,7 +2615,8 @@ def publish_and_execute(bundle: Dict[str, Any], lease: Any, c1_inspect: Any,
 
 def _publish_and_execute(bundle: Dict[str, Any], lease: Any, c1_inspect: Any,
                          registration_snapshot: Any, *, now: Optional[float],
-                         probe: Optional[Any]) -> Dict[str, Any]:
+                         probe: Optional[Any],
+                         failpoint: Optional[Any]) -> Dict[str, Any]:
     """Revalidate under C1 exclusion, publish intent, and execute the prepared plan."""
     state_root = lease.root
     canonical = Path(bundle["canonical_root"])
@@ -2172,7 +2657,20 @@ def _publish_and_execute(bundle: Dict[str, Any], lease: Any, c1_inspect: Any,
         if (recovery.sha256_file(Path(bundle["canonical_tool"])) !=
                 bundle["loaded_recoverer"].__source_sha256__):
             raise LifecyclePlanningError("canonical recoverer changed after intent publication")
-        return bundle["loaded_recoverer"]._execute_with_lease(state_root, adapter)
+        if bundle.get("quiescent_invocation") is None:
+            return bundle["loaded_recoverer"]._execute_with_lease(
+                state_root, adapter, failpoint=failpoint
+            )
+        return bundle["loaded_recoverer"]._execute_with_lease(
+            state_root, adapter,
+            quiescent_decision=bundle["quiescent_invocation"],
+            failpoint=failpoint,
+            native_effects=(
+                bundle.get("native_context", {}).get("effects")
+                if bundle.get("native_context") is not None
+                else None
+            ),
+        )
 
 
 def status(state_root: Path, payload_root: Path, opencode_root: Path) -> Dict[str, Any]:
@@ -2180,7 +2678,7 @@ def status(state_root: Path, payload_root: Path, opencode_root: Path) -> Dict[st
     if pending is not None:
         return pending
     ownership = inspect_ownership(state_root, payload_root, opencode_root)
-    return {
+    result = {
         "status_format": 1,
         "roots": ownership["roots"],
         "management": ownership["management"],
@@ -2191,6 +2689,973 @@ def status(state_root: Path, payload_root: Path, opencode_root: Path) -> Dict[st
             for unit in ownership["units"]
         ],
     }
+    receipt = ownership.get("receipt")
+    result["registrations"] = (
+        [
+            {
+                "operation_id": item["operation_id"],
+                "runtime": item["runtime"],
+                "source_path": item["source_path"],
+                "ownership_origin": item["ownership_origin"],
+                "stored_config_result": item["stored_config_result"],
+                "effective_scope": item["effective_scope"],
+                "host_restart": item["host_restart"],
+                "authenticated_readiness": item["authenticated_readiness"],
+            }
+            for item in receipt.get("registrations", [])
+        ]
+        if isinstance(receipt, dict)
+        else []
+    )
+    if isinstance(receipt, dict):
+        result["registrations"].extend(
+            {
+                "operation_id": item["operation_id"],
+                "runtime": item["runtime"],
+                "source_path": item["source_path"],
+                "ownership_origin": item["semantic_result_identity"]["record"][
+                    "ownership"
+                ],
+                "stored_config_result": item["stored_config_result"],
+                "effective_scope": item["effective_scope"],
+                "host_restart": item["host_restart"],
+                "authenticated_readiness": item["authenticated_readiness"],
+            }
+            for item in receipt.get("native_registrations", [])
+        )
+    return result
+
+
+def _c2_dependency_contract() -> Dict[str, Any]:
+    return {
+        "contract_format": registration.C2_CONTRACT_FORMAT,
+        "source_commit": registration.C2_SOURCE_COMMIT,
+        "source_hashes": dict(registration.C2_SOURCE_HASHES),
+        "inspection_interfaces": list(registration.C2_INSPECTION_INTERFACES),
+        "format_versions": dict(registration.C2_FORMAT_VERSIONS),
+        "unit_ids": list(registration.C2_UNIT_IDS),
+        "required_operations": list(registration.C2_REQUIRED_OPERATIONS),
+        "planner_interfaces": list(registration.C2_PLANNER_INTERFACES),
+        "recovery_interfaces": list(registration.C2_RECOVERY_INTERFACES),
+        "bundle_keys": list(registration.C2_BUNDLE_KEYS),
+        "external_command": list(registration.C2_EXTERNAL_COMMAND),
+    }
+
+
+def _selected_opencode_config(opencode_root: Path,
+                              owned: Optional[Path] = None) -> Path:
+    candidates = [opencode_root / "opencode.json", opencode_root / "opencode.jsonc"]
+    if owned is not None:
+        # Removing a receipt-owned entry targets the exact file that receipt
+        # names. The "exactly one config" rule decides where a *new* entry goes;
+        # applying it to a removal would let an unrelated second config file the
+        # transaction is not touching abort an uninstall outright.
+        if owned not in candidates:
+            raise LifecyclePlanningError(
+                "receipt-owned OpenCode configuration is outside the OpenCode root"
+            )
+        path = owned
+    else:
+        present = [path for path in candidates if path.exists() or path.is_symlink()]
+        if len(present) != 1:
+            raise LifecyclePlanningError(
+                "automatic OpenCode registration requires exactly one opencode.json or opencode.jsonc"
+            )
+        path = present[0]
+    try:
+        details = path.lstat()
+    except OSError as error:
+        raise LifecyclePlanningError(
+            "OpenCode configuration is unreadable: %s" % error
+        )
+    if stat.S_ISLNK(details.st_mode) or not stat.S_ISREG(details.st_mode) or details.st_nlink != 1:
+        raise LifecyclePlanningError(
+            "OpenCode configuration must be a single-linked regular file"
+        )
+    return path
+
+
+def _opencode_ownership(ownership: Dict[str, Any], source_path: Path) -> Tuple[Any, Optional[str]]:
+    receipt = ownership.get("receipt")
+    if not isinstance(receipt, dict):
+        return None, None
+    records = [
+        item for item in receipt.get("registrations", [])
+        if item.get("runtime") == "opencode"
+        and item.get("source_path") == str(source_path)
+    ]
+    if len(records) > 1:
+        raise LifecyclePlanningError("receipt contains duplicate OpenCode registrations")
+    if not records or records[0]["resulting_entry_sha256"] is None:
+        return None, None
+    record = records[0]
+    origin = record["ownership_origin"]
+    if origin not in ("created", "adopted_by_explicit_plan"):
+        return None, origin
+    return (
+        registration.OwnershipEvidence(
+            "opencode", str(source_path), record["resulting_entry_sha256"], origin
+        ),
+        origin,
+    )
+
+
+def _plan_opencode_registration(operation: str, state_root: Path,
+                                payload_root: Path,
+                                opencode_root: Path) -> Dict[str, Any]:
+    if operation not in (
+        registration.OPENCODE_ENSURE, registration.OPENCODE_REMOVE
+    ):
+        raise LifecyclePlanningError("only the OpenCode semantic adapter is available")
+    ownership = inspect_ownership(state_root, payload_root, opencode_root)
+    if _active_native_registration(ownership.get("receipt")):
+        raise LifecyclePlanningError(
+            "an owned native registration must be unregistered first"
+        )
+    management = ownership["management"]
+    if management["status"] != "committed" or not management["certified"]:
+        raise LifecyclePlanningError(
+            "standalone registration requires a receipt-certified artifact install: %s"
+            % _uncertified_detail(management)
+        )
+    summary = management["summary"]
+    source = retained_release(Path(ownership["roots"]["state"]), summary["receipt_id"])
+    artifact_preview = plan_ownership("registration", source, ownership)
+    if not artifact_preview["eligible_for_integration"]:
+        raise LifecyclePlanningError("artifact ownership blocks registration planning")
+    owned_records = (
+        _owned_opencode_records(ownership.get("receipt"))
+        if operation == registration.OPENCODE_REMOVE
+        else []
+    )
+    if len(owned_records) > 1:
+        raise LifecyclePlanningError("receipt contains duplicate OpenCode registrations")
+    source_path = _selected_opencode_config(
+        Path(ownership["roots"]["opencode"]),
+        owned=Path(owned_records[0]["source_path"]) if owned_records else None,
+    )
+    content = recovery.read_regular(source_path, "OpenCode configuration")
+    document = registration.ConfigDocument(
+        str(source_path), registration.OPENCODE_GLOBAL, content
+    )
+    ownership_evidence, ownership_origin = _opencode_ownership(
+        ownership, source_path
+    )
+    observation = registration.observe_opencode_config(
+        document, ownership_evidence, source_inputs_complete=True
+    )
+    candidate = registration.plan_opencode_candidate(
+        operation,
+        document,
+        ownership_evidence,
+        source_inputs_complete=True,
+    )
+    operation_value = registration.operation_record(
+        "opencode-council", operation, observation, candidate=candidate
+    )
+    c2_bytes = canonical_preview_bytes(artifact_preview)
+    artifact_binding = registration.ArtifactReceiptBinding.from_summary(summary)
+    integration = registration.build_integration_preview(
+        c2_bytes,
+        _c2_dependency_contract(),
+        [operation_value],
+        artifact_receipt=artifact_binding,
+    )
+    if candidate.outcome == "refused":
+        return {
+            "registration_plan_format": 1,
+            "runtime": "opencode",
+            "operation": operation,
+            "source_path": str(source_path),
+            "executable": False,
+            "reason": candidate.reason,
+            "integration": integration,
+            "execution": None,
+            "plan_sha256": None,
+            "_artifact_preview": artifact_preview,
+            "_release": source,
+        }
+    execution_record = registration.opencode_execution_record(
+        operation_value,
+        document,
+        candidate,
+        ownership_origin=ownership_origin,
+    )
+    execution = registration.build_registration_execution_preview(
+        integration, [execution_record]
+    )
+    execution_bytes = registration.canonical_registration_execution_bytes(execution)
+    return {
+        "registration_plan_format": 1,
+        "runtime": "opencode",
+        "operation": operation,
+        "source_path": str(source_path),
+        "executable": True,
+        "reason": "ready-for-quiescent-confirmation",
+        "integration": integration,
+        "execution": execution,
+        "plan_sha256": recovery.sha256_bytes(execution_bytes),
+        "_artifact_preview": artifact_preview,
+        "_release": source,
+    }
+
+
+def _native_policy() -> Any:
+    policy_path = SOURCE_ROOT / "fixtures/registration/native-v3-shape-policy.json"
+    return qualification.validate_native_shape_policy(
+        recovery.read_regular(policy_path, "native v3 shape policy")
+    )
+
+
+def _native_implementation(summary: Dict[str, Any], policy: Any) -> Any:
+    return qualification.NativeImplementationIdentity(
+        summary["package_id"],
+        summary["runtime_cohort"],
+        recovery.NATIVE_PLAN_FORMAT,
+        recovery.NATIVE_RECEIPT_FORMAT,
+        recovery.NATIVE_JOURNAL_FORMAT,
+        recovery.NATIVE_RECOVERY_FORMAT,
+        recovery.__source_sha256__,
+        registration.__source_sha256__,
+        qualification.__source_sha256__,
+        recovery.__source_sha256__,
+        recovery.__source_sha256__,
+        policy.digest(),
+    )
+
+
+def _native_case_evidence(value: Any) -> Tuple[Any, ...]:
+    if not isinstance(value, list):
+        raise LifecyclePlanningError("native case evidence must be a list")
+    result = []
+    for item in value:
+        recovery.exact_keys(
+            item,
+            ("case_id", "case_sha256", "packet_sha256", "evidence_kind"),
+            "native case evidence",
+        )
+        result.append(
+            (
+                item["case_id"],
+                item["case_sha256"],
+                item["packet_sha256"],
+                item["evidence_kind"],
+            )
+        )
+    return tuple(result)
+
+
+def _native_runtime_tuple(value: Dict[str, Any]) -> Any:
+    recovery.exact_keys(
+        value,
+        (
+            "runtime",
+            "executable_path",
+            "executable_realpath",
+            "executable_sha256",
+            "version",
+            "os_name",
+            "architecture",
+        ),
+        "native runtime tuple",
+    )
+    return qualification.RuntimeTuple(**value)
+
+
+def _native_support(value: Dict[str, Any]) -> Any:
+    recovery.exact_keys(
+        value,
+        (
+            "support_id",
+            "operation",
+            "runtime",
+            "runtime_tuple_sha256",
+            "policy_id",
+            "policy_version",
+            "policy_sha256",
+            "implementation_sha256",
+            "intended_entry_sha256",
+            "case_evidence",
+            "independent_review_sha256",
+            "support_matrix_sha256",
+            "reviewer_authority",
+            "consistency_supported",
+            "qualification_authority",
+        ),
+        "native qualification support",
+    )
+    fields = dict(value)
+    fields["case_evidence"] = _native_case_evidence(fields["case_evidence"])
+    return qualification.QualificationSupportDecision(**fields)
+
+
+def _native_qualification_path(state_root: Path, operation: str) -> Path:
+    if operation not in qualification.NATIVE_OPERATIONS:
+        raise LifecyclePlanningError("native qualification operation is not fixed")
+    return (
+        Path(state_root)
+        / ".council-lifecycle/v1/native-qualification-admissions"
+        / (operation + ".json")
+    )
+
+
+def _native_authority(
+    state_root: Path,
+    operation: str,
+    implementation: Any,
+    policy: Any,
+) -> Optional[Tuple[Any, Any, Any]]:
+    path = _native_qualification_path(state_root, operation)
+    try:
+        details = path.lstat()
+    except FileNotFoundError:
+        return None
+    if (
+        stat.S_ISLNK(details.st_mode)
+        or not stat.S_ISREG(details.st_mode)
+        or details.st_nlink != 1
+        or details.st_uid != os.getuid()
+        or stat.S_IMODE(details.st_mode) != 0o600
+    ):
+        raise LifecyclePlanningError(
+            "native qualification admission must be an owner-only regular file"
+        )
+    value, data = recovery.read_object(path, "native qualification authority")
+    recovery.exact_keys(
+        value,
+        ("format", "runtime_tuple", "qualification_support", "qualification_admission"),
+        "native qualification authority",
+    )
+    if value["format"] != "council-native-qualification-authority-v1":
+        raise LifecyclePlanningError("native qualification authority format is unsupported")
+    runtime_tuple = _native_runtime_tuple(value["runtime_tuple"])
+    support = _native_support(value["qualification_support"])
+    admission_record = value["qualification_admission"]
+    admission_value = qualification.validate_qualification_admission(
+        admission_record,
+        support,
+        implementation,
+        policy,
+        runtime_tuple,
+        operation,
+    )
+    if admission_value.fixed_relative_path != str(
+        path.relative_to(Path(state_root))
+    ):
+        raise LifecyclePlanningError("native qualification authority path differs")
+    if recovery.read_regular(path, "native qualification authority") != data:
+        raise LifecyclePlanningError("native qualification authority changed while reading")
+    return runtime_tuple, support, admission_value
+
+
+def _native_source_identity(path: Path) -> str:
+    before = path.lstat()
+    if (
+        stat.S_ISLNK(before.st_mode)
+        or not stat.S_ISREG(before.st_mode)
+        or before.st_nlink != 1
+    ):
+        raise LifecyclePlanningError("native config must be a single-linked regular file")
+    value = {
+        "device": before.st_dev,
+        "inode": before.st_ino,
+        "owner_uid": before.st_uid,
+        "mode": stat.S_IMODE(before.st_mode),
+    }
+    return recovery.sha256_bytes(
+        json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    )
+
+
+def _native_environment(home: Path) -> Tuple[Tuple[str, ...], str, Dict[str, str]]:
+    keys = ("HOME", "LANG", "LC_ALL", "PATH", "TMPDIR")
+    environment = {
+        "HOME": str(home),
+        "LANG": os.environ.get("LANG", ""),
+        "LC_ALL": os.environ.get("LC_ALL", ""),
+        "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+        "TMPDIR": os.environ.get("TMPDIR", "/private/tmp"),
+    }
+    digest = recovery.sha256_bytes(
+        json.dumps(environment, sort_keys=True, separators=(",", ":")).encode(
+            "utf-8"
+        )
+    )
+    return keys, digest, environment
+
+
+def _native_operation(runtime: str, action: str) -> str:
+    operations = {
+        ("claude", "register"): registration.CLAUDE_ENSURE,
+        ("claude", "unregister"): registration.CLAUDE_REMOVE,
+        ("codex", "register"): registration.CODEX_ENSURE,
+        ("codex", "unregister"): registration.CODEX_REMOVE,
+    }
+    try:
+        return operations[(runtime, action)]
+    except KeyError as error:
+        raise LifecyclePlanningError("unsupported native registration action") from error
+
+
+def _native_config_path(home: Path, runtime: str) -> Path:
+    return home / (".claude.json" if runtime == "claude" else ".codex/config.toml")
+
+
+def _native_case_id(runtime: str, operation: str) -> str:
+    if operation.endswith("_ensure"):
+        return runtime + "-add-absent"
+    return runtime + "-remove-present"
+
+
+def _native_owned_registration(
+    ownership: Dict[str, Any], runtime: str, source_path: Path
+) -> Optional[Any]:
+    receipt = ownership.get("receipt")
+    if not isinstance(receipt, dict):
+        return None
+    for value in receipt.get("native_registrations", []):
+        if (
+            value.get("runtime") != runtime
+            or value.get("source_path") != str(source_path)
+        ):
+            continue
+        result = value.get("semantic_result_identity", {}).get("record", {})
+        entry_sha256 = result.get("intended_entry_sha256")
+        origin = result.get("ownership")
+        if entry_sha256 is None or origin not in (
+            "created",
+            "adopted_by_explicit_plan",
+        ):
+            return None
+        return registration.OwnershipEvidence(
+            runtime, str(source_path), entry_sha256, origin
+        )
+    return None
+
+
+def _active_native_registration(receipt: Any) -> bool:
+    return isinstance(receipt, dict) and any(
+        item.get("semantic_result_identity", {}).get("record", {}).get(
+            "intended_state"
+        ) == "matching"
+        for item in receipt.get("native_registrations", [])
+    )
+
+
+# The planner and the executor must answer "do we own an OpenCode registration"
+# identically, so both read the one predicate that lives in the recovery module.
+OWNED_REGISTRATION_ORIGINS = recovery.OWNED_REGISTRATION_ORIGINS
+_owned_opencode_records = recovery.owned_opencode_records
+
+OWNED_OPENCODE_BLOCKS_ARTIFACT = (
+    "an owned OpenCode registration blocks this artifact change, because the "
+    "transaction would replace the plugin the configuration still names: run "
+    "`unregister --runtime opencode`, re-run this command, then "
+    "`register --runtime opencode`"
+)
+
+
+def _active_opencode_registration(receipt: Any) -> bool:
+    return bool(_owned_opencode_records(receipt))
+
+
+def _native_unqualified(runtime: str, action: str) -> Dict[str, Any]:
+    return {
+        "registration_plan_format": recovery.NATIVE_PLAN_FORMAT,
+        "runtime": runtime,
+        "action": action,
+        "executable": False,
+        "reason": "native_behavior_unqualified",
+        "qualification_eligible": False,
+        "native_success_activated": False,
+        "stored_config": "unobserved",
+        "effective_scope": "unknown",
+        "authenticated_readiness": "unobserved",
+    }
+
+
+def _plan_native_registration(
+    runtime: str,
+    action: str,
+    state_root: Path,
+    payload_root: Path,
+    opencode_root: Path,
+    native_home: Optional[Path],
+) -> Dict[str, Any]:
+    operation = _native_operation(runtime, action)
+    qualification_path = _native_qualification_path(state_root, operation)
+    if not qualification_path.exists() and not qualification_path.is_symlink():
+        return _native_unqualified(runtime, action)
+    home = Path.home() if native_home is None else Path(native_home)
+    home = _real_directory(home, "native home")
+    expected_state = home / ".claude/peer-consults"
+    expected_payload = home / ".claude/skills/council"
+    if _lexical_root(state_root) != expected_state or _lexical_root(payload_root) != expected_payload:
+        raise LifecyclePlanningError("native roots differ from the closed shape policy")
+    ownership = inspect_ownership(state_root, payload_root, opencode_root)
+    if _active_opencode_registration(ownership.get("receipt")):
+        raise LifecyclePlanningError(
+            "an owned OpenCode registration must be unregistered first"
+        )
+    management = ownership["management"]
+    if management["status"] != "committed" or not management["certified"]:
+        raise LifecyclePlanningError(
+            "native registration requires a receipt-certified artifact install: %s"
+            % _uncertified_detail(management)
+        )
+    summary = management["summary"]
+    policy = _native_policy()
+    implementation = _native_implementation(summary, policy)
+    authority = _native_authority(state_root, operation, implementation, policy)
+    if authority is None:
+        return _native_unqualified(runtime, action)
+    runtime_tuple, support, admission_value = authority
+    source = _native_config_path(home, runtime)
+    source_data = recovery.read_regular(source, "native registration config")
+    source_identity_sha256 = _native_source_identity(source)
+    stdio = registration.StdioSpec(
+        "/usr/bin/python3", str(expected_payload / "scripts/council_mcp.py")
+    )
+    ownership_evidence = _native_owned_registration(ownership, runtime, source)
+    document = registration.ConfigDocument(
+        str(source),
+        registration.CLAUDE_USER if runtime == "claude" else registration.CODEX_USER,
+        source_data,
+    )
+    if runtime == "claude":
+        observation = registration.observe_claude_config(
+            document,
+            stdio,
+            ownership_evidence,
+            scope_inputs_complete=True,
+        )
+    else:
+        observation = registration.observe_codex_config(
+            document,
+            stdio,
+            ownership_evidence,
+            layer_inputs_complete=True,
+        )
+    selected_policy = next(
+        item for item in policy.policies if item["operation"] == operation
+    )
+    if observation.state not in selected_policy["allowed_initial_states"]:
+        raise LifecyclePlanningError("native current source is outside the closed shape policy")
+    ownership_origin = (
+        "created"
+        if operation.endswith("_ensure")
+        else observation.entry_disposition
+    )
+    if ownership_origin not in (
+        "created",
+        "already_owned",
+        "adopted_by_explicit_plan",
+    ):
+        raise LifecyclePlanningError("native registration ownership is not eligible")
+    retained = retained_release(Path(ownership["roots"]["state"]), summary["receipt_id"])
+    artifact_preview = plan_ownership("registration", retained, ownership)
+    if not artifact_preview["eligible_for_integration"]:
+        raise LifecyclePlanningError("artifact ownership blocks native registration")
+    receipt = registration.ArtifactReceiptBinding.from_summary(summary)
+    core = registration.build_native_plan_core(
+        receipt,
+        runtime + "-council",
+        operation,
+        observation,
+        stdio,
+        implementation,
+        policy,
+        support,
+        admission_value,
+        runtime_tuple,
+    )
+    core_bytes = registration.canonical_native_plan_core_bytes(core)
+    return {
+        "registration_plan_format": recovery.NATIVE_PLAN_FORMAT,
+        "runtime": runtime,
+        "action": action,
+        "operation": operation,
+        "source_path": str(source),
+        "executable": True,
+        "reason": "ready-for-qualified-quiescent-confirmation",
+        "qualification_eligible": True,
+        "native_success_activated": False,
+        "plan_sha256": recovery.sha256_bytes(core_bytes),
+        "plan_core": core,
+        "_artifact_preview": artifact_preview,
+        "_release": retained,
+        "_policy": policy,
+        "_implementation": implementation,
+        "_runtime_tuple": runtime_tuple,
+        "_support": support,
+        "_qualification_admission": admission_value,
+        "_observation": observation,
+        "_document": document,
+        "_stdio": stdio,
+        "_source_identity_sha256": source_identity_sha256,
+        "_ownership_origin": ownership_origin,
+        "_home": home,
+    }
+
+
+def plan_registration(runtime: str, action: str, state_root: Path,
+                      payload_root: Path, opencode_root: Path, *,
+                      native_home: Optional[Path] = None) -> Dict[str, Any]:
+    if runtime not in ("claude", "codex", "opencode") or action not in (
+        "register", "unregister"
+    ):
+        raise LifecyclePlanningError("unsupported registration runtime or action")
+    if runtime != "opencode":
+        value = _plan_native_registration(
+            runtime,
+            action,
+            state_root,
+            payload_root,
+            opencode_root,
+            native_home,
+        )
+        return {key: item for key, item in value.items() if not key.startswith("_")}
+    operation = (
+        registration.OPENCODE_ENSURE
+        if action == "register"
+        else registration.OPENCODE_REMOVE
+    )
+    value = _plan_opencode_registration(
+        operation, state_root, payload_root, opencode_root
+    )
+    return {key: item for key, item in value.items() if not key.startswith("_")}
+
+
+def _native_decision_sha256(decision: Any, sequence: int = 0) -> str:
+    public = decision.public_dict()
+    persisted = {
+        key: public[key]
+        for key in (
+            "plan_sha256",
+            "invocation_id",
+            "goal",
+            "hosts",
+            "files",
+            "closed_and_no_competing_writer",
+        )
+    }
+    persisted["sequence"] = sequence
+    return recovery.sha256_bytes(
+        json.dumps(
+            persisted, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+    )
+
+
+def _native_case(plan: Dict[str, Any]) -> Any:
+    runtime_tuple = plan["_runtime_tuple"]
+    observation = plan["_observation"]
+    return qualification.QualificationCase(
+        _native_case_id(plan["runtime"], plan["operation"]),
+        plan["operation"],
+        runtime_tuple.version,
+        runtime_tuple.os_name,
+        runtime_tuple.architecture,
+        observation.state,
+        plan["_document"],
+        plan["_stdio"],
+        "/private/tmp",
+        observation.complement_sha256,
+        (plan["source_path"],),
+    )
+
+
+def _execute_native_registration(
+    runtime: str,
+    action: str,
+    state_root: Path,
+    payload_root: Path,
+    opencode_root: Path,
+    *,
+    quiescent_edit: bool,
+    confirm_plan: Optional[str],
+    invocation_id: Optional[str],
+    transaction_id: Optional[str],
+    now: Optional[float],
+    probe: Optional[Any],
+    failpoint: Optional[Any],
+    recovery_command_sink: Optional[Any],
+    native_home: Optional[Path],
+    native_effects: Optional[Any],
+    preparation_failpoint: Optional[Any],
+) -> Dict[str, Any]:
+    preflight = _plan_native_registration(
+        runtime,
+        action,
+        state_root,
+        payload_root,
+        opencode_root,
+        native_home,
+    )
+    if (
+        not preflight["executable"]
+        or quiescent_edit is not True
+        or confirm_plan != preflight["plan_sha256"]
+        or not isinstance(invocation_id, str)
+    ):
+        raise LifecyclePlanningError(
+            "native registration is unavailable: native_behavior_unqualified"
+        )
+    recovery.checked_id(invocation_id, "native registration invocation_id")
+    state_path = Path(preflight["_artifact_preview"]["roots"]["state"])
+    with admission.acquire_writer_lease(state_path) as lease:
+        with lease.operation():
+            _reconcile_preparations(state_path, lease)
+            current = _plan_native_registration(
+                runtime,
+                action,
+                state_root,
+                payload_root,
+                opencode_root,
+                native_home,
+            )
+            if current["plan_sha256"] != confirm_plan:
+                raise LifecyclePlanningError(
+                    "native registration inputs changed after quiescent admission"
+                )
+            snapshot = inspect.snapshot_registrations(state_path)
+            report = inspect.registration_report(
+                snapshot,
+                time.time() if now is None else now,
+                inspect.probe_process if probe is None else probe,
+            )
+            if report["blocked"]:
+                raise LifecyclePlanningError(
+                    "live, unknown, duplicate, or incompatible registrations block maintenance"
+                )
+            decision = registration.QuiescentDecisionProjection(
+                confirm_plan,
+                invocation_id,
+                "target",
+                (runtime,),
+                (current["source_path"],),
+                True,
+            )
+            decision_sha256 = _native_decision_sha256(decision)
+            environment_keys, environment_sha256, environment = _native_environment(
+                current["_home"]
+            )
+            execution_id = "native-execution-" + confirm_plan[:24]
+            execution_admission = qualification.NativeExecutionAdmission(
+                execution_id,
+                current["operation"],
+                runtime,
+                str(state_path),
+                str(current["_home"]),
+                str(Path(current["_artifact_preview"]["roots"]["payload"])),
+                current["source_path"],
+                True,
+                current["_source_identity_sha256"],
+                current["_ownership_origin"],
+                "/private/tmp",
+                (current["source_path"],),
+                environment_keys,
+                environment_sha256,
+                current["_implementation"].observer_policy_sha256,
+                decision_sha256,
+                "council_lifecycle_execution_owner",
+                True,
+            )
+            case = _native_case(current)
+            mode = (
+                "forward"
+                if current["operation"].endswith("_ensure")
+                else "inverse"
+            )
+            family = qualification.build_native_attempt_family(
+                current["plan_core"]["operation_id"],
+                mode,
+                case,
+                execution_admission,
+                current["_runtime_tuple"],
+                current["_qualification_admission"],
+                current["_support"],
+                current["_implementation"],
+                current["_policy"],
+            )
+            binding = qualification.build_native_attempt_binding(
+                current["plan_core"]["operation_id"],
+                0,
+                mode,
+                case,
+                execution_admission,
+                current["_runtime_tuple"],
+                current["_qualification_admission"],
+                current["_support"],
+                current["_implementation"],
+                current["_policy"],
+                family,
+            )
+            semantic_identity = qualification.build_semantic_native_result_identity(
+                binding, current["_ownership_origin"], family
+            )
+            native_execution = registration.finalize_native_execution(
+                current["plan_core"],
+                family,
+                binding,
+                semantic_identity,
+                execution_admission,
+            )
+            bundle = prepare_transaction(
+                current["_artifact_preview"],
+                current["_release"],
+                lease,
+                transaction_id=transaction_id,
+                native_plan_core=current["plan_core"],
+                native_execution=native_execution,
+                quiescent_decision=decision,
+                failpoint=preparation_failpoint,
+            )
+            bundle["native_context"] = {
+                "environment": environment,
+                "effects": native_effects,
+            }
+            try:
+                if recovery_command_sink is not None:
+                    recovery_command_sink(list(bundle["recovery_command"]))
+                result = publish_and_execute(
+                    bundle,
+                    lease,
+                    inspect,
+                    snapshot,
+                    now=now,
+                    probe=probe,
+                    failpoint=failpoint,
+                )
+            except BaseException:
+                _cleanup_preintent_bundle(bundle)
+                raise
+    result.update(
+        registration={
+            "runtime": runtime,
+            "stored_config": "verified",
+            "effective_scope": "unknown",
+            "host_restart": "required",
+            "authenticated_readiness": "unobserved",
+            "native_success_activated": False,
+        },
+        recovery_command=bundle["recovery_command"],
+    )
+    return result
+
+
+def execute_registration(runtime: str, action: str, state_root: Path,
+                         payload_root: Path, opencode_root: Path, *,
+                         quiescent_edit: bool = False,
+                         confirm_plan: Optional[str] = None,
+                         invocation_id: Optional[str] = None,
+                         transaction_id: Optional[str] = None,
+                         now: Optional[float] = None,
+                         probe: Optional[Any] = None,
+                         failpoint: Optional[Any] = None,
+                         recovery_command_sink: Optional[Any] = None,
+                         native_home: Optional[Path] = None,
+                         native_effects: Optional[Any] = None,
+                         _preparation_failpoint: Optional[Any] = None) -> Dict[str, Any]:
+    if runtime != "opencode":
+        return _execute_native_registration(
+            runtime,
+            action,
+            state_root,
+            payload_root,
+            opencode_root,
+            quiescent_edit=quiescent_edit,
+            confirm_plan=confirm_plan,
+            invocation_id=invocation_id,
+            transaction_id=transaction_id,
+            now=now,
+            probe=probe,
+            failpoint=failpoint,
+            recovery_command_sink=recovery_command_sink,
+            native_home=native_home,
+            native_effects=native_effects,
+            preparation_failpoint=_preparation_failpoint,
+        )
+    operation = (
+        registration.OPENCODE_ENSURE
+        if action == "register"
+        else registration.OPENCODE_REMOVE
+        if action == "unregister"
+        else None
+    )
+    if operation is None:
+        raise LifecyclePlanningError("unsupported registration action")
+    preflight = _plan_opencode_registration(
+        operation, state_root, payload_root, opencode_root
+    )
+    if (
+        not preflight["executable"]
+        or quiescent_edit is not True
+        or confirm_plan != preflight["plan_sha256"]
+        or not isinstance(invocation_id, str)
+    ):
+        raise LifecyclePlanningError(
+            "registration apply requires the exact plan digest and fresh --quiescent-edit invocation"
+        )
+    recovery.checked_id(invocation_id, "registration invocation_id")
+    state_path = Path(preflight["_artifact_preview"]["roots"]["state"])
+    with admission.acquire_writer_lease(state_path) as lease:
+        with lease.operation():
+            _reconcile_preparations(state_path, lease)
+            current = _plan_opencode_registration(
+                operation, state_root, payload_root, opencode_root
+            )
+            if current["plan_sha256"] != confirm_plan:
+                raise LifecyclePlanningError(
+                    "registration inputs changed after quiescent admission"
+                )
+            snapshot = inspect.snapshot_registrations(state_path)
+            report = inspect.registration_report(
+                snapshot,
+                time.time() if now is None else now,
+                inspect.probe_process if probe is None else probe,
+            )
+            if report["blocked"]:
+                raise LifecyclePlanningError(
+                    "live, unknown, duplicate, or incompatible registrations block maintenance"
+                )
+            decision = registration.QuiescentDecisionProjection(
+                confirm_plan,
+                invocation_id,
+                "target",
+                ("opencode",),
+                tuple(
+                    item["source_path"]
+                    for item in current["execution"]["operations"]
+                ),
+                True,
+            )
+            bundle = prepare_transaction(
+                current["_artifact_preview"],
+                current["_release"],
+                lease,
+                transaction_id=transaction_id,
+                registration_execution=current["execution"],
+                quiescent_decision=decision,
+                failpoint=_preparation_failpoint,
+            )
+            if recovery_command_sink is not None:
+                recovery_command_sink(list(bundle["recovery_command"]))
+            result = publish_and_execute(
+                bundle, lease, inspect, snapshot, now=now, probe=probe,
+                failpoint=failpoint,
+            )
+    result.update(
+        registration={
+            "runtime": "opencode",
+            "stored_config": "verified",
+            "effective_scope": "unknown",
+            "host_restart": "required",
+            "authenticated_readiness": "unobserved",
+        },
+        recovery_command=bundle["recovery_command"],
+    )
+    return result
 
 
 def rebind_identity(state_root: Path, payload_root: Path,
@@ -2228,10 +3693,14 @@ def execute_operation(kind: str, release_root: Optional[Path], state_root: Path,
                       payload_root: Path, opencode_root: Path, *,
                       maintenance_window_confirmed: bool = False,
                       adopt_unowned: bool = False,
+                      quiescent_edit: bool = False,
+                      confirm_plan: Optional[str] = None,
+                      invocation_id: Optional[str] = None,
                       receipt_id: Optional[str] = None,
                       transaction_id: Optional[str] = None,
                       now: Optional[float] = None,
                       probe: Optional[Any] = None,
+                      failpoint: Optional[Any] = None,
                       recovery_command_sink: Optional[Any] = None,
                       _preparation_failpoint: Optional[Any] = None) -> Dict[str, Any]:
     """Execute one normal artifact transaction through the shared C1 lease."""
@@ -2250,10 +3719,18 @@ def execute_operation(kind: str, release_root: Optional[Path], state_root: Path,
         raise LifecyclePlanningError("uninstall does not accept a release")
     if kind != "uninstall" and release is None:
         raise LifecyclePlanningError("install and upgrade require a generated release")
-    preflight = plan_ownership(
-        kind, release, inspect_ownership(state_input, payload_input, opencode_input),
-        adopt_unowned=adopt_unowned,
-    )
+    ownership = inspect_ownership(state_input, payload_input, opencode_input)
+    if _active_native_registration(ownership.get("receipt")):
+        raise LifecyclePlanningError(
+            "an owned native registration must be unregistered before artifact changes"
+        )
+    if kind != "uninstall" and _active_opencode_registration(ownership.get("receipt")):
+        # Uninstall is the one artifact kind that carries the registration: it
+        # plans the removal and orders it before deletion. Every other kind would
+        # commit a receipt that no longer records the ownership, stranding the
+        # entry in the user's configuration.
+        raise LifecyclePlanningError(OWNED_OPENCODE_BLOCKS_ARTIFACT)
+    preflight = plan_ownership(kind, release, ownership, adopt_unowned=adopt_unowned)
     if not preflight["eligible_for_integration"]:
         raise LifecyclePlanningError("lifecycle preflight has ownership blockers")
     if (preflight["current"]["status"] == "legacy_unmanaged" and
@@ -2264,6 +3741,25 @@ def execute_operation(kind: str, release_root: Optional[Path], state_root: Path,
     state_input = Path(preflight["roots"]["state"])
     payload_input = Path(preflight["roots"]["payload"])
     opencode_input = Path(preflight["roots"]["opencode"])
+    registration_plan = None
+    owned_registration = _active_opencode_registration(ownership.get("receipt"))
+    if kind == "uninstall" and owned_registration:
+        registration_plan = _plan_opencode_registration(
+            registration.OPENCODE_REMOVE,
+            state_input,
+            payload_input,
+            opencode_input,
+        )
+        if (
+            not registration_plan["executable"]
+            or quiescent_edit is not True
+            or confirm_plan != registration_plan["plan_sha256"]
+            or not isinstance(invocation_id, str)
+        ):
+            raise LifecyclePlanningError(
+                "owned registration uninstall requires its exact quiescent plan digest"
+            )
+        recovery.checked_id(invocation_id, "registration invocation_id")
     with admission.acquire_writer_lease(state_input) as lease:
         with lease.operation():
             _create_fixed_directory(payload_input.parent)
@@ -2278,6 +3774,16 @@ def execute_operation(kind: str, release_root: Optional[Path], state_root: Path,
                 raise LifecyclePlanningError(
                     "lifecycle inputs changed or are blocked after exclusion"
                 )
+            if _active_opencode_registration(
+                current.get("receipt")
+            ) is not owned_registration:
+                # A concurrent register/unregister landed between preflight and
+                # this lease. Admitting it either way would delete backing code
+                # the config still names, or demand a plan digest for an entry
+                # that no longer exists.
+                raise LifecyclePlanningError(
+                    "registration ownership changed after quiescent admission"
+                )
             snapshot = inspect.snapshot_registrations(state_input)
             report = inspect.registration_report(
                 snapshot, time.time() if now is None else now,
@@ -2287,15 +3793,46 @@ def execute_operation(kind: str, release_root: Optional[Path], state_root: Path,
                 raise LifecyclePlanningError(
                     "live, unknown, duplicate, or incompatible registrations block maintenance"
                 )
+            registration_execution = None
+            decision = None
+            if registration_plan is not None:
+                refreshed_registration = _plan_opencode_registration(
+                    registration.OPENCODE_REMOVE,
+                    state_input,
+                    payload_input,
+                    opencode_input,
+                )
+                if refreshed_registration["plan_sha256"] != confirm_plan:
+                    raise LifecyclePlanningError(
+                        "registration inputs changed after quiescent admission"
+                    )
+                registration_execution = refreshed_registration["execution"]
+                decision = registration.QuiescentDecisionProjection(
+                    confirm_plan,
+                    invocation_id,
+                    "target",
+                    ("opencode",),
+                    tuple(
+                        item["source_path"]
+                        for item in registration_execution["operations"]
+                    ),
+                    True,
+                )
             bundle = prepare_transaction(
-                preview, release, lease, transaction_id=transaction_id,
+                preview,
+                release,
+                lease,
+                transaction_id=transaction_id,
+                registration_execution=registration_execution,
+                quiescent_decision=decision,
                 failpoint=_preparation_failpoint,
             )
             try:
                 if recovery_command_sink is not None:
                     recovery_command_sink(list(bundle["recovery_command"]))
                 result = publish_and_execute(
-                    bundle, lease, inspect, snapshot, now=now, probe=probe
+                    bundle, lease, inspect, snapshot, now=now, probe=probe,
+                    failpoint=failpoint,
                 )
             except BaseException:
                 _cleanup_preintent_bundle(bundle)
@@ -2342,10 +3879,33 @@ def _plan_command(kind: str, release_value: Optional[Path], receipt_id: Optional
         if receipt_id is not None:
             raise LifecyclePlanningError("receipt selection is supported only for rollback")
         release = validate_release(_release_argument(release_value))
-    return plan_ownership(
-        kind, release, inspect_ownership(state_root, payload_root, opencode_root),
-        adopt_unowned=adopt_unowned,
-    )
+    ownership = inspect_ownership(state_root, payload_root, opencode_root)
+    if _active_native_registration(ownership.get("receipt")):
+        raise LifecyclePlanningError(
+            "an owned native registration must be unregistered before artifact changes"
+        )
+    if kind != "uninstall" and _active_opencode_registration(ownership.get("receipt")):
+        raise LifecyclePlanningError(OWNED_OPENCODE_BLOCKS_ARTIFACT)
+    preview = plan_ownership(kind, release, ownership, adopt_unowned=adopt_unowned)
+    if kind == "uninstall":
+        if _active_opencode_registration(ownership.get("receipt")):
+            registration_plan = _plan_opencode_registration(
+                registration.OPENCODE_REMOVE,
+                state_root,
+                payload_root,
+                opencode_root,
+            )
+            return {
+                "artifact": preview,
+                "registration": {
+                    key: value
+                    for key, value in registration_plan.items()
+                    if not key.startswith("_")
+                },
+                "requires_quiescent_edit": True,
+                "plan_sha256": registration_plan["plan_sha256"],
+            }
+    return preview
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -2363,6 +3923,11 @@ def _parser() -> argparse.ArgumentParser:
     rollback_plan.add_argument("--receipt", required=True)
     rollback_plan.add_argument("--adopt-unowned", action="store_true")
     plan_actions.add_parser("uninstall")
+    for action in ("register", "unregister"):
+        registration_plan = plan_actions.add_parser(action)
+        registration_plan.add_argument(
+            "--runtime", choices=("claude", "codex", "opencode"), required=True
+        )
     install = commands.add_parser("install", help="adopt an eligible generated release")
     install.add_argument("--release", type=Path)
     install.add_argument("--maintenance-window-confirmed", action="store_true")
@@ -2372,10 +3937,25 @@ def _parser() -> argparse.ArgumentParser:
     rollback = commands.add_parser("rollback", help="restore an exact retained receipt")
     rollback.add_argument("--receipt", required=True)
     rollback.add_argument("--adopt-unowned", action="store_true")
-    commands.add_parser("uninstall", help="remove only receipt-owned code artifacts")
+    uninstall = commands.add_parser(
+        "uninstall", help="remove receipt-owned code and any owned registration"
+    )
+    uninstall.add_argument("--quiescent-edit", action="store_true")
+    uninstall.add_argument("--confirm-plan")
+    uninstall.add_argument("--invocation-id")
     commands.add_parser(
         "rebind", help="re-certify identities after a re-created fixed root or lock"
     )
+    for action in ("register", "unregister"):
+        registration_action = commands.add_parser(
+            action, help=action + " one fixed Council runtime integration"
+        )
+        registration_action.add_argument(
+            "--runtime", choices=("claude", "codex", "opencode"), required=True
+        )
+        registration_action.add_argument("--quiescent-edit", action="store_true")
+        registration_action.add_argument("--confirm-plan")
+        registration_action.add_argument("--invocation-id")
     return parser
 
 
@@ -2391,12 +3971,37 @@ def main(argv: Optional[List[str]] = None) -> int:
         elif args.command == "rebind":
             result = rebind_identity(*roots)
         elif args.command == "plan":
-            result = _plan_command(
-                args.kind, getattr(args, "release", None),
-                getattr(args, "receipt", None), roots,
-                getattr(args, "adopt_unowned", False),
-            )
+            if args.kind in ("register", "unregister"):
+                result = plan_registration(args.runtime, args.kind, *roots)
+            else:
+                result = _plan_command(
+                    args.kind, getattr(args, "release", None),
+                    getattr(args, "receipt", None), roots,
+                    getattr(args, "adopt_unowned", False),
+                )
         else:
+            if args.command in ("register", "unregister"):
+                def announce_registration(command: List[str]) -> None:
+                    sys.stderr.write(
+                        "recovery-command: "
+                        + json.dumps(
+                            command, ensure_ascii=False, separators=(",", ":")
+                        )
+                        + "\n"
+                    )
+                    sys.stderr.flush()
+
+                result = execute_registration(
+                    args.runtime,
+                    args.command,
+                    *roots,
+                    quiescent_edit=args.quiescent_edit,
+                    confirm_plan=args.confirm_plan,
+                    invocation_id=args.invocation_id,
+                    recovery_command_sink=announce_registration,
+                )
+                sys.stdout.buffer.write(recovery.json_bytes(result))
+                return 0
             release_root = (
                 _release_argument(getattr(args, "release", None))
                 if args.command in ("install", "upgrade") else None
@@ -2415,6 +4020,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                     args, "maintenance_window_confirmed", False
                 ),
                 adopt_unowned=getattr(args, "adopt_unowned", False),
+                quiescent_edit=getattr(args, "quiescent_edit", False),
+                confirm_plan=getattr(args, "confirm_plan", None),
+                invocation_id=getattr(args, "invocation_id", None),
                 receipt_id=getattr(args, "receipt", None),
                 recovery_command_sink=announce,
             )

@@ -44,6 +44,11 @@ class ReleaseTests(unittest.TestCase):
         self.run_builder("--output", str(left))
         self.run_builder("--output", str(right))
         manifest = json.loads((left / "release_manifest.json").read_text())
+        for relative in (
+            "payload/scripts/council_registration.py",
+            "payload/scripts/council_registration_qualification.py",
+        ):
+            self.assertIn(relative, manifest["artifacts"])
         self.assertEqual((left / "release_manifest.json").read_bytes(), (right / "release_manifest.json").read_bytes())
         files = {str(path.relative_to(left)) for path in left.rglob("*") if path.is_file()}
         self.assertEqual(files, set(manifest["artifacts"]) | {"release_manifest.json"})
@@ -130,7 +135,9 @@ class ReleaseTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(
-            "{status,plan,install,upgrade,rollback,uninstall,rebind}", result.stdout
+            "{status,plan,install,upgrade,rollback,uninstall,rebind,"
+            "register,unregister}",
+            result.stdout,
         )
         self.assertEqual(own_caches(), before)
 

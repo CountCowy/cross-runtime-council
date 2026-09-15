@@ -1,0 +1,11 @@
+{
+  "unrelated": {"secret": "fixture-only"},
+  "mcpServers": {
+    "other": {"type": "stdio", "command": "/bin/other", "args": []},
+    "council": {
+      "type": "stdio",
+      "command": "/usr/bin/python3",
+      "args": ["/opt/council/scripts/council_mcp.py"]
+    }
+  }
+}
