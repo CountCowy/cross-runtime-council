@@ -3,6 +3,7 @@
 
 import ast
 import copy
+import hashlib
 import json
 import os
 import socket
@@ -86,6 +87,15 @@ class StrictJsonTests(unittest.TestCase):
 class C2LifecycleEvidenceTests(unittest.TestCase):
     def setUp(self):
         self.record = literal_json("c2-lifecycle-evidence-v1.json")
+
+    def test_pinned_interface_packet_digest_is_recomputable_from_the_checkout(self):
+        packet = Path(__file__).resolve().parent.parent / evidence.C2_INTERFACE_PACKET_PATH
+        digest = hashlib.sha256(packet.read_bytes()).hexdigest()
+        self.assertEqual(digest, evidence.C2_INTERFACE_PACKET_SHA256)
+        self.assertEqual(
+            json.loads(packet.read_text(encoding="utf-8"))["source_commit"],
+            evidence.C2_SOURCE_COMMIT,
+        )
 
     def test_literal_fixture_binds_fixed_c2_interface_and_supports_installed_only(self):
         self.assertEqual(evidence.validate_c2_lifecycle_evidence(self.record), self.record)

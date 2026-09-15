@@ -32,28 +32,40 @@ COLLECTOR_RESULT_FORMAT = "collector-result/v1"
 COLLECTOR_QUALIFICATION_FORMAT = "collector-qualification/v1"
 C2_LIFECYCLE_EVIDENCE_FORMAT = "c2-lifecycle-evidence/v1"
 
-C2_SOURCE_COMMIT = "453acae08d4e95ccff8a7b8d72bf14fa97f19bdf"
+# The one C2 maintenance release this reader accepts evidence from.  C2 landed on
+# main as the squash-merge commit below; every identity here is the landed one.
+C2_SOURCE_COMMIT = "5a4160b0b99bbbe87f3c5e22705cf78d65e0e6b8"
+# The C2 dependency interface packet is the tracked contract fixture
+# scripts/fixtures/registration/c2-interface-5a4160b.json, which records the
+# landed C2 commit, release identity, source hashes and executor/planner
+# signatures.  Recompute the digest from a checkout with
+#     shasum -a 256 scripts/fixtures/registration/c2-interface-5a4160b.json
+# (equivalently sha256 over the file bytes); any reader of this repository can
+# therefore check this pin without retained out-of-tree run evidence.
 C2_INTERFACE_PACKET_SHA256 = (
-    "9f21554b3d3b771681ce15d35049f8c17399c9b580fc5174aad41f30ce0f78fe"
+    "992d9c6a8a66fae58605b076b202b9019af3e8b984da9cde3d2410abe624eb02"
 )
+C2_INTERFACE_PACKET_PATH = "scripts/fixtures/registration/c2-interface-5a4160b.json"
+# sha256 over the committed release_manifest.json bytes at C2_SOURCE_COMMIT.
 C2_RELEASE_MANIFEST_SHA256 = (
-    "83b73cff12f5e10599497efc5d29e3887faae3ac33cb106752027e94c1b98ef2"
+    "4b2dd7cdad56cb0e7275f32be0b38d0b566a20d9f6a66195bc736dc701d6632b"
 )
-C2_PACKAGE_ID = "fdf7ec2fbe4d9198c16b7b578d3b92f46265d421d2634e36820db07197cd2622"
+C2_PACKAGE_ID = "bda16c1b0f3097547ab7f2b4216ddad46c71635bea55da4f856816441878594e"
 C2_RUNTIME_COHORT = "8181ae63906b42e4af670df1613dede4d194c48991594e3b8ea9b961877831b5"
 C2_ARTIFACT_COUNT = 89
+# sha256 over each file's committed bytes at C2_SOURCE_COMMIT.
 C2_SOURCE_SHA256 = {
     "scripts/council_admission.py": (
-        "ed47cfc644cf255f53ef3cf9f576f9ee01c9ecb24978670fd66b2021a53afc33"
+        "4d8ba851861aade8d158093a8d483b59296a7e7325c41dbfd9354a1aab90c863"
     ),
     "scripts/council_inspect.py": (
-        "07d4d6cd9f141a51d09eed133cb61c5649f7273ae6aa0d497938fa9eb7a68908"
+        "fbc6845244e9125cc72e4e7a36fdb96386e1586d7af01bb52ae68e0de44324d0"
     ),
     "scripts/council_lifecycle.py": (
-        "843b4dc9bc015e551f4e9daab069596ccbcfc69882e711b7bfa8b44c5b7248f0"
+        "a51380a25223561a9efe5b28a15436cea08ed6fa82fc0cd2bcd939ec339829f9"
     ),
     "scripts/council_recover.py": (
-        "ab81f83ff2abd217d96fa9a114624f903ab941d617ae24b4d9457be403251c2b"
+        "b10af86e1ff988dd55101ff44226b0eb1a2e339e1c84049d84d2484ab9cf46c3"
     ),
 }
 C2_UNIT_IDS = (

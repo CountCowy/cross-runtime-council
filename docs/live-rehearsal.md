@@ -178,6 +178,25 @@ The maintainer records these preconditions before an intervention:
    the permitted broker/host generations and interventions; declared deadlines,
    configured timers, and required observation sources and controls.
 
+The installed-compatibility preflight of item 3 reads one `c2-lifecycle-evidence/v1`
+record and accepts exactly one maintenance release: the C2 lifecycle/recovery
+component as landed on `main` in commit
+`5a4160b0b99bbbe87f3c5e22705cf78d65e0e6b8`. `scripts/rehearsal_evidence.py` pins
+that release's manifest SHA-256, package ID, runtime cohort, artifact count, the
+SHA-256 of the four C2 source files at that commit, and the SHA-256 of the C2
+dependency interface packet. The interface packet is the tracked contract fixture
+`scripts/fixtures/registration/c2-interface-5a4160b.json`, which records the
+landed commit, release identity, source hashes and executor/planner signatures;
+recompute its digest from any checkout with
+
+```
+shasum -a 256 scripts/fixtures/registration/c2-interface-5a4160b.json
+```
+
+Evidence that declares any other C2 identity — including evidence produced by an
+install of the earlier frozen C2 head `453acae0` — is refused rather than
+downgraded, and no installed-compatibility claim is recorded from it.
+
 A production-account smoke run permits ordinary authorized operations only and
 must be labeled `smoke`, with recovery gates unobserved or skipped as appropriate.
 Account isolation is not a claim about independent backend accounts or services;

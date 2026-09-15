@@ -1,13 +1,13 @@
 {
   "format": "c2-lifecycle-evidence/v1",
   "source": {
-    "commit": "453acae08d4e95ccff8a7b8d72bf14fa97f19bdf",
-    "interface_packet_sha256": "9f21554b3d3b771681ce15d35049f8c17399c9b580fc5174aad41f30ce0f78fe",
+    "commit": "5a4160b0b99bbbe87f3c5e22705cf78d65e0e6b8",
+    "interface_packet_sha256": "992d9c6a8a66fae58605b076b202b9019af3e8b984da9cde3d2410abe624eb02",
     "source_sha256": {
-      "scripts/council_admission.py": "ed47cfc644cf255f53ef3cf9f576f9ee01c9ecb24978670fd66b2021a53afc33",
-      "scripts/council_inspect.py": "07d4d6cd9f141a51d09eed133cb61c5649f7273ae6aa0d497938fa9eb7a68908",
-      "scripts/council_lifecycle.py": "843b4dc9bc015e551f4e9daab069596ccbcfc69882e711b7bfa8b44c5b7248f0",
-      "scripts/council_recover.py": "ab81f83ff2abd217d96fa9a114624f903ab941d617ae24b4d9457be403251c2b"
+      "scripts/council_admission.py": "4d8ba851861aade8d158093a8d483b59296a7e7325c41dbfd9354a1aab90c863",
+      "scripts/council_inspect.py": "fbc6845244e9125cc72e4e7a36fdb96386e1586d7af01bb52ae68e0de44324d0",
+      "scripts/council_lifecycle.py": "a51380a25223561a9efe5b28a15436cea08ed6fa82fc0cd2bcd939ec339829f9",
+      "scripts/council_recover.py": "b10af86e1ff988dd55101ff44226b0eb1a2e339e1c84049d84d2484ab9cf46c3"
     }
   },
   "recovery_description": {
@@ -71,7 +71,7 @@
       "summary": {
         "receipt_id": "receipt-c2-fixture",
         "receipt_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
-        "package_id": "fdf7ec2fbe4d9198c16b7b578d3b92f46265d421d2634e36820db07197cd2622",
+        "package_id": "bda16c1b0f3097547ab7f2b4216ddad46c71635bea55da4f856816441878594e",
         "runtime_cohort": "8181ae63906b42e4af670df1613dede4d194c48991594e3b8ea9b961877831b5"
       }
     },
@@ -109,9 +109,9 @@
     "receipt_id": "receipt-c2-fixture",
     "receipt_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
     "outcome": "committed",
-    "package_id": "fdf7ec2fbe4d9198c16b7b578d3b92f46265d421d2634e36820db07197cd2622",
+    "package_id": "bda16c1b0f3097547ab7f2b4216ddad46c71635bea55da4f856816441878594e",
     "runtime_cohort": "8181ae63906b42e4af670df1613dede4d194c48991594e3b8ea9b961877831b5",
-    "source_manifest_sha256": "83b73cff12f5e10599497efc5d29e3887faae3ac33cb106752027e94c1b98ef2",
+    "source_manifest_sha256": "4b2dd7cdad56cb0e7275f32be0b38d0b566a20d9f6a66195bc736dc701d6632b",
     "reader_support_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
     "recovery": {
       "format": 1,
@@ -148,8 +148,8 @@
   },
   "manifest_identity": {
     "format": 1,
-    "sha256": "83b73cff12f5e10599497efc5d29e3887faae3ac33cb106752027e94c1b98ef2",
-    "package_id": "fdf7ec2fbe4d9198c16b7b578d3b92f46265d421d2634e36820db07197cd2622",
+    "sha256": "4b2dd7cdad56cb0e7275f32be0b38d0b566a20d9f6a66195bc736dc701d6632b",
+    "package_id": "bda16c1b0f3097547ab7f2b4216ddad46c71635bea55da4f856816441878594e",
     "runtime_cohort": "8181ae63906b42e4af670df1613dede4d194c48991594e3b8ea9b961877831b5",
     "artifact_count": 89,
     "runtime_sources": [
@@ -170,7 +170,7 @@
     "verified_count": 89,
     "mismatch_count": 0,
     "artifact_cohort_compatible": true,
-    "package_id": "fdf7ec2fbe4d9198c16b7b578d3b92f46265d421d2634e36820db07197cd2622",
+    "package_id": "bda16c1b0f3097547ab7f2b4216ddad46c71635bea55da4f856816441878594e",
     "runtime_cohort": "8181ae63906b42e4af670df1613dede4d194c48991594e3b8ea9b961877831b5"
   }
 }
