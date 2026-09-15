@@ -47,6 +47,8 @@ class ReleaseTests(unittest.TestCase):
         for relative in (
             "payload/scripts/council_registration.py",
             "payload/scripts/council_registration_qualification.py",
+            "payload/scripts/council_rehearsal.py",
+            "payload/scripts/rehearsal_evidence.py",
         ):
             self.assertIn(relative, manifest["artifacts"])
         self.assertEqual((left / "release_manifest.json").read_bytes(), (right / "release_manifest.json").read_bytes())
