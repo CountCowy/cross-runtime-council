@@ -3,13 +3,118 @@
 Contract: `council-live-rehearsal/v1`. This is the specification for a recorded
 rehearsal, not evidence that one ran. The maintainer completes the
 [run-record template](../examples/live-rehearsal/run-record.template.json)
-against the exact tested artifact set. An assisted runner and validated capture
-adapters are subsequent work; this document launches no runtime or intervention.
+against the exact tested artifact set. The repository's file-only assisted runner
+validates declarations, copies selected evidence, records checkpoints, recomputes
+verdicts and builds local exports. It still launches no runtime or intervention.
+No production collector is qualified merely because the runner or its fixtures
+exist; validated native capture adapters remain subsequent work.
 
 The [verification map](verification-map.md#live-matrix-observations-blocking-release-checklist-rows)
 assigns observations to G1–G5. CI, artifact oracles, and participant
 [eval definitions](../evals/evals.json) support preparation but cannot establish
 receipt or handling inside a live receiving runtime.
+
+## File-only assisted runner
+
+The maintainer runs `scripts/council_rehearsal.py` with Python 3.9 or later. Every
+input file and mutable root is explicit. The runner does not discover installed
+runtimes or private configuration, invoke a native CLI, contact a broker or host,
+send participant work, execute an intervention, publish an export or delete any
+dialogue/capture. The user still supplies the dedicated account, admitted hosts
+and seats, allowed interventions, capture access and separate retention choices
+before a live disruptive case is armed.
+
+The existing [run-record template](../examples/live-rehearsal/run-record.template.json)
+remains editable scaffolding. Before freezing a runner plan, the maintainer gives
+its previously open fields the strict shapes illustrated by the
+[literal G1 fixture](../scripts/fixtures/live_rehearsal/named-g1-pass.fixture.json).
+The runner has no `declare` mutation command: the maintainer edits `record.json`,
+and `checkpoint` freezes or records the reviewed boundary. The
+[synthetic core walkthrough](../examples/live-rehearsal/core-walkthrough/README.md)
+executes the entire file lifecycle without a live account.
+
+### Commands
+
+```sh
+python3 scripts/council_rehearsal.py init --private-root DIR --plan FILE
+python3 scripts/council_rehearsal.py import-evidence --run DIR --input FILE
+python3 scripts/council_rehearsal.py checkpoint --run DIR --input FILE --preview
+python3 scripts/council_rehearsal.py checkpoint --run DIR --input FILE
+python3 scripts/council_rehearsal.py validate --run DIR
+python3 scripts/council_rehearsal.py assess --run DIR
+python3 scripts/council_rehearsal.py export --run DIR --destination DIR
+```
+
+`init` requires an absent private root outside the repository and a
+`rehearsal-plan/v1` input. It creates `record.json`, `runner-state.json`,
+`private-index.json`, `objects/` and `checkpoints/`. `import-evidence` consumes a
+`rehearsal-import/v1` allowlist with absolute source files, selected-test-dialogue
+scope and recorded safety review. It returns random opaque refs; the maintainer
+uses those refs in the working record before freezing or sealing it. The import
+command does not crawl a directory or follow a URL.
+
+Each `rehearsal-checkpoint/v1` input has exactly `checkpoint_id`, `transition`,
+`expected_previous_digest`, `at_utc`, `actor_ref`, `case_id`, `evidence_refs` and
+`details` in addition to its `format`. `--preview` validates the transition and
+returns the prospective state without creating a checkpoint. A recorded
+checkpoint uses the previous input digest to refuse stale writers and publishes
+one new `runner-state.json` atomically. The supported transitions are:
+
+```text
+draft --freeze_plan--> plan_frozen --record_authorization--> authorized_preflight
+authorized_preflight/case_sealed --arm_case--> case_armed --begin_case--> case_observing
+case_observing --seal_case--> case_sealed --arm_case--> next case
+authorized_preflight/case_sealed --skip_case--> case_sealed
+case_sealed --ready_assessment--> assessment_ready --verify_export--> export_verified
+export_verified --record_cleanup--> cleanup_recorded
+```
+
+`begin_case` is the first actual attempt boundary. At that boundary the record is
+`record_kind: "run"`, while the active case still has `attempted: false` and an
+`unobserved` result. This prevents a historical successful observation from being
+introduced as the new attempt. `seal_case` verifies imported bytes and recomputes
+the case. `skip_case` requires a recorded reason and creates no attempted case.
+Changing the frozen claim, tuple, requiredness, targets, preconditions, windows,
+expectations, observer plan or controls requires a new run/attempt ID.
+
+`validate` exits 0 when the available record is structurally valid and all indexed
+bytes verify, otherwise 2. `assess` exits 0 only for the declared claim's qualifying
+pass, 1 for a valid `fail`, `unobserved` or `skipped` result, and 2 for unusable
+structure or integrity. A calculated pass before `assessment_ready` is reported as
+`unobserved`. Every result JSON separates `record_valid`, `claim` and `result`;
+an `init`, import, preview or checkpoint exit 0 is never a live-gate pass.
+
+After assessment, `export` creates an absent local destination containing
+`run-record.json`, `summary.json` and `export-manifest.json`.
+`--include-private REF` copies only each separately selected private object. No upload or publication
+occurs. A fixture run is refused by default. The explicit
+`--fixture-artifacts` option instead writes `fixture-record.json`, a
+`rehearsal-fixture-summary/v1` and `rehearsal-fixture-export/v1`; those artifacts
+carry `proof_eligible: false` and a fixed synthetic limitation. They cannot be
+used as live evidence. The maintainer reviews the exact export and records its
+manifest digest with `verify_export` before an authorized actor reports cleanup.
+`record_cleanup` records terminal handling, participant unbind, adapter closure,
+dialogue deletion, detached-capture deletion and retained-evidence outcomes; it
+performs none of those actions.
+
+Private directories use mode `0700`; private files and objects use `0600`.
+Runner-owned JSON rejects duplicate keys, unknown fields/formats/enums, nonfinite
+numbers, boolean counts, path-bearing refs, non-lowercase hashes and non-UTC times.
+Source commit/tree IDs are lowercase 40- or 64-character hexadecimal object IDs;
+evidence hashes are lowercase 64-character SHA-256. Current bounds are 8 MiB per
+JSON metadata file, 1 GiB per evidence object, 8 GiB total evidence, 4,096 evidence
+items, 100,000 collector events, 512 cases, 128 controls per case, 64 hosts, 256
+seats and `0..2^31-1` for observation counts.
+
+`collector-result/v1` and `collector-qualification/v1` are fixed consumed record
+formats, not a collector plugin API. A live G3 pass requires the exact collector
+contract/implementation/runtime/source-format tuple, every nested support ref,
+reviewed real-capture provenance, all five completeness properties and applicable
+omission controls. Fixture or candidate provenance cannot qualify a live count.
+Claude and OpenCode collectors remain candidates; no Codex whole-session source is
+qualified. G4 likewise still needs an authorized observable live interruption
+boundary. The runner therefore supplies neither live acceptance nor installation,
+predecessor-reader, rollback or configuration-write evidence.
 
 ## Claim and verdict rules
 
@@ -72,6 +177,25 @@ The maintainer records these preconditions before an intervention:
 5. A private roster and test dialogue with no real secrets or unrelated content;
    the permitted broker/host generations and interventions; declared deadlines,
    configured timers, and required observation sources and controls.
+
+The installed-compatibility preflight of item 3 reads one `c2-lifecycle-evidence/v1`
+record and accepts exactly one maintenance release: the C2 lifecycle/recovery
+component as landed on `main` in commit
+`5a4160b0b99bbbe87f3c5e22705cf78d65e0e6b8`. `scripts/rehearsal_evidence.py` pins
+that release's manifest SHA-256, package ID, runtime cohort, artifact count, the
+SHA-256 of the four C2 source files at that commit, and the SHA-256 of the C2
+dependency interface packet. The interface packet is the tracked contract fixture
+`scripts/fixtures/registration/c2-interface-5a4160b.json`, which records the
+landed commit, release identity, source hashes and executor/planner signatures;
+recompute its digest from any checkout with
+
+```
+shasum -a 256 scripts/fixtures/registration/c2-interface-5a4160b.json
+```
+
+Evidence that declares any other C2 identity — including evidence produced by an
+install of the earlier frozen C2 head `453acae0` — is refused rather than
+downgraded, and no installed-compatibility claim is recorded from it.
 
 A production-account smoke run permits ordinary authorized operations only and
 must be labeled `smoke`, with recovery gates unobserved or skipped as appropriate.
@@ -292,7 +416,8 @@ byte counts, and times are absolute UTC instants. Evidence classifications are
 `redacted_record` or `private_capture`; the published inventory contains references
 and metadata only. Completed run records remove the scaffolding-only
 `case_template` and `evidence_item_template` keys. The maintainer verifies these
-record constraints manually until a later runner implements validation.
+record constraints with the assisted runner and still reviews the underlying
+operator assertions; structural validation cannot establish their truth.
 
 The maintainer creates private evidence directories with `0700` and files with
 `0600`. Transcripts, renders, exact-session mappings and other content-bearing

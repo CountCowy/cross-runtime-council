@@ -60,6 +60,12 @@ jobs:
       - name: Registration planning, qualification gates, and recovery
         run: python3 -m unittest discover -p 'test_registration*.py' -v
         working-directory: scripts
+      - name: Assisted live-rehearsal runner and verdict gates
+        run: python3 test_rehearsal.py
+        working-directory: scripts
+      - name: Rehearsal evidence import and collector qualification
+        run: python3 test_rehearsal_evidence.py
+        working-directory: scripts
       - name: TypeScript type-check
         run: |
           npm install --no-save --silent typescript@5.6.3 "@opencode-ai/plugin@1.18.21" "@types/node@22.7.5"

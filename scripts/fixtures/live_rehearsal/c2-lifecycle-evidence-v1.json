@@ -1,0 +1,176 @@
+{
+  "format": "c2-lifecycle-evidence/v1",
+  "source": {
+    "commit": "5a4160b0b99bbbe87f3c5e22705cf78d65e0e6b8",
+    "interface_packet_sha256": "992d9c6a8a66fae58605b076b202b9019af3e8b984da9cde3d2410abe624eb02",
+    "source_sha256": {
+      "scripts/council_admission.py": "4d8ba851861aade8d158093a8d483b59296a7e7325c41dbfd9354a1aab90c863",
+      "scripts/council_inspect.py": "fbc6845244e9125cc72e4e7a36fdb96386e1586d7af01bb52ae68e0de44324d0",
+      "scripts/council_lifecycle.py": "a51380a25223561a9efe5b28a15436cea08ed6fa82fc0cd2bcd939ec339829f9",
+      "scripts/council_recover.py": "b10af86e1ff988dd55101ff44226b0eb1a2e339e1c84049d84d2484ab9cf46c3"
+    }
+  },
+  "recovery_description": {
+    "interface": "council-lifecycle-recovery",
+    "recovery_format": 1,
+    "formats": {
+      "admission": [
+        1
+      ],
+      "plan": [
+        1
+      ],
+      "journal": [
+        1
+      ],
+      "receipt": [
+        1
+      ]
+    },
+    "metadata_limit_bytes": 1048576,
+    "id_pattern": "[A-Za-z0-9][A-Za-z0-9_-]{0,95}",
+    "python_minimum": [
+      3,
+      9
+    ],
+    "required_python_flags": [
+      "-I",
+      "-B"
+    ],
+    "unit_ids": [
+      "payload",
+      "opencode-plugin",
+      "opencode-protocol",
+      "opencode-registry",
+      "opencode-tool"
+    ],
+    "required_operations": [
+      "classify-filesystem-v1",
+      "preserve-initial-v1",
+      "materialize-selected-v1",
+      "activate-five-units-v1",
+      "verify-receipt-v1",
+      "publish-admission-v1"
+    ],
+    "goals": [
+      "target",
+      "prior"
+    ]
+  },
+  "status": {
+    "status_format": 1,
+    "roots": {
+      "state": "/Users/fixture/.claude/peer-consults",
+      "payload": "/Users/fixture/.claude/skills/council",
+      "opencode": "/Users/fixture/.config/opencode"
+    },
+    "management": {
+      "status": "committed",
+      "certified": true,
+      "reason": null,
+      "summary": {
+        "receipt_id": "receipt-c2-fixture",
+        "receipt_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+        "package_id": "bda16c1b0f3097547ab7f2b4216ddad46c71635bea55da4f856816441878594e",
+        "runtime_cohort": "8181ae63906b42e4af670df1613dede4d194c48991594e3b8ea9b961877831b5"
+      }
+    },
+    "payload_cache_count": 0,
+    "units": [
+      {
+        "unit_id": "payload",
+        "exists": true,
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      {
+        "unit_id": "opencode-plugin",
+        "exists": true,
+        "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      {
+        "unit_id": "opencode-protocol",
+        "exists": true,
+        "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      },
+      {
+        "unit_id": "opencode-registry",
+        "exists": true,
+        "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      },
+      {
+        "unit_id": "opencode-tool",
+        "exists": true,
+        "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+      }
+    ]
+  },
+  "receipt_identity": {
+    "receipt_format": 1,
+    "receipt_id": "receipt-c2-fixture",
+    "receipt_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+    "outcome": "committed",
+    "package_id": "bda16c1b0f3097547ab7f2b4216ddad46c71635bea55da4f856816441878594e",
+    "runtime_cohort": "8181ae63906b42e4af670df1613dede4d194c48991594e3b8ea9b961877831b5",
+    "source_manifest_sha256": "4b2dd7cdad56cb0e7275f32be0b38d0b566a20d9f6a66195bc736dc701d6632b",
+    "reader_support_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    "recovery": {
+      "format": 1,
+      "tool_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "artifact_count": 89,
+    "units": [
+      {
+        "unit_id": "payload",
+        "exists": true,
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      {
+        "unit_id": "opencode-plugin",
+        "exists": true,
+        "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      {
+        "unit_id": "opencode-protocol",
+        "exists": true,
+        "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      },
+      {
+        "unit_id": "opencode-registry",
+        "exists": true,
+        "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      },
+      {
+        "unit_id": "opencode-tool",
+        "exists": true,
+        "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+      }
+    ]
+  },
+  "manifest_identity": {
+    "format": 1,
+    "sha256": "4b2dd7cdad56cb0e7275f32be0b38d0b566a20d9f6a66195bc736dc701d6632b",
+    "package_id": "bda16c1b0f3097547ab7f2b4216ddad46c71635bea55da4f856816441878594e",
+    "runtime_cohort": "8181ae63906b42e4af670df1613dede4d194c48991594e3b8ea9b961877831b5",
+    "artifact_count": 89,
+    "runtime_sources": [
+      "scripts/council_admission.py",
+      "scripts/council_inspect.py",
+      "scripts/council_protocol.py",
+      "scripts/council_protocol.ts",
+      "scripts/council.py",
+      "scripts/council_mcp.py",
+      "scripts/council_opencode.py",
+      "scripts/opencode_council_plugin.ts",
+      "scripts/opencode_delivery_registry.ts",
+      "scripts/tools/council.ts"
+    ]
+  },
+  "artifact_inspection": {
+    "provenance": "managed_receipt_manifest",
+    "verified_count": 89,
+    "mismatch_count": 0,
+    "artifact_cohort_compatible": true,
+    "package_id": "bda16c1b0f3097547ab7f2b4216ddad46c71635bea55da4f856816441878594e",
+    "runtime_cohort": "8181ae63906b42e4af670df1613dede4d194c48991594e3b8ea9b961877831b5"
+  }
+}

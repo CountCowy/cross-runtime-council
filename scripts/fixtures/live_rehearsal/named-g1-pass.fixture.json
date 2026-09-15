@@ -1,0 +1,305 @@
+{
+  "contract": "council-live-rehearsal/v1",
+  "record_kind": "run",
+  "run_id": "fixture-run-one",
+  "operator_ref": "maintainer-one",
+  "created_utc": "2026-09-08T20:00:00Z",
+  "completed_utc": "2026-09-08T20:10:00+00:00",
+  "tier": "recovery",
+  "claim": {
+    "kind": "named_gates",
+    "required_gates": [
+      "G1"
+    ],
+    "description": "Synthetic G1 evaluator fixture; no live claim."
+  },
+  "overall_result": "pass",
+  "limitations": [
+    "Synthetic fixture only; no receiving-runtime event occurred."
+  ],
+  "authorization": {
+    "user_ref": "user-one",
+    "scope_ref": "scope-one",
+    "allowed_interventions": [
+      {
+        "action": "observe-wake",
+        "actor_ref": "maintainer-one",
+        "case_ids": [
+          "case-g1"
+        ]
+      }
+    ]
+  },
+  "isolation": {
+    "kind": "dedicated_account",
+    "account_ref": "account-one",
+    "host_inventory_ref": "host-inventory-one",
+    "shared_service_refs": [],
+    "evidence_refs": [
+      "ev-a"
+    ]
+  },
+  "tested_tuple": {
+    "source_commit": "1111111111111111111111111111111111111111111111111111111111111111",
+    "source_tree": "2222222222222222222222222222222222222222222222222222222222222222",
+    "dirty": false,
+    "captured_diff_ref": null,
+    "release_manifest_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+    "package_id": "package-one",
+    "runtime_cohort": "cohort-one",
+    "artifact_identity_evidence_refs": [
+      "ev-a"
+    ],
+    "os": {
+      "version": "15.0",
+      "build": "fixture-build",
+      "architecture": "arm64"
+    },
+    "python": {
+      "version": "3.9",
+      "configuration_ref": "ev-a"
+    },
+    "hosts": [
+      {
+        "host_ref": "host-one",
+        "runtime": "codex",
+        "version": "fixture-version",
+        "build": "fixture-build",
+        "transport": "fixture-transport",
+        "sdk_version": "fixture-sdk",
+        "executable_pin_ref": "pin-one",
+        "seat_refs": [
+          "seat-alpha"
+        ],
+        "identity_evidence_refs": [
+          "ev-a"
+        ]
+      }
+    ],
+    "private_roster_ref": "roster-one"
+  },
+  "preflight": {
+    "installed_compatibility": {
+      "result": "pass",
+      "evidence_refs": [
+        "ev-a"
+      ],
+      "limitation": null
+    },
+    "loaded_component_identities": {
+      "result": "pass",
+      "evidence_refs": [
+        "ev-a"
+      ],
+      "limitation": null
+    },
+    "exact_seat_readiness": [
+      {
+        "seat_ref": "seat-alpha",
+        "result": "pass",
+        "evidence_refs": [
+          "ev-a"
+        ],
+        "limitation": null
+      }
+    ],
+    "aggregate_restoration_health": {
+      "result": "pass",
+      "evidence_refs": [
+        "ev-a"
+      ],
+      "limitation": null
+    }
+  },
+  "declared_plan": {
+    "frozen_utc": "2026-09-08T19:59:00Z",
+    "required_cases": [
+      {
+        "gate_id": "G1",
+        "case_id": "case-g1",
+        "seat_refs": [
+          "seat-alpha"
+        ]
+      }
+    ],
+    "expected_counts_ref": "ev-a",
+    "windows_and_timers_ref": "ev-a",
+    "control_plan_ref": "ev-a"
+  },
+  "gates": [
+    {
+      "gate_id": "G1",
+      "result": "pass",
+      "rationale": "aggregate:pass",
+      "cases": [
+        {
+          "case_id": "case-g1",
+          "actor_ref": "maintainer-one",
+          "required": true,
+          "applicable": true,
+          "skip_reason": null,
+          "targets": {
+            "dialogue_ref": "dialogue-one",
+            "envelope_ref": "envelope-target",
+            "seat_refs": [
+              "seat-alpha"
+            ],
+            "session_refs": [
+              "session-alpha"
+            ],
+            "broker_generation_refs": [
+              "broker-one"
+            ],
+            "relay_generation_refs": [
+              "relay-one"
+            ]
+          },
+          "precondition_evidence_refs": [
+            "ev-a"
+          ],
+          "window": {
+            "planned_start_utc": "2026-09-08T20:00:00Z",
+            "deadline_utc": "2026-09-08T20:09:00Z",
+            "quiet_until_utc": "2026-09-08T20:10:00Z",
+            "retry_eligibility_utc": "2026-09-08T20:02:00Z",
+            "delivery_allowance_end_utc": "2026-09-08T20:08:00Z",
+            "timer_config_ref": "timer-one"
+          },
+          "interventions": [
+            {
+              "actor_ref": "maintainer-one",
+              "action": "observe-wake",
+              "at_utc": "2026-09-08T20:01:00Z",
+              "boundary_ref": "wake-boundary",
+              "evidence_refs": [
+                "ev-a"
+              ]
+            }
+          ],
+          "expected": {
+            "format": "g1-expectation/v1",
+            "chain": {
+              "seat_ref": "seat-alpha",
+              "session_ref": "session-alpha",
+              "envelope_ref": "envelope-target",
+              "binding_generation_ref": "binding-one",
+              "router_cadence_seconds": 30
+            }
+          },
+          "observed": {
+            "format": "g1-observation/v1",
+            "common": {
+              "attempted": true,
+              "preconditions_result": "pass",
+              "harness_result": "pass",
+              "actual_start_utc": "2026-09-08T20:00:00Z",
+              "intervention_utc": "2026-09-08T20:01:00Z",
+              "recovery_utc": "2026-09-08T20:03:00Z",
+              "actual_end_utc": "2026-09-08T20:10:00Z",
+              "coverage_result": "pass",
+              "coverage_limitation": null,
+              "deadline_met": true
+            },
+            "chain": {
+              "notification_sent": true,
+              "wake_received": true,
+              "claim_succeeded": true,
+              "task_match": true,
+              "envelope_match": true,
+              "manual_steering": false
+            }
+          },
+          "evidence_refs": [
+            "ev-a"
+          ],
+          "observer": {
+            "contract_ref": "observer-one",
+            "validation_evidence_refs": [
+              "ev-a"
+            ],
+            "completeness_result": "pass",
+            "limitations": []
+          },
+          "controls": [
+            {
+              "control_id": "control-wrong-task",
+              "actor_ref": "maintainer-one",
+              "kind": "observer_fixture",
+              "expected": {
+                "outcome": "reject-wrong-task"
+              },
+              "observed": {
+                "outcome": "reject-wrong-task"
+              },
+              "result": "pass",
+              "evidence_refs": [
+                "ev-a"
+              ],
+              "rationale": "control-observed-expected-outcome"
+            }
+          ],
+          "result": "pass",
+          "rationale": "g1-notification-wake-claim-chain-qualified"
+        }
+      ]
+    },
+    {
+      "gate_id": "G2",
+      "result": "unobserved",
+      "rationale": "aggregate:unobserved",
+      "cases": []
+    },
+    {
+      "gate_id": "G3",
+      "result": "unobserved",
+      "rationale": "aggregate:unobserved",
+      "cases": []
+    },
+    {
+      "gate_id": "G4",
+      "result": "unobserved",
+      "rationale": "aggregate:unobserved",
+      "cases": []
+    },
+    {
+      "gate_id": "G5",
+      "result": "unobserved",
+      "rationale": "aggregate:unobserved",
+      "cases": []
+    }
+  ],
+  "evidence": [
+    {
+      "ref": "ev-a",
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "bytes": 1,
+      "collected_utc": "2026-09-08T19:58:00Z",
+      "classification": "private_capture"
+    }
+  ],
+  "private_evidence_index_ref": "private-index-one",
+  "retention": {
+    "approved_by": "user-one",
+    "redacted_record": {
+      "owner_ref": "maintainer-one",
+      "delete_after_utc": "2026-10-08T20:00:00Z"
+    },
+    "private_captures": {
+      "owner_ref": "maintainer-one",
+      "delete_after_utc": "2026-09-15T20:00:00Z"
+    }
+  },
+  "cleanup": {
+    "owner_ref": "maintainer-one",
+    "exports_verified_utc": null,
+    "export_evidence_refs": [],
+    "dialogue_deletion": {
+      "result": "unobserved",
+      "evidence_refs": []
+    },
+    "detached_capture_deletion": {
+      "result": "unobserved",
+      "evidence_refs": []
+    }
+  }
+}
